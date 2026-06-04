@@ -34,7 +34,9 @@ Modules:
   processing, and clipboard-copy completion. It updates tray state through
   `TrayBackend` and sends microphone stop/conversion plus Whisper work to a
   background worker thread so GTK stays responsive and release immediately
-  changes the tray state from recording to processing.
+  changes the tray state from recording to processing. Clipboard writes use
+  `arboard`, which selects Wayland data-control on Wayland and falls back to X11
+  clipboard support when appropriate.
 - `settings`: owns the GTK3 Settings window, microphone selector, and
   save/browse actions.
 - `hotkey`: defines `HotkeyBackend`, parses user hotkey strings, and provides

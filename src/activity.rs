@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::thread;
 
 use anyhow::{Context, Result, anyhow};
+use arboard::Clipboard;
 
 use crate::audio::AudioRecorder;
 use crate::tray::TrayBackend;
@@ -47,13 +48,14 @@ pub trait ClipboardWriter {
 }
 
 #[derive(Debug, Default)]
-pub struct GtkClipboardWriter;
+pub struct SystemClipboardWriter;
 
-impl ClipboardWriter for GtkClipboardWriter {
+impl ClipboardWriter for SystemClipboardWriter {
     fn copy_text(&self, text: &str) -> Result<()> {
-        let clipboard = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD);
-        clipboard.set_text(text);
-        clipboard.store();
+        Clipboard::new()
+            .context("failed to initialize system clipboard")?
+            .set_text(text.to_owned())
+            .context("failed to write text to system clipboard")?;
         Ok(())
     }
 }
@@ -161,6 +163,7 @@ impl VoiceActivityController {
         self.clipboard_writer
             .copy_text(text)
             .context("failed to copy transcription to clipboard")?;
+        eprintln!("Clipboard updated.");
         if voice_debug_enabled() {
             eprintln!(
                 "Copied transcription to clipboard ({} chars).",

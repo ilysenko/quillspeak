@@ -11,6 +11,7 @@ gpu-vulkan = ["whisper-rs/vulkan"]
 
 [dependencies]
 anyhow = "1"
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 appindicator3 = "0.3"
 directories = "6"
 cpal = "0.17.3"

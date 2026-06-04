@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use crate::activity::{
-    GtkClipboardWriter, PushToTalkEvent, TranscriptionResult, TranscriptionResultSender,
+    PushToTalkEvent, SystemClipboardWriter, TranscriptionResult, TranscriptionResultSender,
     VoiceActivityController, VoiceActivityState,
 };
 use crate::audio::{AudioRecorder, CpalAudioRecorder};
@@ -48,7 +48,7 @@ pub fn run() -> Result<()> {
         tray_backend_for_activity,
         Arc::clone(&audio_recorder),
         Arc::clone(&whisper_recognizer),
-        Rc::new(GtkClipboardWriter),
+        Rc::new(SystemClipboardWriter),
         activity_result_sender,
     ));
     let activity_result_controller = Rc::clone(&activity_controller);
