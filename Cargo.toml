@@ -13,12 +13,20 @@ gpu-vulkan = ["whisper-rs/vulkan"]
 anyhow = "1"
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 appindicator3 = "0.3"
+ashpd = { version = "0.13.11", default-features = false, features = ["async-io", "global_shortcuts"] }
+async-io = "2"
 directories = "6"
 cpal = "0.17.3"
+eframe = "=0.33.2"
+egui-keybind = "0.8.0"
 evdev = "0.13.2"
+futures-channel = "0.3"
+futures-util = "0.3"
 global-hotkey = "0.8"
 gtk = { version = "0.18", features = ["v3_24"] }
 ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
+rfd = "0.17.2"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 whisper-rs = { version = "=0.13.2", default-features = false }
+winit = { version = "0.30.12", default-features = false }

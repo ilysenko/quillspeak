@@ -175,6 +175,9 @@ impl VoiceActivityController {
     }
 
     fn set_state(&self, state: VoiceActivityState) {
+        if voice_debug_enabled() {
+            eprintln!("Voice activity state: {:?} -> {state:?}", self.state());
+        }
         self.state.replace(state);
         self.tray_backend.set_visual_state(state);
     }

@@ -1,232 +1,490 @@
+mod hotkey_widget;
+
 use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 
 use anyhow::Result;
-use gtk::prelude::*;
+use eframe::egui;
+use egui_keybind::{Keybind, Shortcut};
 
 use crate::audio::AudioRecorder;
 use crate::config::{AppConfig, ConfigStore};
-use crate::hotkey::HotkeyBackend;
+use crate::hotkey::{HotkeyBackend, HotkeySpec};
 use crate::whisper::WhisperRecognizer;
 
-const SYSTEM_DEFAULT_MIC_ID: &str = "__voice_system_default_microphone__";
+use hotkey_widget::{hotkey_from_shortcut, shortcut_from_hotkey};
+
+const SYSTEM_DEFAULT_MIC_LABEL: &str = "System default";
 
 pub struct SettingsWindow {
-    window: gtk::Window,
-    hotkey_entry: gtk::Entry,
-    microphone_combo: gtk::ComboBoxText,
-    model_entry: gtk::Entry,
-    backend_status_label: gtk::Label,
-    config: Rc<RefCell<AppConfig>>,
+    runtime: RefCell<Option<SettingsRuntime>>,
+    config: Arc<Mutex<AppConfig>>,
+    store: ConfigStore,
+    hotkey_backend: Arc<dyn HotkeyBackend>,
     audio_recorder: Arc<dyn AudioRecorder>,
     whisper_recognizer: Arc<dyn WhisperRecognizer>,
 }
 
 impl SettingsWindow {
     pub fn new(
-        config: Rc<RefCell<AppConfig>>,
+        config: Arc<Mutex<AppConfig>>,
         store: ConfigStore,
-        hotkey_backend: Rc<dyn HotkeyBackend>,
+        hotkey_backend: Arc<dyn HotkeyBackend>,
         audio_recorder: Arc<dyn AudioRecorder>,
         whisper_recognizer: Arc<dyn WhisperRecognizer>,
     ) -> Self {
-        let window = gtk::Window::new(gtk::WindowType::Toplevel);
-        window.set_title("Voice Settings");
-        window.set_default_size(560, 220);
-        window.set_position(gtk::WindowPosition::Center);
-        window.set_icon_name(Some("audio-input-microphone-symbolic"));
-
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        root.set_margin_top(16);
-        root.set_margin_bottom(16);
-        root.set_margin_start(16);
-        root.set_margin_end(16);
-
-        let grid = gtk::Grid::new();
-        grid.set_row_spacing(10);
-        grid.set_column_spacing(12);
-
-        let hotkey_label = left_label("Push-to-talk hotkey");
-        let hotkey_entry = gtk::Entry::new();
-        hotkey_entry.set_hexpand(true);
-
-        let microphone_label = left_label("Microphone");
-        let microphone_combo = gtk::ComboBoxText::new();
-        microphone_combo.set_hexpand(true);
-
-        let model_label = left_label("Whisper model");
-        let model_entry = gtk::Entry::new();
-        model_entry.set_hexpand(true);
-        model_entry.set_placeholder_text(Some("Model path or name"));
-
-        let browse_button = gtk::Button::with_label("Browse...");
-        let model_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        model_row.pack_start(&model_entry, true, true, 0);
-        model_row.pack_start(&browse_button, false, false, 0);
-
-        grid.attach(&hotkey_label, 0, 0, 1, 1);
-        grid.attach(&hotkey_entry, 1, 0, 1, 1);
-        grid.attach(&microphone_label, 0, 1, 1, 1);
-        grid.attach(&microphone_combo, 1, 1, 1, 1);
-        grid.attach(&model_label, 0, 2, 1, 1);
-        grid.attach(&model_row, 1, 2, 1, 1);
-
-        let backend_label = left_label("Whisper backend");
-        let backend_status_label = gtk::Label::new(None);
-        backend_status_label.set_halign(gtk::Align::Start);
-        backend_status_label.set_selectable(true);
-        grid.attach(&backend_label, 0, 3, 1, 1);
-        grid.attach(&backend_status_label, 1, 3, 1, 1);
-
-        let status_label = gtk::Label::new(None);
-        status_label.set_halign(gtk::Align::Start);
-
-        let button_row = gtk::ButtonBox::new(gtk::Orientation::Horizontal);
-        button_row.set_layout(gtk::ButtonBoxStyle::End);
-        button_row.set_spacing(8);
-
-        let save_button = gtk::Button::with_label("Save");
-        let close_button = gtk::Button::with_label("Close");
-        button_row.add(&close_button);
-        button_row.add(&save_button);
-
-        root.pack_start(&grid, false, false, 0);
-        root.pack_start(&status_label, false, false, 0);
-        root.pack_start(&button_row, false, false, 0);
-        window.add(&root);
-
-        let window_for_delete = window.clone();
-        window.connect_delete_event(move |_, _| {
-            window_for_delete.hide();
-            gtk::glib::Propagation::Stop
-        });
-
-        let window_for_close = window.clone();
-        close_button.connect_clicked(move |_| {
-            window_for_close.hide();
-        });
-
-        let window_for_browse = window.clone();
-        let model_entry_for_browse = model_entry.clone();
-        browse_button.connect_clicked(move |_| {
-            if let Some(path) = choose_model_file(&window_for_browse) {
-                model_entry_for_browse.set_text(&path);
-            }
-        });
-
-        let save_config = Rc::clone(&config);
-        let save_store = store.clone();
-        let save_hotkey_backend = Rc::clone(&hotkey_backend);
-        let save_audio_recorder = Arc::clone(&audio_recorder);
-        let save_whisper_recognizer = Arc::clone(&whisper_recognizer);
-        let save_hotkey_entry = hotkey_entry.clone();
-        let save_microphone_combo = microphone_combo.clone();
-        let save_model_entry = model_entry.clone();
-        let save_status_label = status_label.clone();
-        let save_backend_status_label = backend_status_label.clone();
-        save_button.connect_clicked(move |_| {
-            let current_config = save_config.borrow().clone();
-            let next_config = AppConfig {
-                push_to_talk_hotkey: save_hotkey_entry.text().trim().to_string(),
-                whisper_model: save_model_entry.text().trim().to_string(),
-                microphone_device: selected_microphone_device(&save_microphone_combo),
-                whisper_backend: current_config.whisper_backend,
-                gpu_device: current_config.gpu_device,
-            };
-
-            match save_settings(
-                &next_config,
-                &save_store,
-                &save_config,
-                &save_hotkey_backend,
-                &save_audio_recorder,
-                &save_whisper_recognizer,
-            ) {
-                Ok(()) => {
-                    save_status_label.set_text("Saved.");
-                    save_backend_status_label
-                        .set_text(&save_whisper_recognizer.runtime_status().summary());
-                }
-                Err(error) => {
-                    save_status_label.set_text(&format!("Save failed: {error:#}"));
-                    save_backend_status_label
-                        .set_text(&save_whisper_recognizer.runtime_status().summary());
-                }
-            }
-        });
-
-        let settings_window = Self {
-            window,
-            hotkey_entry,
-            microphone_combo,
-            model_entry,
-            backend_status_label,
+        Self {
+            runtime: RefCell::new(None),
             config,
+            store,
+            hotkey_backend,
             audio_recorder,
             whisper_recognizer,
-        };
-        settings_window.refresh_from_config();
-        settings_window
+        }
     }
 
     pub fn present(&self) {
-        self.refresh_from_config();
-        self.window.show_all();
-        self.window.present();
-    }
+        let mut runtime = self.runtime.borrow_mut();
+        if let Some(existing_runtime) = runtime.take() {
+            if existing_runtime.handle.is_finished() {
+                if let Err(error) = existing_runtime.handle.join() {
+                    eprintln!("Settings window thread ended with a panic: {error:?}");
+                }
+            } else {
+                existing_runtime.show();
+                *runtime = Some(existing_runtime);
+                return;
+            }
+        }
 
-    fn refresh_from_config(&self) {
-        let config = self.config.borrow();
-        self.hotkey_entry.set_text(&config.push_to_talk_hotkey);
-        populate_microphone_combo(
-            &self.microphone_combo,
-            self.audio_recorder.as_ref(),
-            config.microphone_device.as_deref(),
-        );
-        self.model_entry.set_text(&config.whisper_model);
-        self.backend_status_label
-            .set_text(&self.whisper_recognizer.runtime_status().summary());
+        let (command_sender, command_receiver) = mpsc::channel();
+        let repaint_context = Arc::new(Mutex::new(None));
+        let config = Arc::clone(&self.config);
+        let store = self.store.clone();
+        let hotkey_backend = Arc::clone(&self.hotkey_backend);
+        let audio_recorder = Arc::clone(&self.audio_recorder);
+        let whisper_recognizer = Arc::clone(&self.whisper_recognizer);
+        let thread_repaint_context = Arc::clone(&repaint_context);
+
+        match thread::Builder::new()
+            .name("voice-egui-settings".to_string())
+            .spawn(move || {
+                if let Err(error) = run_settings_window(
+                    config,
+                    store,
+                    hotkey_backend,
+                    audio_recorder,
+                    whisper_recognizer,
+                    command_receiver,
+                    thread_repaint_context,
+                ) {
+                    eprintln!("Settings window failed: {error}");
+                }
+            }) {
+            Ok(join_handle) => {
+                *runtime = Some(SettingsRuntime {
+                    command_sender,
+                    repaint_context,
+                    handle: join_handle,
+                });
+            }
+            Err(error) => {
+                eprintln!("Failed to spawn settings window thread: {error}");
+            }
+        }
     }
 }
 
-fn left_label(text: &str) -> gtk::Label {
-    let label = gtk::Label::new(Some(text));
-    label.set_halign(gtk::Align::Start);
-    label
+struct SettingsRuntime {
+    command_sender: Sender<SettingsCommand>,
+    repaint_context: Arc<Mutex<Option<egui::Context>>>,
+    handle: JoinHandle<()>,
 }
 
-fn choose_model_file(parent: &gtk::Window) -> Option<String> {
-    let dialog = gtk::FileChooserDialog::builder()
-        .title("Select Whisper model")
-        .action(gtk::FileChooserAction::Open)
-        .transient_for(parent)
-        .modal(true)
-        .build();
+impl SettingsRuntime {
+    fn show(&self) {
+        if let Err(error) = self.command_sender.send(SettingsCommand::Show) {
+            eprintln!("Failed to request Settings window presentation: {error:?}");
+            return;
+        }
 
-    dialog.add_buttons(&[
-        ("Cancel", gtk::ResponseType::Cancel),
-        ("Select", gtk::ResponseType::Accept),
-    ]);
+        let repaint_context = self
+            .repaint_context
+            .lock()
+            .expect("settings repaint context was poisoned");
+        if let Some(ctx) = repaint_context.as_ref() {
+            ctx.request_repaint();
+        }
+    }
+}
 
-    let response = dialog.run();
-    let selected_path = if response == gtk::ResponseType::Accept {
-        dialog
-            .filename()
-            .map(|path| path.to_string_lossy().into_owned())
-    } else {
-        None
-    };
+enum SettingsCommand {
+    Show,
+}
 
-    dialog.close();
-    selected_path
+fn run_settings_window(
+    config: Arc<Mutex<AppConfig>>,
+    store: ConfigStore,
+    hotkey_backend: Arc<dyn HotkeyBackend>,
+    audio_recorder: Arc<dyn AudioRecorder>,
+    whisper_recognizer: Arc<dyn WhisperRecognizer>,
+    command_receiver: Receiver<SettingsCommand>,
+    repaint_context: Arc<Mutex<Option<egui::Context>>>,
+) -> eframe::Result {
+    let options = native_options();
+    eframe::run_native(
+        "Voice Settings",
+        options,
+        Box::new(move |creation_context| {
+            creation_context
+                .egui_ctx
+                .set_visuals(egui::Visuals::light());
+            repaint_context
+                .lock()
+                .expect("settings repaint context was poisoned")
+                .replace(creation_context.egui_ctx.clone());
+            Ok(Box::new(SettingsApp::new(
+                config,
+                store,
+                hotkey_backend,
+                audio_recorder,
+                whisper_recognizer,
+                command_receiver,
+            )))
+        }),
+    )
+}
+
+fn native_options() -> eframe::NativeOptions {
+    let viewport = egui::ViewportBuilder::default()
+        .with_title("Voice Settings")
+        .with_app_id("voice-settings")
+        .with_inner_size([760.0, 420.0])
+        .with_min_inner_size([680.0, 360.0]);
+
+    eframe::NativeOptions {
+        viewport,
+        centered: true,
+        event_loop_builder: Some(Box::new(|builder| {
+            configure_event_loop_for_settings_thread(builder);
+        })),
+        ..Default::default()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn configure_event_loop_for_settings_thread(
+    builder: &mut eframe::EventLoopBuilder<eframe::UserEvent>,
+) {
+    use winit::platform::wayland::EventLoopBuilderExtWayland;
+    use winit::platform::x11::EventLoopBuilderExtX11;
+
+    EventLoopBuilderExtX11::with_any_thread(builder, true);
+    EventLoopBuilderExtWayland::with_any_thread(builder, true);
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_event_loop_for_settings_thread(
+    _builder: &mut eframe::EventLoopBuilder<eframe::UserEvent>,
+) {
+}
+
+struct SettingsApp {
+    config: Arc<Mutex<AppConfig>>,
+    store: ConfigStore,
+    hotkey_backend: Arc<dyn HotkeyBackend>,
+    audio_recorder: Arc<dyn AudioRecorder>,
+    whisper_recognizer: Arc<dyn WhisperRecognizer>,
+    command_receiver: Receiver<SettingsCommand>,
+    hotkey_shortcut: Shortcut,
+    last_valid_shortcut: Shortcut,
+    draft_hotkey: String,
+    draft_model: String,
+    draft_microphone: Option<String>,
+    microphone_devices: Vec<String>,
+    status_message: String,
+    backend_status: String,
+}
+
+impl SettingsApp {
+    fn new(
+        config: Arc<Mutex<AppConfig>>,
+        store: ConfigStore,
+        hotkey_backend: Arc<dyn HotkeyBackend>,
+        audio_recorder: Arc<dyn AudioRecorder>,
+        whisper_recognizer: Arc<dyn WhisperRecognizer>,
+        command_receiver: Receiver<SettingsCommand>,
+    ) -> Self {
+        let mut app = Self {
+            config,
+            store,
+            hotkey_backend,
+            audio_recorder,
+            whisper_recognizer,
+            command_receiver,
+            hotkey_shortcut: Shortcut::NONE,
+            last_valid_shortcut: Shortcut::NONE,
+            draft_hotkey: String::new(),
+            draft_model: String::new(),
+            draft_microphone: None,
+            microphone_devices: Vec::new(),
+            status_message: String::new(),
+            backend_status: String::new(),
+        };
+        app.load_draft_from_config();
+        app.refresh_runtime_status();
+        app.refresh_microphones();
+        app
+    }
+
+    fn handle_pending_commands(&mut self, ctx: &egui::Context) {
+        while let Ok(command) = self.command_receiver.try_recv() {
+            match command {
+                SettingsCommand::Show => {
+                    ctx.set_visuals(egui::Visuals::light());
+                    self.load_draft_from_config();
+                    self.refresh_runtime_status();
+                    self.refresh_microphones();
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+            }
+        }
+    }
+
+    fn load_draft_from_config(&mut self) {
+        let config_snapshot = self
+            .config
+            .lock()
+            .expect("settings config state was poisoned")
+            .clone();
+        let (hotkey_shortcut, hotkey_status) =
+            shortcut_from_hotkey(&config_snapshot.push_to_talk_hotkey)
+                .map(|shortcut| (shortcut, String::new()))
+                .unwrap_or_else(|error| {
+                    (
+                        Shortcut::NONE,
+                        format!("Current hotkey cannot be edited visually yet: {error:#}"),
+                    )
+                });
+
+        self.hotkey_shortcut = hotkey_shortcut;
+        self.last_valid_shortcut = hotkey_shortcut;
+        self.draft_hotkey = config_snapshot.push_to_talk_hotkey;
+        self.draft_model = config_snapshot.whisper_model;
+        self.draft_microphone = config_snapshot.microphone_device;
+        self.status_message = hotkey_status;
+    }
+
+    fn refresh_runtime_status(&mut self) {
+        self.backend_status = self.whisper_recognizer.runtime_status().summary();
+    }
+
+    fn refresh_microphones(&mut self) {
+        match self.audio_recorder.available_input_devices() {
+            Ok(device_names) => {
+                self.microphone_devices = device_names;
+            }
+            Err(error) => {
+                self.microphone_devices.clear();
+                self.status_message = format!("Failed to list microphones: {error:#}");
+            }
+        }
+    }
+
+    fn apply_shortcut_change(&mut self) {
+        if self.hotkey_shortcut.pointer().is_some() {
+            self.hotkey_shortcut = self.last_valid_shortcut;
+            self.status_message =
+                "Mouse buttons are not supported for push-to-talk yet.".to_string();
+            return;
+        }
+
+        match hotkey_from_shortcut(&self.hotkey_shortcut) {
+            Ok(hotkey) => {
+                self.draft_hotkey = hotkey;
+                self.last_valid_shortcut = self.hotkey_shortcut;
+                self.status_message.clear();
+            }
+            Err(error) => {
+                self.hotkey_shortcut = self.last_valid_shortcut;
+                self.status_message = format!("Unsupported hotkey: {error:#}");
+            }
+        }
+    }
+
+    fn save(&mut self) {
+        let hotkey = match HotkeySpec::parse(&self.draft_hotkey) {
+            Ok(spec) => spec.canonical().to_string(),
+            Err(error) => {
+                self.status_message = format!("Save failed: {error:#}");
+                return;
+            }
+        };
+        let current_config = self
+            .config
+            .lock()
+            .expect("settings config state was poisoned")
+            .clone();
+        let next_config = AppConfig {
+            push_to_talk_hotkey: hotkey,
+            whisper_model: self.draft_model.trim().to_string(),
+            microphone_device: normalize_microphone(self.draft_microphone.as_deref()),
+            whisper_backend: current_config.whisper_backend,
+            gpu_device: current_config.gpu_device,
+        };
+
+        match save_settings(
+            &next_config,
+            &self.store,
+            &self.config,
+            &self.hotkey_backend,
+            &self.audio_recorder,
+            &self.whisper_recognizer,
+        ) {
+            Ok(()) => {
+                self.draft_hotkey = next_config.push_to_talk_hotkey;
+                self.draft_model = next_config.whisper_model;
+                self.draft_microphone = next_config.microphone_device;
+                self.status_message = "Saved.".to_string();
+                self.refresh_runtime_status();
+            }
+            Err(error) => {
+                self.status_message = format!("Save failed: {error:#}");
+                self.refresh_runtime_status();
+            }
+        }
+    }
+
+    fn selected_microphone_label(&self) -> String {
+        match self.draft_microphone.as_deref() {
+            Some(device_name)
+                if !self
+                    .microphone_devices
+                    .iter()
+                    .any(|available| available == device_name) =>
+            {
+                format!("{device_name} (missing)")
+            }
+            Some(device_name) => device_name.to_string(),
+            None => SYSTEM_DEFAULT_MIC_LABEL.to_string(),
+        }
+    }
+}
+
+impl eframe::App for SettingsApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.handle_pending_commands(ctx);
+        if ctx.input(|input| input.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.hide(ctx);
+        }
+
+        egui::TopBottomPanel::bottom("voice-settings-actions").show(ctx, |ui| {
+            ui.add_space(6.0);
+            if !self.status_message.is_empty() {
+                ui.label(&self.status_message);
+                ui.add_space(4.0);
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Close").clicked() {
+                    self.hide(ctx);
+                }
+                if ui.button("Save").clicked() {
+                    self.save();
+                }
+            });
+            ui.add_space(6.0);
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.heading("Voice Settings");
+                    ui.add_space(8.0);
+
+                    egui::Grid::new("voice-settings-grid")
+                        .num_columns(2)
+                        .spacing([12.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.label("Push-to-talk hotkey");
+                            ui.horizontal(|ui| {
+                                let response = ui.add(
+                                    Keybind::new(&mut self.hotkey_shortcut, "push-to-talk-hotkey")
+                                        .with_text(""),
+                                );
+                                if response.changed() {
+                                    self.apply_shortcut_change();
+                                }
+                                ui.label(&self.draft_hotkey);
+                            });
+                            ui.end_row();
+
+                            ui.label("Microphone");
+                            ui.horizontal(|ui| {
+                                egui::ComboBox::from_id_salt("microphone-combo")
+                                    .selected_text(self.selected_microphone_label())
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut self.draft_microphone,
+                                            None,
+                                            SYSTEM_DEFAULT_MIC_LABEL,
+                                        );
+                                        for device_name in &self.microphone_devices {
+                                            ui.selectable_value(
+                                                &mut self.draft_microphone,
+                                                Some(device_name.clone()),
+                                                device_name,
+                                            );
+                                        }
+                                    });
+                                if ui.button("Refresh").clicked() {
+                                    self.refresh_microphones();
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label("Whisper model");
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.draft_model)
+                                        .desired_width(440.0)
+                                        .hint_text("Model path or name"),
+                                );
+                                if ui.button("Browse...").clicked()
+                                    && let Some(path) = rfd::FileDialog::new()
+                                        .add_filter("Whisper model", &["bin"])
+                                        .pick_file()
+                                {
+                                    self.draft_model = path.to_string_lossy().into_owned();
+                                }
+                            });
+                            ui.end_row();
+
+                            ui.label("Whisper backend");
+                            ui.label(&self.backend_status);
+                            ui.end_row();
+                        });
+                });
+        });
+    }
+}
+
+impl SettingsApp {
+    fn hide(&self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+    }
 }
 
 fn save_settings(
     next_config: &AppConfig,
     store: &ConfigStore,
-    config: &Rc<RefCell<AppConfig>>,
-    hotkey_backend: &Rc<dyn HotkeyBackend>,
+    config: &Arc<Mutex<AppConfig>>,
+    hotkey_backend: &Arc<dyn HotkeyBackend>,
     audio_recorder: &Arc<dyn AudioRecorder>,
     whisper_recognizer: &Arc<dyn WhisperRecognizer>,
 ) -> Result<()> {
@@ -238,50 +496,13 @@ fn save_settings(
         next_config.gpu_device,
     )?;
     store.save(next_config)?;
-    config.replace(next_config.clone());
+    *config.lock().expect("settings config state was poisoned") = next_config.clone();
     Ok(())
 }
 
-fn populate_microphone_combo(
-    microphone_combo: &gtk::ComboBoxText,
-    audio_recorder: &dyn AudioRecorder,
-    selected_device_name: Option<&str>,
-) {
-    microphone_combo.remove_all();
-    microphone_combo.append(Some(SYSTEM_DEFAULT_MIC_ID), "System default");
-
-    let mut selected_device_is_available = selected_device_name.is_none();
-    match audio_recorder.available_input_devices() {
-        Ok(device_names) => {
-            for device_name in device_names {
-                if selected_device_name == Some(device_name.as_str()) {
-                    selected_device_is_available = true;
-                }
-                microphone_combo.append(Some(&device_name), &device_name);
-            }
-        }
-        Err(error) => {
-            eprintln!("Failed to list microphones: {error:#}");
-        }
-    }
-
-    if let Some(selected_device_name) = selected_device_name {
-        if !selected_device_is_available {
-            microphone_combo.append(
-                Some(selected_device_name),
-                &format!("{selected_device_name} (missing)"),
-            );
-        }
-        microphone_combo.set_active_id(Some(selected_device_name));
-    } else {
-        microphone_combo.set_active_id(Some(SYSTEM_DEFAULT_MIC_ID));
-    }
-}
-
-fn selected_microphone_device(microphone_combo: &gtk::ComboBoxText) -> Option<String> {
-    microphone_combo
-        .active_id()
-        .map(|device_id| device_id.to_string())
-        .filter(|device_id| device_id != SYSTEM_DEFAULT_MIC_ID)
-        .filter(|device_id| !device_id.trim().is_empty())
+fn normalize_microphone(device_name: Option<&str>) -> Option<String> {
+    device_name
+        .map(str::trim)
+        .filter(|device_name| !device_name.is_empty())
+        .map(ToOwned::to_owned)
 }

@@ -29,6 +29,12 @@ Then run:
 cargo run
 ```
 
+For hotkey/audio diagnostics while testing:
+
+```sh
+VOICE_DEBUG=1 cargo run
+```
+
 For a release-style run, build once and start the compiled binary:
 
 ```sh
@@ -38,25 +44,37 @@ cargo build --release
 
 The app starts a tray/status icon. Open `Settings` from the tray menu to edit:
 
-- push-to-talk hotkey,
+- push-to-talk hotkey by clicking the hotkey field and pressing a new
+  combination,
 - microphone device, or system default,
 - Whisper model path/name,
 - current Whisper backend status.
 
+The Settings window uses a light theme, opens at a size large enough to show
+the action buttons, and hides instead of being destroyed when closed from the
+window manager. Reopening Settings from the tray shows the same live window
+runtime again.
+
 The push-to-talk hotkey is global:
 
-- Wayland and X11 use Linux evdev as the primary backend, reading
-  `/dev/input/event*` for exact key press/release events.
-- The app does not exclusively grab the keyboard, so the desktop and focused app
-  can still see the same key combination.
-- If a terminal is focused, combinations with `Alt` can show escape characters
-  like `^[`; that comes from the terminal receiving the shortcut too, not from
-  the voice app logging raw keys.
-- The process must be allowed to read input devices. On many development
-  machines that means the user must be in the `input` group, then log out and
-  back in.
-- Real X11 sessions can still use the native X11 fallback if evdev is not
-  available.
+- The app first tries XDG Desktop Portal GlobalShortcuts, the desktop-mediated
+  Wayland-safe path. Your desktop may show a system prompt to approve the
+  shortcut.
+- If the portal is active and Linux evdev is readable, evdev is also used as a
+  release guard so physical key release can stop recording even if a desktop
+  portal signal is missed.
+- If the portal is unavailable or declined, Wayland and X11 can fall back to
+  Linux evdev by reading `/dev/input/event*` for exact key press/release events.
+- The evdev fallback does not exclusively grab the keyboard, so the desktop and
+  focused app can still see the same key combination. If a terminal is focused,
+  combinations with `Alt` can show escape characters like `^[`; that comes from
+  the terminal receiving the shortcut too, not from the voice app logging raw
+  keys.
+- Evdev fallback/release guard requires the process to read input devices. On
+  many development machines that means the user must be in the `input` group,
+  then log out and back in.
+- Real X11 sessions can still use the native X11 fallback if portal and evdev
+  are not available.
 - Changing the hotkey in Settings re-registers it immediately; no restart is
   required.
 - If registration fails, Settings shows an error and the old config is kept.
@@ -73,6 +91,10 @@ Ctrl+Shift+R
 Super+Space
 F12
 ```
+
+The visual egui hotkey recorder currently captures Ctrl/Alt/Shift combinations
+and common keyboard keys. `Super` remains supported by the config parser and
+runtime backends, but visual capture for the logo key is still a TODO.
 
 Tray icon colors reflect the push-to-talk pipeline:
 

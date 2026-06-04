@@ -12,9 +12,18 @@ use evdev::{Device, EventSummary, KeyCode};
 
 use crate::activity::PushToTalkEvent;
 
-use super::{HotkeySpec, SharedHotkeyHandler, dispatch_push_to_talk, spec::EvdevHotkeySpec};
+use super::{
+    HotkeySpec, SharedHotkeyHandler, dispatch_push_to_talk, hotkey_debug_enabled,
+    spec::EvdevHotkeySpec,
+};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvdevDispatchMode {
+    Full,
+    ReleaseGuard,
+}
 
 pub(super) struct EvdevHotkeyBackend {
     handler: SharedHotkeyHandler,
@@ -24,6 +33,7 @@ pub(super) struct EvdevHotkeyBackend {
 #[derive(Default)]
 struct EvdevState {
     configured_hotkey: Option<String>,
+    dispatch_mode: Option<EvdevDispatchMode>,
     registration: Option<EvdevRegistration>,
 }
 
@@ -36,11 +46,24 @@ impl EvdevHotkeyBackend {
     }
 
     pub(super) fn configure(&self, spec: &HotkeySpec) -> Result<()> {
+        self.configure_with_mode(spec, EvdevDispatchMode::Full)
+    }
+
+    pub(super) fn configure_release_guard(&self, spec: &HotkeySpec) -> Result<()> {
+        self.configure_with_mode(spec, EvdevDispatchMode::ReleaseGuard)
+    }
+
+    fn configure_with_mode(
+        &self,
+        spec: &HotkeySpec,
+        dispatch_mode: EvdevDispatchMode,
+    ) -> Result<()> {
         let mut state = self.state.lock().expect("evdev hotkey state was poisoned");
         if state
             .configured_hotkey
             .as_deref()
             .is_some_and(|hotkey| hotkey == spec.canonical())
+            && state.dispatch_mode == Some(dispatch_mode)
             && state
                 .registration
                 .as_ref()
@@ -49,9 +72,11 @@ impl EvdevHotkeyBackend {
             return Ok(());
         }
 
-        let next_registration = EvdevRegistration::start(spec.clone(), self.handler.clone())?;
+        let next_registration =
+            EvdevRegistration::start(spec.clone(), self.handler.clone(), dispatch_mode)?;
         let old_registration = state.registration.replace(next_registration);
         state.configured_hotkey = Some(spec.canonical().to_string());
+        state.dispatch_mode = Some(dispatch_mode);
         drop(state);
         drop(old_registration);
 
@@ -62,6 +87,7 @@ impl EvdevHotkeyBackend {
         let mut state = self.state.lock().expect("evdev hotkey state was poisoned");
         let old_registration = state.registration.take();
         state.configured_hotkey = None;
+        state.dispatch_mode = None;
         drop(state);
         drop(old_registration);
         Ok(())
@@ -74,7 +100,11 @@ struct EvdevRegistration {
 }
 
 impl EvdevRegistration {
-    fn start(spec: HotkeySpec, handler: SharedHotkeyHandler) -> Result<Self> {
+    fn start(
+        spec: HotkeySpec,
+        handler: SharedHotkeyHandler,
+        dispatch_mode: EvdevDispatchMode,
+    ) -> Result<Self> {
         let canonical_hotkey = spec.canonical().to_string();
         let (ready_sender, ready_receiver) =
             mpsc::sync_channel::<std::result::Result<(), String>>(1);
@@ -84,7 +114,13 @@ impl EvdevRegistration {
         let join_handle = thread::Builder::new()
             .name("voice-evdev-hotkey".to_string())
             .spawn(move || {
-                run_evdev_thread(spec, handler, shutdown_receiver, ready_sender);
+                run_evdev_thread(
+                    spec,
+                    handler,
+                    dispatch_mode,
+                    shutdown_receiver,
+                    ready_sender,
+                );
             })
             .context("failed to spawn evdev hotkey worker")?;
 
@@ -129,10 +165,17 @@ impl Drop for EvdevRegistration {
 fn run_evdev_thread(
     spec: HotkeySpec,
     handler: SharedHotkeyHandler,
+    dispatch_mode: EvdevDispatchMode,
     shutdown_receiver: mpsc::Receiver<()>,
     ready_sender: SyncSender<std::result::Result<(), String>>,
 ) {
-    let result = run_evdev_worker(spec, handler, shutdown_receiver, ready_sender.clone());
+    let result = run_evdev_worker(
+        spec,
+        handler,
+        dispatch_mode,
+        shutdown_receiver,
+        ready_sender.clone(),
+    );
     if let Err(error) = result {
         let message = format!("{error:#}");
         if ready_sender.send(Err(message.clone())).is_err() {
@@ -144,6 +187,7 @@ fn run_evdev_thread(
 fn run_evdev_worker(
     spec: HotkeySpec,
     handler: SharedHotkeyHandler,
+    dispatch_mode: EvdevDispatchMode,
     shutdown_receiver: mpsc::Receiver<()>,
     ready_sender: SyncSender<std::result::Result<(), String>>,
 ) -> Result<()> {
@@ -152,16 +196,27 @@ fn run_evdev_worker(
     let device_count = devices.len();
 
     let _ = ready_sender.send(Ok(()));
-    eprintln!(
-        "Registered evdev push-to-talk hotkey `{}` across {} input device(s).",
-        spec.canonical(),
-        device_count
-    );
+    match dispatch_mode {
+        EvdevDispatchMode::Full => eprintln!(
+            "Registered evdev push-to-talk hotkey `{}` across {} input device(s).",
+            spec.canonical(),
+            device_count
+        ),
+        EvdevDispatchMode::ReleaseGuard => {
+            if hotkey_debug_enabled() {
+                eprintln!(
+                    "Registered evdev push-to-talk release guard `{}` across {} input device(s).",
+                    spec.canonical(),
+                    device_count
+                );
+            }
+        }
+    }
 
     let mut state = EvdevHotkeyState::default();
     loop {
         if shutdown_receiver.try_recv().is_ok() {
-            dispatch_state_reset(&handler, &mut state);
+            dispatch_state_reset(&handler, &mut state, dispatch_mode);
             return Ok(());
         }
 
@@ -177,7 +232,7 @@ fn run_evdev_worker(
                         if let Some(event) =
                             state.apply_key_event(opened_device.id, key, value, &trigger)
                         {
-                            dispatch_evdev_push_to_talk(&handler, event);
+                            dispatch_evdev_push_to_talk(&handler, event, dispatch_mode);
                         }
                     }
                 }
@@ -195,12 +250,12 @@ fn run_evdev_worker(
         for index in failed_devices.into_iter().rev() {
             let opened_device = devices.swap_remove(index);
             if let Some(event) = state.remove_device(opened_device.id, &trigger) {
-                dispatch_evdev_push_to_talk(&handler, event);
+                dispatch_evdev_push_to_talk(&handler, event, dispatch_mode);
             }
         }
 
         if devices.is_empty() {
-            dispatch_state_reset(&handler, &mut state);
+            dispatch_state_reset(&handler, &mut state, dispatch_mode);
             bail!("all evdev hotkey input devices became unavailable");
         }
 
@@ -208,15 +263,35 @@ fn run_evdev_worker(
     }
 }
 
-fn dispatch_state_reset(handler: &SharedHotkeyHandler, state: &mut EvdevHotkeyState) {
+fn dispatch_state_reset(
+    handler: &SharedHotkeyHandler,
+    state: &mut EvdevHotkeyState,
+    dispatch_mode: EvdevDispatchMode,
+) {
     if let Some(event) = state.reset() {
-        dispatch_evdev_push_to_talk(handler, event);
+        dispatch_evdev_push_to_talk(handler, event, dispatch_mode);
     }
 }
 
-fn dispatch_evdev_push_to_talk(handler: &SharedHotkeyHandler, event: PushToTalkEvent) {
-    if std::env::var_os("VOICE_DEBUG").is_some() {
-        eprintln!("Evdev push-to-talk event: {event:?}");
+fn dispatch_evdev_push_to_talk(
+    handler: &SharedHotkeyHandler,
+    event: PushToTalkEvent,
+    dispatch_mode: EvdevDispatchMode,
+) {
+    if dispatch_mode == EvdevDispatchMode::ReleaseGuard && event != PushToTalkEvent::Released {
+        if hotkey_debug_enabled() {
+            eprintln!("Evdev release guard observed push-to-talk event: {event:?}");
+        }
+        return;
+    }
+
+    if hotkey_debug_enabled() {
+        match dispatch_mode {
+            EvdevDispatchMode::Full => eprintln!("Evdev push-to-talk event: {event:?}"),
+            EvdevDispatchMode::ReleaseGuard => {
+                eprintln!("Evdev release guard push-to-talk event: {event:?}");
+            }
+        }
     }
     dispatch_push_to_talk(handler, event);
 }

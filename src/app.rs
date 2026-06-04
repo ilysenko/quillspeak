@@ -1,6 +1,5 @@
-use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 
@@ -25,9 +24,9 @@ pub fn run() -> Result<()> {
     let store = ConfigStore::new()?;
     let _config_path = store.path().to_path_buf();
     let loaded_config = store.load()?;
-    let config = Rc::new(RefCell::new(loaded_config));
+    let config = Arc::new(Mutex::new(loaded_config));
 
-    let hotkey_backend: Rc<dyn HotkeyBackend> = Rc::new(AutoHotkeyBackend::default());
+    let hotkey_backend: Arc<dyn HotkeyBackend> = Arc::new(AutoHotkeyBackend::default());
     let whisper_recognizer: Arc<dyn WhisperRecognizer> =
         Arc::new(RuntimeWhisperRecognizer::default());
     let audio_recorder: Arc<dyn AudioRecorder> = Arc::new(CpalAudioRecorder::default());
@@ -74,16 +73,16 @@ pub fn run() -> Result<()> {
     }))?;
 
     configure_backends(
-        &config.borrow(),
+        &config.lock().expect("app config state was poisoned"),
         &hotkey_backend,
         &audio_recorder,
         &whisper_recognizer,
     )?;
 
     let settings_window = Rc::new(SettingsWindow::new(
-        Rc::clone(&config),
+        Arc::clone(&config),
         store,
-        Rc::clone(&hotkey_backend),
+        Arc::clone(&hotkey_backend),
         Arc::clone(&audio_recorder),
         Arc::clone(&whisper_recognizer),
     ));
@@ -134,7 +133,7 @@ pub fn run() -> Result<()> {
 
 fn configure_backends(
     config: &AppConfig,
-    hotkey_backend: &Rc<dyn HotkeyBackend>,
+    hotkey_backend: &Arc<dyn HotkeyBackend>,
     audio_recorder: &Arc<dyn AudioRecorder>,
     whisper_recognizer: &Arc<dyn WhisperRecognizer>,
 ) -> Result<()> {
