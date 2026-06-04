@@ -1,0 +1,23 @@
+[package]
+name = "voice"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+gpu-all = ["gpu-cuda", "gpu-vulkan"]
+gpu-cuda = ["whisper-rs/cuda"]
+gpu-vulkan = ["whisper-rs/vulkan"]
+
+[dependencies]
+anyhow = "1"
+appindicator3 = "0.3"
+directories = "6"
+cpal = "0.17.3"
+evdev = "0.13.2"
+global-hotkey = "0.8"
+gtk = { version = "0.18", features = ["v3_24"] }
+ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+whisper-rs = { version = "=0.13.2", default-features = false }
