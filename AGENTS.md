@@ -1,225 +1,245 @@
-# Voice AGENTS.md
+# MyApp AGENTS.md
+
+This file is guidance for AI coding agents working in this repository.
 
 ## Project Goal
 
-Build a small Rust Linux desktop app for Ubuntu/Linux that provides push-to-talk
-voice transcription. The first iteration is a minimal working prototype:
+Build a minimal Rust Linux desktop prototype for a future voice transcription
+tool. The app should behave like a background desktop utility from the user's
+point of view, while remaining a normal foreground process during development.
 
-- a tray/status icon in the desktop panel,
-- a Settings window,
-- local config save/load,
-- clean interfaces for hotkey, audio recording, and Whisper recognition,
-- real microphone capture feeding the selected Whisper model.
+The current goal is architecture and desktop behavior only:
 
-In the current prototype, model loading, direct Whisper transcription,
-microphone capture, and global push-to-talk shortcut registration are
-implemented. Packaging, model discovery/download tooling, and more polished
-runtime status are still future work.
+- a Rust workspace with `app`, `daemon`, and `shared` crates,
+- a GTK4/libadwaita main app,
+- a tray/top-bar StatusNotifierItem indicator,
+- a settings window opened only from the indicator menu,
+- app-owned TOML configuration,
+- zbus-based D-Bus between the main app and the optional daemon,
+- placeholder recording/transcription functions that only log messages.
+
+Do not implement real audio recording, Whisper, evdev/libinput input reading,
+X11 hotkey capture, Wayland portal shortcuts, Flatpak packaging, or `.deb`
+packaging unless explicitly requested.
 
 ## Current Architecture
 
-The app is a single Rust binary using an egui/eframe Settings window and a
-StatusNotifierItem/D-Bus tray implementation through the `ksni` crate as the
-primary tray backend. GTK3 remains initialized for the legacy AppIndicator tray
-fallback only.
+The workspace has three crates:
 
-Modules:
+- `crates/app`: builds `myapp`, the main GTK4/libadwaita desktop app.
+- `crates/daemon`: builds `myapp-daemon`, the optional input daemon stub.
+- `crates/shared`: shared config structs, D-Bus constants, protocol DTOs, and
+  common enums used by both binaries.
 
-- `app`: starts GTK for tray fallback compatibility, loads config, wires
-  services, creates the tray and settings launcher, and enters the GTK main
-  loop.
-- `config`: owns `AppConfig` and `ConfigStore`; stores settings as TOML in
-  `~/.config/voice/voice.toml` through XDG base directories.
-- `tray`: owns tray/status icon logic behind `TrayBackend`; the primary backend
-  is `StatusNotifierTray` and the legacy fallback is `AppIndicatorTray`.
-- `activity`: owns the push-to-talk state machine for idle, recording,
-  processing, and clipboard-copy completion. It updates tray state through
-  `TrayBackend` and sends microphone stop/conversion plus Whisper work to a
-  background worker thread so GTK stays responsive and release immediately
-  changes the tray state from recording to processing. Clipboard writes use
-  `arboard`, which selects Wayland data-control on Wayland and falls back to X11
-  clipboard support when appropriate.
-- `settings`: owns the egui/eframe Settings window, visual hotkey recorder,
-  microphone selector, model picker, and save actions. It launches one
-  long-lived eframe runtime in a dedicated thread so the tray and activity loop
-  remain on the GTK main thread. Closing Settings hides the native window
-  instead of ending the winit event loop; opening Settings again sends a show
-  command to the existing runtime.
-- `hotkey`: defines `HotkeyBackend`, parses user hotkey strings, and provides
-  `AutoHotkeyBackend`. It tries the XDG Desktop Portal GlobalShortcuts API
-  first, then Linux evdev by reading `/dev/input/event*`, then `global-hotkey`
-  as a real-X11 fallback. Portal and X11 events pass through
-  `HotkeyEdgeFilter`; evdev tracks exact key press/release state and ignores
-  kernel auto-repeat.
-- `audio`: defines `AudioRecorder`; current implementation is
-  `CpalAudioRecorder`, which captures Linux input audio through CPAL/ALSA,
-  downmixes to mono, and resamples to Whisper's expected 16 kHz `i16` buffer.
-  `StubAudioRecorder` is retained for tests/future mocks.
-- `whisper`: defines `WhisperRecognizer`; current implementation is
-  `RuntimeWhisperRecognizer` backed by `whisper-rs`, with `StubWhisperRecognizer`
-  retained for tests/future mocks.
+The main app is intentionally not daemonized yet. It runs in the foreground so
+developers can start it with `cargo run -p app --bin myapp`, read logs in the
+terminal, and stop it with Ctrl-C. Internally, it still behaves like a
+background desktop app: startup shows no window, the process stays alive through
+the application lifecycle hold, and the settings window is opened from the tray.
 
-The tray code is intentionally isolated so the app is not tightly coupled to any
-single tray implementation. StatusNotifierItem uses D-Bus-based desktop
-integration and works on both Wayland and X11 environments where the desktop
-shell provides a tray host. If SNI is unavailable, the app falls back to
-Ayatana/AppIndicator through `appindicator3`. That fallback may print an
-upstream deprecation warning for `libayatana-appindicator`; it should only be
-used when the primary SNI path cannot start.
-
-Tray visual state is intentionally app-owned rather than theme-owned:
-
-- `Idle`: white icon.
-- `Recording`: red icon.
-- `Processing`: yellow icon.
-
-After a transcription is copied to the clipboard, the state returns immediately
-to `Idle`. StatusNotifierItem uses generated ARGB pixmaps. AppIndicator uses the
-embedded SVG assets from `assets/icons` and materializes them under
-`~/.cache/voice/icons` at runtime when the legacy fallback is needed.
-
-The hotkey code is intentionally isolated behind `HotkeyBackend`. The preferred
-path is XDG Desktop Portal GlobalShortcuts because it is the desktop-mediated
-Wayland-safe API and emits both activated and deactivated signals. Portal
-registrations subscribe to activated/deactivated signals before reporting the
-binding as ready, and each registration owns its own edge filter so shutdown
-can release a stuck pressed state without touching a newer registration. If the
-portal is active and evdev is readable, evdev also runs in release-guard mode:
-it observes the configured combination but only dispatches release events. If
-the portal is unavailable or declined, the evdev backend runs as the full
-fallback and dispatches both press and release. Evdev does not block the
-desktop or focused app from receiving the same keys, so a focused terminal can
-still echo Alt/Escape sequences such as `^[` while the app records. Evdev
-requires read access to `/dev/input/event*`, which is a sensitive permission
-because readable input devices can expose keyboard events. The configured
-hotkey is parsed from Settings/config each time `configure_push_to_talk` is
-called, so changing the hotkey in Settings re-registers it without restarting
-the app. If registration fails while saving Settings, the config file is not
-updated and the previous working binding remains active.
-
-## Important Commands
+The optional daemon is a separate process. In this prototype it does not read
+real keyboard events. It only exposes basic D-Bus methods and provides CLI
+simulation commands:
 
 ```sh
-cargo fmt --check
-cargo check
-cargo test
-cargo run
-VOICE_DEBUG=1 cargo run
-cargo build --release
-cargo build --release --features gpu-vulkan
-cargo check --features gpu-cuda
-cargo check --features gpu-all
+cargo run -p daemon --bin myapp-daemon -- --hotkey-down
+cargo run -p daemon --bin myapp-daemon -- --hotkey-up
 ```
 
-Ubuntu development packages expected for this iteration:
+Those commands call the main app's D-Bus methods. `HotkeyDown` maps to
+`start_recording()`, and `HotkeyUp` maps to `stop_recording()`.
+
+## Important Files
+
+- `Cargo.toml`: workspace definition and shared dependency versions.
+- `crates/shared/src/config.rs`: `AppConfig`, hotkey mode/backend enums, and
+  config validation.
+- `crates/shared/src/protocol.rs`: D-Bus names, paths, interfaces, daemon
+  status enum, and hotkey wire config.
+- `crates/app/src/app.rs`: main foreground runtime, Ctrl-C handling, command
+  pump, lifecycle hold, tray startup, settings startup, and quit path.
+- `crates/app/src/tray.rs`: StatusNotifierItem tray implementation and menu.
+- `crates/app/src/settings.rs`: GTK4/libadwaita settings window.
+- `crates/app/src/dbus.rs`: app-side D-Bus service for daemon-to-app events.
+- `crates/app/src/daemon_client.rs`: app-side daemon status and config sync
+  client stub.
+- `crates/app/src/hotkey/mod.rs`: pluggable hotkey backend boundary.
+- `crates/app/src/recording.rs`: placeholder recording/transcription functions.
+- `crates/daemon/src/main.rs`: optional daemon service stub and CLI simulation.
+- `packaging/systemd/user/myapp-input-daemon.service`: future/manual user
+  service for the optional daemon only.
+- `README.md`: user-facing build and run instructions.
+
+## Runtime Requirements
+
+The app must always support no-daemon mode:
+
+- daemon absence must never block app startup,
+- tray actions must work without the daemon,
+- settings must work without the daemon,
+- manual `Start Recording` and `Stop Recording` must work without the daemon,
+- daemon errors should be logged and reflected as status, not treated as fatal.
+
+During development, the main app must remain a normal foreground process:
+
+- no fork/detach,
+- no systemd service for the main app yet,
+- Ctrl-C should use the same clean quit path as tray `Quit`,
+- logs should remain visible in the terminal.
+
+Keep the architecture ready for future daemonization or autostart by routing
+external events through the `AppCommand` command path instead of directly
+touching GTK or application state from worker threads.
+
+## D-Bus Contract
+
+Shared constants currently use:
+
+- app bus name: `org.example.MyApp.App`
+- app object path: `/org/example/MyApp/App`
+- app interface: `org.example.MyApp.App1`
+- daemon bus name: `org.example.MyApp.InputDaemon`
+- daemon object path: `/org/example/MyApp/InputDaemon`
+- daemon interface: `org.example.MyApp.InputDaemon1`
+
+App-side methods:
+
+- `HotkeyDown()`
+- `HotkeyUp()`
+- `DaemonStatus(status: String)`
+
+Daemon-side methods:
+
+- `Ping() -> bool`
+- `GetDaemonStatus() -> String`
+- `UpdateHotkeyConfig(config) -> bool`
+
+If you change this contract, update `shared`, app, daemon, README, and tests
+together.
+
+## Configuration
+
+The main app owns user configuration. Do not make the daemon read the app's
+config file directly.
+
+Default config:
+
+```toml
+hotkey = "Ctrl+Space"
+mode = "push_to_talk"
+hotkey_backend = "disabled"
+```
+
+The app stores config under the normal user config directory, currently:
+
+```text
+~/.config/myapp/config.toml
+```
+
+Later, if packaged as Flatpak, this should naturally live under the Flatpak app
+config directory. The daemon may get its own host-side cache later, but current
+hotkey config should be sent from the app to the daemon over D-Bus.
+
+## UI Rules
+
+The main app uses GTK4 and libadwaita.
+
+Required behavior:
+
+- do not show a window at startup,
+- show a tray/top-bar indicator,
+- indicator menu must contain `Show Settings`, `Start Recording`,
+  `Stop Recording`, and `Quit`,
+- `Show Settings` opens the settings window,
+- closing the settings window hides it instead of quitting the app,
+- tray `Quit` terminates the app,
+- Ctrl-C terminates the app in development mode.
+
+Keep GTK/libadwaita object access on the GTK main thread. Tray callbacks, D-Bus
+handlers, and Ctrl-C handlers should send `AppCommand`s.
+
+## Hotkey Architecture
+
+Keep hotkey handling pluggable. Intended future backends:
+
+- `DisabledBackend`
+- `X11Backend`
+- `PortalBackend`
+- `DaemonBackend`
+
+Only `DisabledBackend`, a `DaemonBackend` client stub, and manual tray actions
+belong in the current prototype. Do not add real X11, portal, or evdev hotkey
+capture until explicitly requested.
+
+Wayland advanced hotkey mode should be considered unavailable when the daemon
+is missing. X11 can later support in-process hotkeys, but this prototype should
+not implement real X11 capture.
+
+## Commands
+
+Useful checks:
 
 ```sh
-sudo apt install libgtk-3-dev libayatana-appindicator3-dev pkg-config
-sudo apt install libasound2-dev
+cargo fmt --all --check
+cargo check -p shared -p daemon
+cargo test -p shared -p daemon
 ```
 
-`libayatana-appindicator3-dev` is currently needed for the legacy fallback.
-The primary tray backend does not use the deprecated Ayatana library.
-`libasound2-dev` is needed by CPAL's ALSA backend for microphone capture.
-Evdev push-to-talk requires the running user to have read access to
-`/dev/input/event*`; on development machines this is often handled by membership
-in the `input` group plus a fresh login session.
+Full app checks require GTK system development packages:
 
-`ashpd` must stay on its `async-io` feature, not `tokio`. The tray uses `ksni`
-with `zbus/async-io`; enabling `zbus/tokio` through `ashpd/tokio` can make the
-StatusNotifier path panic at startup with "there is no reactor running".
+```sh
+sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev
+cargo check -p app
+```
 
-`whisper-rs` is pinned to `0.13.2`. Its Vulkan feature compiles in this project,
-while checked newer versions `0.14.4`, `0.15.1`, and `0.16.0` fail to compile
-their Vulkan module because of missing upstream FFI symbols. Do not upgrade the
-crate casually until the Vulkan feature is revalidated or the binding is
-replaced.
+Run commands:
+
+```sh
+cargo run -p app --bin myapp
+cargo run -p daemon --bin myapp-daemon
+cargo run -p daemon --bin myapp-daemon -- --hotkey-down
+cargo run -p daemon --bin myapp-daemon -- --hotkey-up
+```
+
+This container may not have `gtk4.pc`, `libadwaita-1.pc`, or
+`graphene-gobject-1.0.pc` installed. If app builds fail at pkg-config detection,
+report the missing system package issue instead of rewriting the app away from
+GTK4/libadwaita.
 
 ## Coding Conventions
 
-- Keep modules small and focused.
-- Prefer explicit traits at system boundaries: tray, hotkey, audio, Whisper.
-- Keep GTK-specific code in the concrete tray fallback and app bootstrap only.
-- Keep egui-specific code in `settings`.
-- Store persistent settings through `config`; do not write config files from UI
-  code directly.
-- Use `anyhow::Result` at application boundaries and stub interfaces.
-- Avoid hardcoded system paths. Use XDG locations for user config.
-- Keep model files out of git; local models belong under `models/` or an XDG
-  data directory.
-- Keep long-running recording stop/conversion and transcription work off the GTK
-  main loop.
-- For Whisper transcription, use `language = auto` but do not enable
-  `detect_language`; on the current whisper.cpp binding that can return after
-  language detection with zero text segments.
-- Leave TODO comments at future integration points, but do not fake completed
-  integrations.
+- Keep crates and modules small.
+- Keep shared wire/config types in `shared`; do not duplicate protocol strings.
+- Use `anyhow::Result` at binary/runtime boundaries.
+- Keep placeholder functions honest: log what would happen, but do not fake
+  completed integrations.
+- Do not add Electron or Tauri.
+- Do not require sudo for the main app.
+- Do not make daemon availability a startup requirement.
+- Avoid hardcoded user paths; use XDG/directories helpers.
+- Add tests for pure logic in `shared` and non-GTK app modules when possible.
+- Treat existing user changes as intentional. Do not revert unrelated work.
 
-## Current Implementation Status
+## Current Verification State
 
-Implemented:
+At the time this file was written:
 
-- Rust binary scaffold.
-- egui/eframe Settings window launched from the tray. The Settings runtime is
-  kept alive for the process lifetime; close hides the window and later opens
-  show/focus the same winit event loop. The Settings UI forces a light theme,
-  uses a larger initial native window, and keeps Save/Close visible in a bottom
-  action bar.
-- StatusNotifierItem tray menu with `Settings` and `Quit`.
-- Legacy AppIndicator fallback for environments where SNI is unavailable.
-- Dynamic fallback activation if the SNI watcher goes offline while the app is
-  running.
-- Tray visual state switching for idle, recording, and processing.
-- Optional runtime diagnostic logging with `VOICE_DEBUG=1` for captured audio
-  duration and levels, Whisper segments, clipboard copy success, raw hotkey
-  backend events, filtered push-to-talk edges, and activity state transitions.
-- XDG TOML config save/load.
-- Visual push-to-talk hotkey recorder through `egui-keybind`. It currently
-  supports Ctrl/Alt/Shift plus the key set accepted by `HotkeySpec`; existing
-  `Super` config strings remain parser-supported but are not visually captured
-  by egui yet.
-- Microphone selector with system default plus enumerated CPAL input devices.
-- Text entry plus native/portal file chooser for Whisper model path/name.
-- Real Whisper model loading/transcription backend through `whisper-rs`.
-- Automatic Whisper backend preference in config, defaulting to `auto`.
-- Runtime backend status in Settings, for example `Auto: CPU` or
-  `Auto: Vulkan GPU`.
-- Global push-to-talk hotkey handling through XDG Desktop Portal
-  GlobalShortcuts, with evdev `/dev/input/event*` release guard/fallback and
-  real-X11 fallback.
-- Dynamic hotkey re-registration from Settings without app restart.
-- Hotkey parser for user-facing strings such as `Ctrl+Alt+Space`.
-- Evdev press/release state tracking plus X11 hotkey edge filtering so OS key
-  auto-repeat does not restart or stop push-to-talk recording.
-- Real CPAL microphone recording with mono 16 kHz conversion for Whisper.
-- Empty audio buffers skip Whisper transcription and return the activity state
-  to `Idle` immediately.
-- Push-to-talk workflow controller records on press, processes on release, and
-  prints and copies non-empty transcription results to the GTK clipboard.
+- `cargo fmt --all --check` passes.
+- `cargo check -p shared -p daemon` passes.
+- `cargo test -p shared -p daemon` passes.
+- `cargo check -p app` is blocked in the current container by missing GTK4 and
+  related pkg-config system libraries, not by the no-daemon architecture.
 
-Not implemented yet:
+## Future Work
 
-- Model discovery/download tooling in the GUI.
-- Packaged release profiles/installers.
-- Tray/menu status details beyond icon color.
+Possible later additions, only when requested:
 
-## Next Planned Steps
-
-- Add Whisper model discovery/download tooling. Models are expected to be
-  downloaded by a separate command-line utility, not by the GUI in this first
-  design.
-- Add packaged build profiles for CPU-only, Vulkan-capable, and CUDA-capable
-  binaries. `cargo build --features gpu-vulkan` passes locally. Local CUDA and
-  `gpu-all` full builds currently fail at link time because `cublas`, `cudart`,
-  `cublasLt`, and `culibos` are not installed in the linker path; `cargo check`
-  for those features passes.
-- Add richer runtime status in the tray/menu, such as selected microphone,
-  active backend, last duration, and last error.
-- Add a cleaner distribution-time permission story for evdev, such as a small
-  helper, udev/logind integration, or a documented installer step.
-- Add visual capture for `Super`/logo shortcuts if egui exposes that modifier
-  cleanly or we switch the recorder to a lower-level winit event path.
-- Revisit the legacy fallback if a maintained `libayatana-appindicator-glib`
-  binding becomes the better option.
-- Prepare Nix/NixOS packaging later with explicit native dependencies and a
-  `flake.nix`/devShell.
+- real X11 in-process hotkey backend,
+- XDG GlobalShortcuts portal backend,
+- Wayland advanced daemon backend with precise key down/up detection,
+- evdev/libinput input reading inside the optional daemon,
+- microphone recording,
+- Whisper integration,
+- text insertion,
+- Flatpak packaging for the main app,
+- `.deb` packaging for the daemon.

@@ -1,0 +1,10 @@
+[Unit]
+Description=MyApp Input Daemon
+
+[Service]
+ExecStart=/usr/bin/myapp-daemon
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+
