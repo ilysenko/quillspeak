@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use directories::BaseDirs;
 use shared::{
-    AppConfig, DAEMON_BUS_NAME, DAEMON_INTERFACE, DAEMON_OBJECT_PATH, DaemonStatus, HotkeyConfig,
+    DAEMON_BUS_NAME, DAEMON_INTERFACE, DAEMON_OBJECT_PATH, DaemonStatus, ShortcutRuntimeConfig,
 };
 use tracing::{debug, warn};
 use zbus::blocking::{Connection, Proxy};
@@ -14,12 +14,11 @@ pub struct DaemonClient;
 
 impl DaemonClient {
     pub fn status(&self) -> DaemonStatus {
-        match self.ping() {
-            Ok(true) => DaemonStatus::Running,
-            Ok(false) => DaemonStatus::InstalledButNotRunning,
+        match self.get_daemon_status() {
+            Ok(status) => status,
             Err(error) if is_permission_error(&error) => DaemonStatus::PermissionError,
             Err(error) => {
-                debug!(?error, "daemon ping failed");
+                debug!(?error, "daemon status query failed");
                 if daemon_appears_installed() {
                     DaemonStatus::InstalledButNotRunning
                 } else {
@@ -27,12 +26,6 @@ impl DaemonClient {
                 }
             }
         }
-    }
-
-    pub fn ping(&self) -> Result<bool> {
-        let connection = Connection::session().context("failed to connect to session bus")?;
-        let proxy = daemon_proxy(&connection)?;
-        proxy.call("Ping", &()).context("failed to ping daemon")
     }
 
     pub fn get_daemon_status(&self) -> Result<DaemonStatus> {
@@ -44,15 +37,14 @@ impl DaemonClient {
         Ok(DaemonStatus::from(status.as_str()))
     }
 
-    pub fn update_hotkey_config(&self, config: &AppConfig) -> Result<()> {
+    pub fn update_shortcut_config(&self, config: &ShortcutRuntimeConfig) -> Result<()> {
         let connection = Connection::session().context("failed to connect to session bus")?;
         let proxy = daemon_proxy(&connection)?;
-        let hotkey_config = HotkeyConfig::from(config);
         let updated: bool = proxy
-            .call("UpdateHotkeyConfig", &hotkey_config)
-            .context("failed to send hotkey config to daemon")?;
+            .call("UpdateShortcutConfig", config)
+            .context("failed to send shortcut config to daemon")?;
         if !updated {
-            warn!("daemon rejected hotkey config update");
+            warn!("daemon rejected shortcut config update");
         }
         Ok(())
     }
@@ -71,7 +63,7 @@ fn daemon_proxy(connection: &Connection) -> Result<Proxy<'_>> {
 #[cfg(test)]
 pub fn resolve_daemon_status(ping_result: Result<bool, String>, installed: bool) -> DaemonStatus {
     match ping_result {
-        Ok(true) => DaemonStatus::Running,
+        Ok(true) => DaemonStatus::RunningConfigured,
         Ok(false) => DaemonStatus::InstalledButNotRunning,
         Err(error) if error.contains("AccessDenied") || error.contains("permission") => {
             DaemonStatus::PermissionError
@@ -128,7 +120,7 @@ mod tests {
     fn daemon_status_resolution_handles_running_and_permission_errors() {
         assert_eq!(
             resolve_daemon_status(Ok(true), false),
-            DaemonStatus::Running
+            DaemonStatus::RunningConfigured
         );
         assert_eq!(
             resolve_daemon_status(Err("AccessDenied".to_string()), true),

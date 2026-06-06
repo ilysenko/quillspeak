@@ -69,13 +69,19 @@ The main app owns user settings and writes TOML to:
 Default config:
 
 ```toml
-hotkey = "Ctrl+Space"
+schema_version = 1
 mode = "push_to_talk"
 hotkey_backend = "disabled"
+
+[shortcuts.push_to_talk]
+accelerator = "Ctrl+Space"
+enabled = true
 ```
 
-The daemon does not read this config directly. When the daemon backend is used
-later, the app will send current hotkey config to the daemon over D-Bus.
+The daemon does not read this config directly. The app sends the current
+shortcut runtime config to the daemon over D-Bus. The daemon stores a
+last-known cache at `~/.config/myapp-input-daemon/shortcut-cache.toml` so it can
+start before the app and still know the last configured shortcuts.
 
 ## D-Bus Prototype
 
@@ -86,9 +92,9 @@ Session bus names and object paths are defined in `shared`:
 - daemon bus: `org.example.MyApp.InputDaemon`
 - daemon object: `/org/example/MyApp/InputDaemon`
 
-The app exposes `HotkeyDown`, `HotkeyUp`, and `DaemonStatus` methods for the
-daemon prototype. The daemon exposes `Ping`, `GetDaemonStatus`, and
-`UpdateHotkeyConfig`.
+The app exposes `HotkeyDown`, `HotkeyUp`, `DaemonStatus`, and
+`GetShortcutConfig` methods for the daemon prototype. The daemon exposes
+`Ping`, `GetDaemonStatus`, and `UpdateShortcutConfig`.
 
 ## Optional Daemon Service
 

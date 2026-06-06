@@ -33,18 +33,19 @@ impl ConfigStore {
             .with_context(|| format!("failed to read config {}", self.path.display()))?;
         let config: AppConfig = toml::from_str(&contents)
             .with_context(|| format!("failed to parse config {}", self.path.display()))?;
-        config.validate()?;
+        let config = config.normalized()?;
         Ok(config)
     }
 
     pub fn save(&self, config: &AppConfig) -> Result<()> {
-        config.validate()?;
+        let config = config.clone().normalized()?;
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).with_context(|| {
                 format!("failed to create config directory {}", parent.display())
             })?;
         }
-        let contents = toml::to_string_pretty(config).context("failed to encode config as TOML")?;
+        let contents =
+            toml::to_string_pretty(&config).context("failed to encode config as TOML")?;
         fs::write(&self.path, contents)
             .with_context(|| format!("failed to write config {}", self.path.display()))?;
         Ok(())

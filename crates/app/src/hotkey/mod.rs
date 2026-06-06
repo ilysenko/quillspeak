@@ -1,5 +1,5 @@
 use anyhow::Result;
-use shared::{AppConfig, HotkeyBackend as HotkeyBackendKind};
+use shared::{AppConfig, HotkeyBackend as HotkeyBackendKind, ShortcutRuntimeConfig};
 use tracing::info;
 
 use crate::daemon_client::DaemonClient;
@@ -40,7 +40,8 @@ impl HotkeyBackend for DaemonBackend {
     }
 
     fn configure(&self, config: &AppConfig) -> Result<()> {
-        self.client.update_hotkey_config(config)
+        self.client
+            .update_shortcut_config(&ShortcutRuntimeConfig::from(config))
     }
 }
 

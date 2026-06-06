@@ -19,7 +19,7 @@ ctrlc = "3.5"
 directories = "6"
 gtk4 = "0.11"
 ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
-libadwaita = "0.9"
+libadwaita = { version = "0.9", features = ["v1_2"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 toml = "0.9"

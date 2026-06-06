@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use zvariant::Type;
 
-use crate::config::{AppConfig, HotkeyBackend, HotkeyMode};
+use crate::config::{AppConfig, ShortcutAction};
 
 pub const APP_ID: &str = "org.example.MyApp";
 pub const APP_BUS_NAME: &str = "org.example.MyApp.App";
@@ -16,7 +16,8 @@ pub const DAEMON_INTERFACE: &str = "org.example.MyApp.InputDaemon1";
 pub enum DaemonStatus {
     NotInstalled,
     InstalledButNotRunning,
-    Running,
+    RunningUnconfigured,
+    RunningConfigured,
     PermissionError,
 }
 
@@ -25,7 +26,8 @@ impl DaemonStatus {
         match self {
             Self::NotInstalled => "not_installed",
             Self::InstalledButNotRunning => "installed_but_not_running",
-            Self::Running => "running",
+            Self::RunningUnconfigured => "running_unconfigured",
+            Self::RunningConfigured => "running_configured",
             Self::PermissionError => "permission_error",
         }
     }
@@ -34,16 +36,22 @@ impl DaemonStatus {
         match self {
             Self::NotInstalled => "Not installed",
             Self::InstalledButNotRunning => "Installed but not running",
-            Self::Running => "Running",
+            Self::RunningUnconfigured => "Running unconfigured",
+            Self::RunningConfigured => "Running configured",
             Self::PermissionError => "Permission error",
         }
+    }
+
+    pub const fn is_running(self) -> bool {
+        matches!(self, Self::RunningConfigured | Self::RunningUnconfigured)
     }
 }
 
 impl From<&str> for DaemonStatus {
     fn from(value: &str) -> Self {
         match value {
-            "running" => Self::Running,
+            "running" | "running_configured" => Self::RunningConfigured,
+            "running_unconfigured" => Self::RunningUnconfigured,
             "permission_error" => Self::PermissionError,
             "installed_but_not_running" => Self::InstalledButNotRunning,
             "not_installed" => Self::NotInstalled,
@@ -53,30 +61,47 @@ impl From<&str> for DaemonStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-pub struct HotkeyConfig {
-    pub hotkey: String,
-    pub mode: String,
-    pub hotkey_backend: String,
+pub struct ShortcutRuntimeBinding {
+    pub action: String,
+    pub accelerator: String,
+    pub enabled: bool,
 }
 
-impl From<&AppConfig> for HotkeyConfig {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ShortcutRuntimeConfig {
+    pub schema_version: u32,
+    pub shortcuts: Vec<ShortcutRuntimeBinding>,
+}
+
+impl ShortcutRuntimeConfig {
+    pub fn is_configured(&self) -> bool {
+        self.shortcuts
+            .iter()
+            .any(|shortcut| shortcut.enabled && !shortcut.accelerator.trim().is_empty())
+    }
+}
+
+impl From<&AppConfig> for ShortcutRuntimeConfig {
     fn from(config: &AppConfig) -> Self {
         Self {
-            hotkey: config.hotkey.clone(),
-            mode: config.mode.as_str().to_string(),
-            hotkey_backend: config.hotkey_backend.as_str().to_string(),
+            schema_version: config.schema_version,
+            shortcuts: config
+                .shortcuts
+                .iter()
+                .into_iter()
+                .map(|(action, binding)| ShortcutRuntimeBinding {
+                    action: action.as_str().to_string(),
+                    accelerator: binding.accelerator.clone(),
+                    enabled: binding.enabled,
+                })
+                .collect(),
         }
     }
 }
 
-impl From<HotkeyConfig> for AppConfig {
-    fn from(config: HotkeyConfig) -> Self {
-        Self {
-            hotkey: config.hotkey,
-            mode: HotkeyMode::try_from(config.mode.as_str()).unwrap_or_default(),
-            hotkey_backend: HotkeyBackend::try_from(config.hotkey_backend.as_str())
-                .unwrap_or_default(),
-        }
+impl ShortcutRuntimeBinding {
+    pub fn action(&self) -> Option<ShortcutAction> {
+        ShortcutAction::try_from(self.action.as_str()).ok()
     }
 }
 
@@ -91,7 +116,14 @@ mod tests {
             DaemonStatus::InstalledButNotRunning.display_label(),
             "Installed but not running"
         );
-        assert_eq!(DaemonStatus::Running.display_label(), "Running");
+        assert_eq!(
+            DaemonStatus::RunningUnconfigured.display_label(),
+            "Running unconfigured"
+        );
+        assert_eq!(
+            DaemonStatus::RunningConfigured.display_label(),
+            "Running configured"
+        );
         assert_eq!(
             DaemonStatus::PermissionError.display_label(),
             "Permission error"
@@ -107,11 +139,13 @@ mod tests {
     }
 
     #[test]
-    fn converts_config_to_wire_shape() {
-        let wire = HotkeyConfig::from(&AppConfig::default());
+    fn converts_config_to_runtime_shape() {
+        let wire = ShortcutRuntimeConfig::from(&AppConfig::default());
 
-        assert_eq!(wire.hotkey, "Ctrl+Space");
-        assert_eq!(wire.mode, "push_to_talk");
-        assert_eq!(wire.hotkey_backend, "disabled");
+        assert!(wire.is_configured());
+        assert_eq!(wire.shortcuts.len(), 1);
+        assert_eq!(wire.shortcuts[0].action, "push_to_talk");
+        assert_eq!(wire.shortcuts[0].accelerator, "Ctrl+Space");
+        assert!(wire.shortcuts[0].enabled);
     }
 }

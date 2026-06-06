@@ -55,7 +55,7 @@ Those commands call the main app's D-Bus methods. `HotkeyDown` maps to
 - `crates/shared/src/config.rs`: `AppConfig`, hotkey mode/backend enums, and
   config validation.
 - `crates/shared/src/protocol.rs`: D-Bus names, paths, interfaces, daemon
-  status enum, and hotkey wire config.
+  status enum, and shortcut runtime config DTOs.
 - `crates/app/src/app.rs`: main foreground runtime, Ctrl-C handling, command
   pump, lifecycle hold, tray startup, settings startup, and quit path.
 - `crates/app/src/tray.rs`: StatusNotifierItem tray implementation and menu.
@@ -112,7 +112,8 @@ Daemon-side methods:
 
 - `Ping() -> bool`
 - `GetDaemonStatus() -> String`
-- `UpdateHotkeyConfig(config) -> bool`
+- `GetShortcutConfig() -> ShortcutRuntimeConfig`
+- `UpdateShortcutConfig(config) -> bool`
 
 If you change this contract, update `shared`, app, daemon, README, and tests
 together.
@@ -122,12 +123,16 @@ together.
 The main app owns user configuration. Do not make the daemon read the app's
 config file directly.
 
-Default config:
+Current app config format:
 
 ```toml
-hotkey = "Ctrl+Space"
+schema_version = 1
 mode = "push_to_talk"
 hotkey_backend = "disabled"
+
+[shortcuts.push_to_talk]
+accelerator = "Ctrl+Space"
+enabled = true
 ```
 
 The app stores config under the normal user config directory, currently:
@@ -138,7 +143,9 @@ The app stores config under the normal user config directory, currently:
 
 Later, if packaged as Flatpak, this should naturally live under the Flatpak app
 config directory. The daemon may get its own host-side cache later, but current
-hotkey config should be sent from the app to the daemon over D-Bus.
+shortcut config should be sent from the app to the daemon over D-Bus. The daemon
+may store a host-side last-known cache, but that cache is disposable and app
+config always wins.
 
 ## UI Rules
 
@@ -160,7 +167,7 @@ handlers, and Ctrl-C handlers should send `AppCommand`s.
 
 ## Hotkey Architecture
 
-Keep hotkey handling pluggable. Intended future backends:
+Keep shortcut/hotkey handling pluggable. Intended future backends:
 
 - `DisabledBackend`
 - `X11Backend`
@@ -181,8 +188,8 @@ Useful checks:
 
 ```sh
 cargo fmt --all --check
-cargo check -p shared -p daemon
-cargo test -p shared -p daemon
+cargo check --workspace
+cargo test --workspace
 ```
 
 Full app checks require GTK system development packages:
@@ -229,6 +236,21 @@ At the time this file was written:
 - `cargo test -p shared -p daemon` passes.
 - `cargo check -p app` is blocked in the current container by missing GTK4 and
   related pkg-config system libraries, not by the no-daemon architecture.
+
+## Shortcut Config Sync
+
+The app is the source of truth for shortcut settings. Daemon config flow is
+two-way and idempotent:
+
+- app starts after daemon: app loads config and calls daemon
+  `UpdateShortcutConfig`;
+- daemon starts after app: daemon calls app `GetShortcutConfig`;
+- Settings Save: app saves config, reloads it, applies it, and calls daemon
+  `UpdateShortcutConfig`;
+- daemon stores the received runtime config as
+  `~/.config/myapp-input-daemon/shortcut-cache.toml`.
+
+The daemon must not read the app config file directly.
 
 ## Future Work
 

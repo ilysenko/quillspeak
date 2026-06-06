@@ -1,7 +1,8 @@
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
-use shared::{APP_BUS_NAME, APP_OBJECT_PATH, DaemonStatus};
+use shared::{APP_BUS_NAME, APP_OBJECT_PATH, DaemonStatus, ShortcutRuntimeConfig};
 use tracing::{error, info};
 use zbus::{blocking::connection, fdo, interface};
 
@@ -13,10 +14,13 @@ pub struct AppDbusHandle {
 }
 
 impl AppDbusHandle {
-    pub fn spawn(command_tx: mpsc::Sender<AppCommand>) -> Self {
+    pub fn spawn(
+        command_tx: mpsc::Sender<AppCommand>,
+        shortcut_config: Arc<Mutex<ShortcutRuntimeConfig>>,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
         let join_handle = thread::spawn(move || {
-            if let Err(error) = run_dbus_service(command_tx, shutdown_rx) {
+            if let Err(error) = run_dbus_service(command_tx, shortcut_config, shutdown_rx) {
                 error!(?error, "app D-Bus service stopped");
             }
         });
@@ -43,9 +47,13 @@ impl Drop for AppDbusHandle {
 
 fn run_dbus_service(
     command_tx: mpsc::Sender<AppCommand>,
+    shortcut_config: Arc<Mutex<ShortcutRuntimeConfig>>,
     shutdown_rx: mpsc::Receiver<()>,
 ) -> zbus::Result<()> {
-    let service = AppDbusService { command_tx };
+    let service = AppDbusService {
+        command_tx,
+        shortcut_config,
+    };
     let _connection = connection::Builder::session()?
         .name(APP_BUS_NAME)?
         .serve_at(APP_OBJECT_PATH, service)?
@@ -63,6 +71,7 @@ fn run_dbus_service(
 
 struct AppDbusService {
     command_tx: mpsc::Sender<AppCommand>,
+    shortcut_config: Arc<Mutex<ShortcutRuntimeConfig>>,
 }
 
 #[interface(name = "org.example.MyApp.App1")]
@@ -82,6 +91,16 @@ impl AppDbusService {
         self.send_command(AppCommand::DaemonStatusChanged(DaemonStatus::from(
             status.as_str(),
         )))
+    }
+
+    #[zbus(name = "GetShortcutConfig")]
+    fn get_shortcut_config(&self) -> fdo::Result<ShortcutRuntimeConfig> {
+        self.shortcut_config
+            .lock()
+            .map(|config| config.clone())
+            .map_err(|error| {
+                fdo::Error::Failed(format!("failed to read shortcut runtime config: {error}"))
+            })
     }
 }
 
