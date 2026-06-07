@@ -49,6 +49,12 @@ cargo run -p daemon --bin myapp-daemon -- --hotkey-up
 Those commands call the main app's D-Bus methods. `HotkeyDown` maps to
 `start_recording()`, and `HotkeyUp` maps to `stop_recording()`.
 
+Daemon status is intentionally redundant. The daemon notifies the app with
+`DaemonStatus` when it starts and after config updates, while the app also
+watches the daemon's D-Bus name with `NameOwnerChanged`. Keep both paths
+idempotent so app-first, daemon-first, daemon-restart, and no-daemon scenarios
+all stay correct.
+
 ## Important Files
 
 - `Cargo.toml`: workspace definition and shared dependency versions.
@@ -63,6 +69,8 @@ Those commands call the main app's D-Bus methods. `HotkeyDown` maps to
 - `crates/app/src/dbus.rs`: app-side D-Bus service for daemon-to-app events.
 - `crates/app/src/daemon_client.rs`: app-side daemon status and config sync
   client stub.
+- `crates/app/src/daemon_monitor.rs`: app-side D-Bus name watcher for daemon
+  appeared/vanished status changes.
 - `crates/app/src/hotkey/mod.rs`: pluggable hotkey backend boundary.
 - `crates/app/src/recording.rs`: placeholder recording/transcription functions.
 - `crates/daemon/src/main.rs`: optional daemon service stub and CLI simulation.
@@ -107,12 +115,12 @@ App-side methods:
 - `HotkeyDown()`
 - `HotkeyUp()`
 - `DaemonStatus(status: String)`
+- `GetShortcutConfig() -> ShortcutRuntimeConfig`
 
 Daemon-side methods:
 
 - `Ping() -> bool`
 - `GetDaemonStatus() -> String`
-- `GetShortcutConfig() -> ShortcutRuntimeConfig`
 - `UpdateShortcutConfig(config) -> bool`
 
 If you change this contract, update `shared`, app, daemon, README, and tests
@@ -146,6 +154,10 @@ config directory. The daemon may get its own host-side cache later, but current
 shortcut config should be sent from the app to the daemon over D-Bus. The daemon
 may store a host-side last-known cache, but that cache is disposable and app
 config always wins.
+
+The settings UI can record a shortcut while the recorder dialog is focused, but
+this is only a settings convenience. It must not be treated as global hotkey
+capture. Saving settings remains explicit through the `Save` button.
 
 ## UI Rules
 

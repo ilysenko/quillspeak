@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -9,7 +10,7 @@ use shared::{
     APP_BUS_NAME, APP_INTERFACE, APP_OBJECT_PATH, DAEMON_BUS_NAME, DAEMON_INTERFACE,
     DAEMON_OBJECT_PATH, DaemonStatus, ShortcutRuntimeConfig,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use zbus::{blocking::Proxy, blocking::connection, interface};
 
 #[derive(Debug, Parser)]
@@ -47,6 +48,11 @@ fn init_logging() {
 }
 
 fn send_hotkey_method(method_name: &'static str) -> Result<()> {
+    info!(
+        method = method_name,
+        bus_name = APP_BUS_NAME,
+        "calling app D-Bus method"
+    );
     let connection = zbus::blocking::Connection::session()
         .context("failed to connect to the D-Bus session bus")?;
     let proxy = Proxy::new(&connection, APP_BUS_NAME, APP_OBJECT_PATH, APP_INTERFACE)
@@ -62,25 +68,11 @@ fn send_hotkey_method(method_name: &'static str) -> Result<()> {
 
 fn run_daemon() -> Result<()> {
     let cache_store = DaemonCacheStore::new()?;
-    let shortcut_config = match request_shortcut_config_from_app() {
-        Ok(config) => {
-            cache_store.save(&config)?;
-            info!("loaded fresh shortcut config from app");
-            Some(config)
-        }
-        Err(error) => {
-            warn!(
-                ?error,
-                "could not request shortcut config from app; trying daemon cache"
-            );
-            cache_store.load()?
-        }
-    };
-
-    let daemon = InputDaemon {
-        shortcut_config,
-        cache_store,
-    };
+    let state = Arc::new(Mutex::new(DaemonState {
+        shortcut_config: None,
+        cache_store: cache_store.clone(),
+    }));
+    let daemon = InputDaemon::new(Arc::clone(&state));
     let _connection = connection::Builder::session()
         .context("failed to connect to the D-Bus session bus")?
         .name(DAEMON_BUS_NAME)
@@ -97,6 +89,11 @@ fn run_daemon() -> Result<()> {
         "myapp input daemon stub is running"
     );
 
+    if let Err(error) = initialize_shortcut_config(&state, &cache_store) {
+        warn!(?error, "failed to initialize daemon shortcut config");
+    }
+    notify_app_status(current_status(&state));
+
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
     ctrlc::set_handler(move || {
         let _ = shutdown_tx.send(());
@@ -109,17 +106,98 @@ fn run_daemon() -> Result<()> {
 }
 
 fn request_shortcut_config_from_app() -> Result<ShortcutRuntimeConfig> {
+    info!(
+        method = "GetShortcutConfig",
+        bus_name = APP_BUS_NAME,
+        "calling app D-Bus method"
+    );
     let connection = zbus::blocking::Connection::session()
         .context("failed to connect to the D-Bus session bus")?;
     let proxy = Proxy::new(&connection, APP_BUS_NAME, APP_OBJECT_PATH, APP_INTERFACE)
         .context("failed to create app D-Bus proxy")?;
-    proxy
+    let config = proxy
         .call("GetShortcutConfig", &())
-        .context("failed to call app GetShortcutConfig")
+        .context("failed to call app GetShortcutConfig")?;
+    log_shortcut_runtime_config("fresh app config", &config);
+    Ok(config)
+}
+
+fn notify_app_status(status: DaemonStatus) {
+    info!(
+        daemon_status = %status.display_label(),
+        method = "DaemonStatus",
+        bus_name = APP_BUS_NAME,
+        "calling app D-Bus method"
+    );
+
+    let result = (|| -> Result<()> {
+        let connection = zbus::blocking::Connection::session()
+            .context("failed to connect to the D-Bus session bus")?;
+        let proxy = Proxy::new(&connection, APP_BUS_NAME, APP_OBJECT_PATH, APP_INTERFACE)
+            .context("failed to create app D-Bus proxy")?;
+        proxy
+            .call::<_, _, ()>("DaemonStatus", &(status.as_wire_str().to_string(),))
+            .context("failed to call app DaemonStatus")?;
+        Ok(())
+    })();
+
+    if let Err(error) = result {
+        debug!(?error, "could not notify app about daemon status");
+    }
+}
+
+fn initialize_shortcut_config(
+    state: &Arc<Mutex<DaemonState>>,
+    cache_store: &DaemonCacheStore,
+) -> Result<()> {
+    let shortcut_config = match request_shortcut_config_from_app() {
+        Ok(config) => {
+            cache_store.save(&config)?;
+            info!("loaded fresh shortcut config from app");
+            Some(config)
+        }
+        Err(error) => {
+            warn!(
+                ?error,
+                "could not request shortcut config from app; trying daemon cache"
+            );
+            cache_store.load()?
+        }
+    };
+
+    if let Some(config) = shortcut_config {
+        log_shortcut_runtime_config("daemon initial config", &config);
+        let mut state = state
+            .lock()
+            .expect("daemon state mutex should not be poisoned during startup");
+        state.shortcut_config = Some(config);
+    } else {
+        info!("daemon started without shortcut config");
+    }
+
+    Ok(())
+}
+
+fn current_status(state: &Arc<Mutex<DaemonState>>) -> DaemonStatus {
+    state
+        .lock()
+        .map(|state| state.status())
+        .unwrap_or(DaemonStatus::PermissionError)
 }
 
 #[derive(Debug)]
 struct InputDaemon {
+    state: Arc<Mutex<DaemonState>>,
+}
+
+impl InputDaemon {
+    fn new(state: Arc<Mutex<DaemonState>>) -> Self {
+        Self { state }
+    }
+}
+
+#[derive(Debug)]
+struct DaemonState {
     shortcut_config: Option<ShortcutRuntimeConfig>,
     cache_store: DaemonCacheStore,
 }
@@ -127,36 +205,108 @@ struct InputDaemon {
 #[interface(name = "org.example.MyApp.InputDaemon1")]
 impl InputDaemon {
     fn ping(&self) -> bool {
+        info!(method = "Ping", "received daemon D-Bus method");
         true
     }
 
     fn get_daemon_status(&self) -> String {
-        self.status().as_wire_str().to_string()
+        info!(method = "GetDaemonStatus", "received daemon D-Bus method");
+        let status = self.status();
+        info!(
+            daemon_status = %status.display_label(),
+            method = "GetDaemonStatus",
+            "returning daemon status over D-Bus"
+        );
+        status.as_wire_str().to_string()
     }
 
-    fn update_shortcut_config(&mut self, config: ShortcutRuntimeConfig) -> bool {
-        if let Err(error) = self.cache_store.save(&config) {
-            warn!(?error, "failed to persist daemon shortcut cache");
-            return false;
-        }
-
+    fn update_shortcut_config(&self, config: ShortcutRuntimeConfig) -> bool {
         info!(
             shortcut_count = config.shortcuts.len(),
             configured = config.is_configured(),
-            "updated daemon shortcut runtime config"
+            method = "UpdateShortcutConfig",
+            "received daemon D-Bus method"
         );
-        self.shortcut_config = Some(config);
+        log_shortcut_runtime_config("daemon received config update", &config);
+
+        let status = match self.update_config(config) {
+            Ok(status) => status,
+            Err(error) => {
+                warn!(?error, "failed to update daemon shortcut config");
+                return false;
+            }
+        };
+
+        notify_app_status(status);
         true
     }
 }
 
 impl InputDaemon {
     fn status(&self) -> DaemonStatus {
+        self.state
+            .lock()
+            .map(|state| state.status())
+            .unwrap_or(DaemonStatus::PermissionError)
+    }
+
+    fn update_config(&self, config: ShortcutRuntimeConfig) -> Result<DaemonStatus> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|error| anyhow::anyhow!("daemon state mutex poisoned: {error}"))?;
+        state.cache_store.save(&config)?;
+        state.shortcut_config = Some(config);
+        let status = state.status();
+        info!(
+            daemon_status = %status.display_label(),
+            "updated daemon shortcut runtime config"
+        );
+        Ok(status)
+    }
+}
+
+impl DaemonState {
+    fn status(&self) -> DaemonStatus {
         match &self.shortcut_config {
             Some(config) if config.is_configured() => DaemonStatus::RunningConfigured,
             _ => DaemonStatus::RunningUnconfigured,
         }
     }
+}
+
+fn log_shortcut_runtime_config(context: &'static str, config: &ShortcutRuntimeConfig) {
+    debug!(
+        context,
+        schema_version = config.schema_version,
+        shortcut_count = config.shortcuts.len(),
+        configured = config.is_configured(),
+        "daemon shortcut runtime config"
+    );
+
+    for binding in &config.shortcuts {
+        debug!(
+            context,
+            action = %binding.action,
+            accelerator = %binding.accelerator,
+            enabled = binding.enabled,
+            "daemon shortcut binding"
+        );
+
+        if is_dev_logging_enabled() {
+            info!(
+                context,
+                action = %binding.action,
+                accelerator = %binding.accelerator,
+                enabled = binding.enabled,
+                "daemon dev shortcut binding"
+            );
+        }
+    }
+}
+
+fn is_dev_logging_enabled() -> bool {
+    std::env::var_os("MYAPP_DEV_LOG").is_some()
 }
 
 #[derive(Debug, Clone)]

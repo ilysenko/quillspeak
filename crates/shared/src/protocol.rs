@@ -36,8 +36,7 @@ impl DaemonStatus {
         match self {
             Self::NotInstalled => "Not installed",
             Self::InstalledButNotRunning => "Installed but not running",
-            Self::RunningUnconfigured => "Running unconfigured",
-            Self::RunningConfigured => "Running configured",
+            Self::RunningUnconfigured | Self::RunningConfigured => "Running",
             Self::PermissionError => "Permission error",
         }
     }
@@ -116,14 +115,8 @@ mod tests {
             DaemonStatus::InstalledButNotRunning.display_label(),
             "Installed but not running"
         );
-        assert_eq!(
-            DaemonStatus::RunningUnconfigured.display_label(),
-            "Running unconfigured"
-        );
-        assert_eq!(
-            DaemonStatus::RunningConfigured.display_label(),
-            "Running configured"
-        );
+        assert_eq!(DaemonStatus::RunningUnconfigured.display_label(), "Running");
+        assert_eq!(DaemonStatus::RunningConfigured.display_label(), "Running");
         assert_eq!(
             DaemonStatus::PermissionError.display_label(),
             "Permission error"

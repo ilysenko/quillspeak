@@ -7,6 +7,8 @@ pub enum AppCommand {
     StartRecording,
     StopRecording,
     SaveConfig(AppConfig),
+    DaemonAppeared(DaemonStatus),
+    DaemonVanished(DaemonStatus),
     DaemonStatusChanged(DaemonStatus),
     Quit,
 }

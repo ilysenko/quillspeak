@@ -48,6 +48,12 @@ Run the optional daemon stub:
 cargo run -p daemon --bin myapp-daemon
 ```
 
+Verbose development logs:
+
+```sh
+RUST_LOG=debug MYAPP_DEV_LOG=1 cargo run -p daemon --bin myapp-daemon
+```
+
 Simulate daemon hotkey events while `myapp` is running:
 
 ```sh
@@ -83,6 +89,11 @@ shortcut runtime config to the daemon over D-Bus. The daemon stores a
 last-known cache at `~/.config/myapp-input-daemon/shortcut-cache.toml` so it can
 start before the app and still know the last configured shortcuts.
 
+The settings window has a shortcut text field plus a `Record` button. The
+recorder captures a focused key combination in the settings dialog only; it does
+not implement global hotkey capture yet. Click `Save` to persist the recorded
+shortcut and send it to the daemon if the daemon is running.
+
 ## D-Bus Prototype
 
 Session bus names and object paths are defined in `shared`:
@@ -95,6 +106,14 @@ Session bus names and object paths are defined in `shared`:
 The app exposes `HotkeyDown`, `HotkeyUp`, `DaemonStatus`, and
 `GetShortcutConfig` methods for the daemon prototype. The daemon exposes
 `Ping`, `GetDaemonStatus`, and `UpdateShortcutConfig`.
+
+Daemon status is synchronized in both directions:
+
+- the daemon requests config from the app and reports `DaemonStatus` when it
+  starts,
+- the app watches the daemon D-Bus name and refreshes status when the daemon
+  appears or vanishes,
+- when the daemon appears, the app pushes the current shortcut config again.
 
 ## Optional Daemon Service
 

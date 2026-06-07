@@ -17,6 +17,7 @@ use tracing::{error, info, warn};
 use crate::command::AppCommand;
 use crate::config_store::ConfigStore;
 use crate::daemon_client::DaemonClient;
+use crate::daemon_monitor::DaemonMonitorHandle;
 use crate::dbus::AppDbusHandle;
 use crate::hotkey::{DaemonBackend, DisabledBackend, HotkeyBackend, backend_name_for_config};
 use crate::recording::RecordingController;
@@ -62,6 +63,7 @@ struct AppRuntime {
     settings_window: RefCell<Option<SettingsWindow>>,
     tray: RefCell<Option<Tray>>,
     dbus_handle: RefCell<Option<AppDbusHandle>>,
+    daemon_monitor: RefCell<Option<DaemonMonitorHandle>>,
 }
 
 impl AppRuntime {
@@ -78,9 +80,12 @@ impl AppRuntime {
         })?;
 
         let daemon_client = DaemonClient;
+        let shortcut_runtime_config = Arc::new(Mutex::new(ShortcutRuntimeConfig::from(&config)));
+        let dbus_handle =
+            AppDbusHandle::spawn(command_tx.clone(), Arc::clone(&shortcut_runtime_config));
+
         let daemon_status = daemon_client.status();
         configure_hotkey_backend(&daemon_client, &config);
-        let shortcut_runtime_config = Arc::new(Mutex::new(ShortcutRuntimeConfig::from(&config)));
         sync_shortcut_config_to_daemon(&daemon_client, &config);
 
         let tray = match Tray::new(command_tx.clone()) {
@@ -94,8 +99,7 @@ impl AppRuntime {
             }
         };
 
-        let dbus_handle =
-            AppDbusHandle::spawn(command_tx.clone(), Arc::clone(&shortcut_runtime_config));
+        let daemon_monitor = DaemonMonitorHandle::spawn(command_tx.clone(), daemon_client.clone());
         install_ctrl_c_handler(command_tx.clone());
 
         let runtime = Rc::new(Self {
@@ -111,6 +115,7 @@ impl AppRuntime {
             settings_window: RefCell::new(None),
             tray: RefCell::new(tray),
             dbus_handle: RefCell::new(Some(dbus_handle)),
+            daemon_monitor: RefCell::new(Some(daemon_monitor)),
         });
 
         Self::attach_command_pump(&runtime, command_rx);
@@ -135,6 +140,8 @@ impl AppRuntime {
             AppCommand::StartRecording => self.recording.borrow_mut().start_recording(),
             AppCommand::StopRecording => self.recording.borrow_mut().stop_recording(),
             AppCommand::SaveConfig(config) => self.save_config(config),
+            AppCommand::DaemonAppeared(status) => self.handle_daemon_appeared(status),
+            AppCommand::DaemonVanished(status) => self.set_daemon_status(status),
             AppCommand::DaemonStatusChanged(status) => self.set_daemon_status(status),
             AppCommand::Quit => self.quit(),
         }
@@ -184,6 +191,21 @@ impl AppRuntime {
         }
     }
 
+    fn handle_daemon_appeared(&self, status: DaemonStatus) {
+        self.set_daemon_status(status);
+        self.sync_current_shortcut_config_to_daemon();
+        self.refresh_daemon_status();
+    }
+
+    fn sync_current_shortcut_config_to_daemon(&self) {
+        sync_shortcut_config_to_daemon(&self.daemon_client, &self.config.borrow());
+    }
+
+    fn refresh_daemon_status(&self) {
+        let status = self.daemon_client.status();
+        self.set_daemon_status(status);
+    }
+
     fn set_daemon_status(&self, status: DaemonStatus) {
         self.daemon_status.set(status);
         if let Some(window) = self.settings_window.borrow().as_ref() {
@@ -193,6 +215,7 @@ impl AppRuntime {
 
     fn quit(&self) {
         info!("Quitting MyApp");
+        self.daemon_monitor.borrow_mut().take();
         self.dbus_handle.borrow_mut().take();
         self.tray.borrow_mut().take();
         self.hold_guard.borrow_mut().take();

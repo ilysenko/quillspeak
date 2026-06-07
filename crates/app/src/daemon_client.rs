@@ -6,7 +6,7 @@ use directories::BaseDirs;
 use shared::{
     DAEMON_BUS_NAME, DAEMON_INTERFACE, DAEMON_OBJECT_PATH, DaemonStatus, ShortcutRuntimeConfig,
 };
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use zbus::blocking::{Connection, Proxy};
 
 #[derive(Debug, Clone, Default)]
@@ -29,20 +29,41 @@ impl DaemonClient {
     }
 
     pub fn get_daemon_status(&self) -> Result<DaemonStatus> {
+        info!(
+            bus_name = DAEMON_BUS_NAME,
+            method = "GetDaemonStatus",
+            "calling daemon D-Bus method"
+        );
         let connection = Connection::session().context("failed to connect to session bus")?;
         let proxy = daemon_proxy(&connection)?;
         let status: String = proxy
             .call("GetDaemonStatus", &())
             .context("failed to query daemon status")?;
+        info!(
+            daemon_status = %DaemonStatus::from(status.as_str()).display_label(),
+            method = "GetDaemonStatus",
+            "daemon D-Bus method returned"
+        );
         Ok(DaemonStatus::from(status.as_str()))
     }
 
     pub fn update_shortcut_config(&self, config: &ShortcutRuntimeConfig) -> Result<()> {
+        info!(
+            shortcut_count = config.shortcuts.len(),
+            configured = config.is_configured(),
+            method = "UpdateShortcutConfig",
+            "calling daemon D-Bus method"
+        );
         let connection = Connection::session().context("failed to connect to session bus")?;
         let proxy = daemon_proxy(&connection)?;
         let updated: bool = proxy
             .call("UpdateShortcutConfig", config)
             .context("failed to send shortcut config to daemon")?;
+        info!(
+            updated,
+            method = "UpdateShortcutConfig",
+            "daemon D-Bus method returned"
+        );
         if !updated {
             warn!("daemon rejected shortcut config update");
         }

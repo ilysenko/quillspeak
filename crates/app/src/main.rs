@@ -2,6 +2,7 @@ mod app;
 mod command;
 mod config_store;
 mod daemon_client;
+mod daemon_monitor;
 mod dbus;
 mod hotkey;
 mod recording;
