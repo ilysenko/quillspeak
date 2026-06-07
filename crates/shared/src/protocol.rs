@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use zvariant::Type;
 
-use crate::config::{AppConfig, HotkeyBackend, ShortcutAction};
+use crate::config::{AppConfig, HotkeyBackend};
 
 pub const APP_ID: &str = "org.example.MyApp";
 pub const APP_BUS_NAME: &str = "org.example.MyApp.App";
@@ -60,13 +60,16 @@ impl From<&str> for DaemonStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
 pub struct ShortcutRuntimeBinding {
-    pub action: String,
+    pub id: String,
+    pub name: String,
     pub accelerator: String,
     pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
 pub struct ShortcutRuntimeConfig {
     pub schema_version: u32,
     pub shortcuts: Vec<ShortcutRuntimeBinding>,
@@ -86,11 +89,11 @@ impl ShortcutRuntimeConfig {
             shortcuts: config
                 .shortcuts
                 .iter()
-                .into_iter()
-                .map(|(action, binding)| ShortcutRuntimeBinding {
-                    action: action.as_str().to_string(),
-                    accelerator: binding.accelerator.clone(),
-                    enabled: daemon_enabled && binding.enabled,
+                .map(|shortcut| ShortcutRuntimeBinding {
+                    id: shortcut.id.clone(),
+                    name: shortcut.name.clone(),
+                    accelerator: shortcut.accelerator.clone(),
+                    enabled: daemon_enabled && shortcut.enabled,
                 })
                 .collect(),
         }
@@ -104,20 +107,14 @@ impl From<&AppConfig> for ShortcutRuntimeConfig {
             shortcuts: config
                 .shortcuts
                 .iter()
-                .into_iter()
-                .map(|(action, binding)| ShortcutRuntimeBinding {
-                    action: action.as_str().to_string(),
-                    accelerator: binding.accelerator.clone(),
-                    enabled: binding.enabled,
+                .map(|shortcut| ShortcutRuntimeBinding {
+                    id: shortcut.id.clone(),
+                    name: shortcut.name.clone(),
+                    accelerator: shortcut.accelerator.clone(),
+                    enabled: shortcut.enabled,
                 })
                 .collect(),
         }
-    }
-}
-
-impl ShortcutRuntimeBinding {
-    pub fn action(&self) -> Option<ShortcutAction> {
-        ShortcutAction::try_from(self.action.as_str()).ok()
     }
 }
 
@@ -154,8 +151,9 @@ mod tests {
 
         assert!(wire.is_configured());
         assert_eq!(wire.shortcuts.len(), 1);
-        assert_eq!(wire.shortcuts[0].action, "push_to_talk");
-        assert_eq!(wire.shortcuts[0].accelerator, "Ctrl+Space");
+        assert_eq!(wire.shortcuts[0].id, "default");
+        assert_eq!(wire.shortcuts[0].name, "Default");
+        assert_eq!(wire.shortcuts[0].accelerator, "Ctrl+Alt+Space");
         assert!(wire.shortcuts[0].enabled);
     }
 

@@ -27,23 +27,31 @@ pub fn spawn(
     config: &AppConfig,
     command_tx: mpsc::Sender<AppCommand>,
 ) -> Result<Option<X11ThreadHandle>> {
-    let binding = &config.shortcuts.push_to_talk;
-    if !binding.enabled {
-        info!("X11 hotkey backend configured with disabled push-to-talk shortcut");
+    let shortcuts = config
+        .enabled_shortcuts()
+        .map(|shortcut| {
+            let chord = ShortcutChord::parse(&shortcut.accelerator).with_context(|| {
+                format!("failed to parse X11 shortcut {}", shortcut.accelerator)
+            })?;
+            Ok(X11ShortcutConfig {
+                id: shortcut.id.clone(),
+                name: shortcut.name.clone(),
+                accelerator: shortcut.accelerator.clone(),
+                chord,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if shortcuts.is_empty() {
+        info!("X11 hotkey backend configured without enabled shortcuts");
         return Ok(None);
     }
 
-    let chord = ShortcutChord::parse(&binding.accelerator)
-        .with_context(|| format!("failed to parse X11 shortcut {}", binding.accelerator))?;
-    let accelerator = binding.accelerator.clone();
     let shutdown = Arc::new(AtomicBool::new(false));
     let thread_shutdown = Arc::clone(&shutdown);
     let (startup_tx, startup_rx) = mpsc::channel();
 
     let join_handle = thread::spawn(move || {
-        if let Err(error) =
-            run_x11_backend(chord, accelerator, command_tx, thread_shutdown, startup_tx)
-        {
+        if let Err(error) = run_x11_backend(shortcuts, command_tx, thread_shutdown, startup_tx) {
             warn!(?error, "X11 hotkey backend stopped");
         }
     });
@@ -72,9 +80,16 @@ pub fn spawn(
     }))
 }
 
-fn run_x11_backend(
-    chord: ShortcutChord,
+#[derive(Debug, Clone)]
+struct X11ShortcutConfig {
+    id: String,
+    name: String,
     accelerator: String,
+    chord: ShortcutChord,
+}
+
+fn run_x11_backend(
+    shortcuts: Vec<X11ShortcutConfig>,
     command_tx: mpsc::Sender<AppCommand>,
     shutdown: Arc<AtomicBool>,
     startup_tx: mpsc::Sender<Result<(), String>>,
@@ -83,37 +98,46 @@ fn run_x11_backend(
         let (connection, screen_num) = x11rb::connect(None).context("failed to connect to X11")?;
         let screen = &connection.setup().roots[screen_num];
         let root = screen.root;
-        let grab = X11Grab::resolve(&connection, chord)?;
+        let mut grabs = Vec::with_capacity(shortcuts.len());
 
-        if grab.trigger_keycodes.is_empty() {
-            bail!("X11 shortcut trigger key has no keycode mapping");
-        }
+        for shortcut in shortcuts {
+            let grab = X11Grab::resolve(&connection, shortcut.chord)?;
 
-        for keycode in &grab.trigger_keycodes {
-            for modifier_mask in modifier_mask_variants(chord) {
-                connection
-                    .grab_key(
-                        false,
-                        root,
-                        modifier_mask,
-                        *keycode,
-                        GrabMode::ASYNC,
-                        GrabMode::ASYNC,
-                    )?
-                    .check()
-                    .with_context(|| {
-                        format!(
-                            "failed to grab X11 shortcut {accelerator}; it may already be in use"
-                        )
-                    })?;
+            if grab.trigger_keycodes.is_empty() {
+                bail!(
+                    "X11 shortcut trigger key has no keycode mapping for {}",
+                    shortcut.accelerator
+                );
             }
+
+            for keycode in &grab.trigger_keycodes {
+                for modifier_mask in modifier_mask_variants(shortcut.chord) {
+                    connection
+                        .grab_key(
+                            false,
+                            root,
+                            modifier_mask,
+                            *keycode,
+                            GrabMode::ASYNC,
+                            GrabMode::ASYNC,
+                        )?
+                        .check()
+                        .with_context(|| {
+                            format!(
+                                "failed to grab X11 shortcut {}; it may already be in use",
+                                shortcut.accelerator
+                            )
+                        })?;
+                }
+            }
+            grabs.push(X11ShortcutGrab { shortcut, grab });
         }
         connection.flush()?;
 
-        Ok((connection, root, grab))
+        Ok((connection, root, grabs))
     })();
 
-    let (connection, root, grab) = match startup_result {
+    let (connection, root, grabs) = match startup_result {
         Ok(startup) => {
             let _ = startup_tx.send(Ok(()));
             startup
@@ -124,30 +148,43 @@ fn run_x11_backend(
         }
     };
 
-    info!(
-        accelerator,
-        keycode_count = grab.trigger_keycodes.len(),
-        "X11 hotkey backend started"
-    );
+    info!(shortcut_count = grabs.len(), "X11 hotkey backend started");
+    for grab in &grabs {
+        info!(
+            shortcut_id = %grab.shortcut.id,
+            shortcut_name = %grab.shortcut.name,
+            accelerator = %grab.shortcut.accelerator,
+            keycode_count = grab.grab.trigger_keycodes.len(),
+            "X11 shortcut grabbed"
+        );
+    }
 
-    let mut active = false;
+    let mut active = HashSet::<String>::new();
     while !shutdown.load(Ordering::Relaxed) {
         match connection.poll_for_event()? {
             Some(Event::KeyPress(event)) => {
                 debug!(keycode = event.detail, "X11 key press event");
-                if grab.trigger_keycodes.contains(&event.detail)
-                    && grab.is_pressed(&connection)?
-                    && !active
-                {
-                    active = true;
-                    let _ = command_tx.send(AppCommand::StartRecording);
+                for shortcut_grab in &grabs {
+                    if shortcut_grab.grab.trigger_keycodes.contains(&event.detail)
+                        && shortcut_grab.grab.is_pressed(&connection)?
+                        && active.insert(shortcut_grab.shortcut.id.clone())
+                    {
+                        let _ = command_tx.send(AppCommand::StartRecording(
+                            shortcut_grab.shortcut.id.clone(),
+                        ));
+                    }
                 }
             }
             Some(Event::KeyRelease(event)) => {
                 debug!(keycode = event.detail, "X11 key release event");
-                if active && !grab.is_pressed(&connection)? {
-                    active = false;
-                    let _ = command_tx.send(AppCommand::StopRecording);
+                for shortcut_grab in &grabs {
+                    if active.contains(&shortcut_grab.shortcut.id)
+                        && !shortcut_grab.grab.is_pressed(&connection)?
+                    {
+                        active.remove(&shortcut_grab.shortcut.id);
+                        let _ = command_tx
+                            .send(AppCommand::StopRecording(shortcut_grab.shortcut.id.clone()));
+                    }
                 }
             }
             Some(Event::MappingNotify(event)) => {
@@ -162,19 +199,27 @@ fn run_x11_backend(
         }
     }
 
-    for keycode in &grab.trigger_keycodes {
-        for modifier_mask in modifier_mask_variants(chord) {
-            let _ = connection.ungrab_key(*keycode, root, modifier_mask);
+    for shortcut_grab in &grabs {
+        for keycode in &shortcut_grab.grab.trigger_keycodes {
+            for modifier_mask in modifier_mask_variants(shortcut_grab.shortcut.chord) {
+                let _ = connection.ungrab_key(*keycode, root, modifier_mask);
+            }
         }
     }
     let _ = connection.flush();
 
-    if active {
-        let _ = command_tx.send(AppCommand::StopRecording);
+    for shortcut_id in active {
+        let _ = command_tx.send(AppCommand::StopRecording(shortcut_id));
     }
 
     info!("X11 hotkey backend stopped");
     Ok(())
+}
+
+#[derive(Debug)]
+struct X11ShortcutGrab {
+    shortcut: X11ShortcutConfig,
+    grab: X11Grab,
 }
 
 #[derive(Debug)]

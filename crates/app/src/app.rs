@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -9,7 +10,9 @@ use gtk::gio;
 use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use shared::{APP_ID, AppConfig, DaemonStatus, ShortcutRuntimeConfig};
+use shared::{
+    APP_ID, AppConfig, DEFAULT_SHORTCUT_ID, DaemonStatus, ResolvedOutput, ShortcutRuntimeConfig,
+};
 use tracing::{error, info, warn};
 
 use crate::command::AppCommand;
@@ -20,7 +23,8 @@ use crate::dbus::AppDbusHandle;
 use crate::hotkey::{
     HotkeyBackendHandle, backend_name_for_config, configure_hotkey_backend, resolve_backend_kind,
 };
-use crate::recording::{RecordingController, RecordingPhase};
+use crate::models::{ModelStatus, ModelStore};
+use crate::recording::{RecordingPhase, RecordingService, spawn_transcription_job};
 use crate::settings::SettingsWindow;
 use crate::tray::Tray;
 
@@ -55,11 +59,13 @@ struct AppRuntime {
     hold_guard: RefCell<Option<gio::ApplicationHoldGuard>>,
     command_tx: mpsc::Sender<AppCommand>,
     config_store: ConfigStore,
+    model_store: ModelStore,
+    model_downloads: RefCell<HashMap<String, ModelStatus>>,
     config: RefCell<AppConfig>,
     daemon_client: DaemonClient,
     daemon_status: Cell<DaemonStatus>,
     shortcut_runtime_config: Arc<Mutex<ShortcutRuntimeConfig>>,
-    recording: RefCell<RecordingController>,
+    recording: RefCell<RecordingService>,
     settings_window: RefCell<Option<SettingsWindow>>,
     tray: RefCell<Option<Tray>>,
     hotkey_backend: RefCell<Option<HotkeyBackendHandle>>,
@@ -73,6 +79,7 @@ impl AppRuntime {
         let (command_tx, command_rx) = mpsc::channel();
 
         let config_store = ConfigStore::new()?;
+        let model_store = ModelStore::new()?;
         let config = config_store.load_or_create_default().with_context(|| {
             format!(
                 "failed to load config from {}",
@@ -109,11 +116,13 @@ impl AppRuntime {
             hold_guard: RefCell::new(Some(hold_guard)),
             command_tx,
             config_store,
+            model_store,
+            model_downloads: RefCell::new(HashMap::new()),
             config: RefCell::new(config),
             daemon_client,
             daemon_status: Cell::new(daemon_status),
             shortcut_runtime_config,
-            recording: RefCell::new(RecordingController::default()),
+            recording: RefCell::new(RecordingService::default()),
             settings_window: RefCell::new(None),
             tray: RefCell::new(tray),
             hotkey_backend: RefCell::new(hotkey_backend),
@@ -141,9 +150,23 @@ impl AppRuntime {
         match command {
             AppCommand::ShowSettings => self.show_settings(),
             AppCommand::ToggleRecording => self.toggle_recording(),
-            AppCommand::StartRecording => self.start_recording(),
-            AppCommand::StopRecording => self.stop_recording(),
+            AppCommand::StartRecording(shortcut_id) => self.start_recording(&shortcut_id),
+            AppCommand::StopRecording(shortcut_id) => self.stop_recording(&shortcut_id),
+            AppCommand::TranscriptionFinished {
+                shortcut_id,
+                result,
+            } => self.finish_transcription(&shortcut_id, result),
             AppCommand::SaveConfig(config) => self.save_config(config),
+            AppCommand::DownloadModel(model_id) => self.download_model(model_id),
+            AppCommand::DeleteModel(model_id) => self.delete_model(&model_id),
+            AppCommand::ModelDownloadProgress {
+                model_id,
+                downloaded,
+                total,
+            } => self.update_model_download_progress(model_id, downloaded, total),
+            AppCommand::ModelDownloadFinished { model_id, result } => {
+                self.finish_model_download(model_id, result)
+            }
             AppCommand::DaemonAppeared(status) => self.handle_daemon_appeared(status),
             AppCommand::DaemonVanished(status) => self.set_daemon_status(status),
             AppCommand::DaemonStatusChanged(status) => self.set_daemon_status(status),
@@ -154,26 +177,75 @@ impl AppRuntime {
     fn toggle_recording(&self) {
         let phase = self.recording.borrow().phase();
         match phase {
-            RecordingPhase::Idle => self.start_recording(),
-            RecordingPhase::Recording => self.stop_recording(),
+            RecordingPhase::Idle => self.start_recording(DEFAULT_SHORTCUT_ID),
+            RecordingPhase::Recording => self.stop_recording(DEFAULT_SHORTCUT_ID),
             RecordingPhase::Processing => {
                 info!("Recording toggle ignored while processing audio");
             }
         }
     }
 
-    fn start_recording(&self) {
-        let phase = self.recording.borrow_mut().start_recording();
+    fn start_recording(&self, shortcut_id: &str) {
+        if self.config.borrow().shortcut_by_id(shortcut_id).is_none() {
+            warn!(shortcut_id, "Start recording ignored for unknown shortcut");
+            return;
+        }
+        let phase = self.recording.borrow_mut().start_recording(shortcut_id);
         self.set_recording_phase(phase);
     }
 
-    fn stop_recording(&self) {
-        let phase = self.recording.borrow_mut().stop_recording();
+    fn stop_recording(&self, shortcut_id: &str) {
+        let (phase, job) = self.recording.borrow_mut().stop_recording(shortcut_id);
         self.set_recording_phase(phase);
 
-        if phase == RecordingPhase::Processing {
-            let phase = self.recording.borrow_mut().finish_processing();
-            self.set_recording_phase(phase);
+        if let Some(job) = job {
+            spawn_transcription_job(job, self.command_sender());
+        }
+    }
+
+    fn finish_transcription(&self, shortcut_id: &str, result: Result<(), String>) {
+        if result.is_ok() {
+            self.apply_transcription_output(shortcut_id);
+        }
+        let phase = self
+            .recording
+            .borrow_mut()
+            .finish_processing(shortcut_id, &result);
+        self.set_recording_phase(phase);
+    }
+
+    fn apply_transcription_output(&self, shortcut_id: &str) {
+        let config = self.config.borrow();
+        let Some(shortcut) = config.shortcut_by_id(shortcut_id) else {
+            warn!(
+                shortcut_id,
+                "No shortcut config found for transcription output"
+            );
+            return;
+        };
+        let model_id = config.resolved_model_id(shortcut);
+        let language = config.resolved_language(shortcut);
+        let output = config.resolved_output(shortcut);
+
+        match output {
+            ResolvedOutput::General(action) => info!(
+                shortcut_id,
+                model_id,
+                language,
+                output = action.label(),
+                "Transcription output placeholder"
+            ),
+            ResolvedOutput::Clipboard => info!(
+                shortcut_id,
+                model_id, language, "Would copy recognized text to clipboard"
+            ),
+            ResolvedOutput::Script(path) => info!(
+                shortcut_id,
+                model_id,
+                language,
+                script = path,
+                "Would run output script with recognized text argument"
+            ),
         }
     }
 
@@ -188,6 +260,9 @@ impl AppRuntime {
             let window = SettingsWindow::new(
                 &self.application,
                 &self.config.borrow(),
+                self.model_store
+                    .row_states(&self.config.borrow(), &self.model_downloads.borrow()),
+                self.model_store.ready_model_ids(),
                 self.daemon_status.get(),
                 self.command_sender(),
             );
@@ -196,6 +271,11 @@ impl AppRuntime {
 
         if let Some(window) = self.settings_window.borrow().as_ref() {
             window.update_config(&self.config.borrow());
+            window.update_model_states(
+                self.model_store
+                    .row_states(&self.config.borrow(), &self.model_downloads.borrow()),
+                self.model_store.ready_model_ids(),
+            );
             window.update_daemon_status(self.daemon_status.get());
             window.present();
         }
@@ -230,6 +310,81 @@ impl AppRuntime {
         self.config.replace(config.clone());
         if let Some(window) = self.settings_window.borrow().as_ref() {
             window.update_config(&config);
+            window.update_model_states(
+                self.model_store
+                    .row_states(&config, &self.model_downloads.borrow()),
+                self.model_store.ready_model_ids(),
+            );
+            window.update_save_status("Saved");
+        }
+    }
+
+    fn download_model(&self, model_id: String) {
+        if matches!(
+            self.model_downloads.borrow().get(&model_id),
+            Some(ModelStatus::Downloading { .. })
+        ) {
+            info!(model_id, "model download already in progress");
+            return;
+        }
+        self.model_downloads.borrow_mut().insert(
+            model_id.clone(),
+            ModelStatus::Downloading {
+                downloaded: 0,
+                total: None,
+            },
+        );
+        self.refresh_model_rows();
+        self.model_store
+            .start_download(model_id, self.command_sender());
+    }
+
+    fn delete_model(&self, model_id: &str) {
+        if let Err(error) = self
+            .model_store
+            .delete_model(model_id, &self.config.borrow())
+        {
+            warn!(?error, model_id, "failed to delete model");
+        }
+        self.refresh_model_rows();
+    }
+
+    fn update_model_download_progress(
+        &self,
+        model_id: String,
+        downloaded: u64,
+        total: Option<u64>,
+    ) {
+        self.model_downloads
+            .borrow_mut()
+            .insert(model_id, ModelStatus::Downloading { downloaded, total });
+        self.refresh_model_rows();
+    }
+
+    fn finish_model_download(&self, model_id: String, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                self.model_downloads.borrow_mut().remove(&model_id);
+                self.model_store.refresh_ready_model_ids();
+                info!(model_id, "model download completed");
+            }
+            Err(error) => {
+                warn!(model_id, error, "model download failed");
+                self.model_downloads
+                    .borrow_mut()
+                    .insert(model_id, ModelStatus::Error(error));
+            }
+        }
+        self.refresh_model_rows();
+    }
+
+    fn refresh_model_rows(&self) {
+        if let Some(window) = self.settings_window.borrow().as_ref() {
+            window.update_model_states(
+                self.model_store
+                    .row_states(&self.config.borrow(), &self.model_downloads.borrow()),
+                self.model_store.ready_model_ids(),
+            );
         }
     }
 
@@ -273,10 +428,12 @@ impl AppRuntime {
         let config = self.config.borrow();
         info!(
             config_path = %self.config_store.path().display(),
-            shortcut = %config.shortcuts.push_to_talk.accelerator,
-            mode = %config.mode.as_str(),
+            shortcut = %config.default_shortcut().accelerator,
+            shortcut_count = config.shortcuts.len(),
+            mode = %config.general.mode.as_str(),
             backend = %backend_name_for_config(&config),
             daemon_status = %self.daemon_status.get().display_label(),
+            model_dir = %self.model_store.root().display(),
             "MyApp started in foreground development mode"
         );
 
@@ -291,7 +448,7 @@ impl AppRuntime {
 }
 
 fn daemon_runtime_config_for(config: &AppConfig) -> ShortcutRuntimeConfig {
-    ShortcutRuntimeConfig::for_daemon(config, resolve_backend_kind(config.hotkey_backend))
+    ShortcutRuntimeConfig::for_daemon(config, resolve_backend_kind(config.general.hotkey_backend))
 }
 
 fn sync_shortcut_config_to_daemon(

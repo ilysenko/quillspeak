@@ -102,7 +102,7 @@ pub fn configure_hotkey_backend(
     command_tx: mpsc::Sender<AppCommand>,
     config: &AppConfig,
 ) -> Option<HotkeyBackendHandle> {
-    match resolve_backend_kind(config.hotkey_backend) {
+    match resolve_backend_kind(config.general.hotkey_backend) {
         HotkeyBackendKind::Disabled => configure_backend(DisabledBackend, config),
         HotkeyBackendKind::Daemon => configure_backend(DaemonBackend, config),
         HotkeyBackendKind::X11 => configure_backend(X11Backend::new(command_tx), config),
@@ -133,7 +133,7 @@ fn configure_backend<B: HotkeyBackend>(
 }
 
 pub fn backend_name_for_config(config: &AppConfig) -> &'static str {
-    match resolve_backend_kind(config.hotkey_backend) {
+    match resolve_backend_kind(config.general.hotkey_backend) {
         HotkeyBackendKind::Auto => "auto",
         HotkeyBackendKind::Disabled => "disabled",
         HotkeyBackendKind::Daemon => "daemon",
@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn explicit_disabled_backend_stays_disabled() {
         let mut config = AppConfig::default();
-        config.hotkey_backend = HotkeyBackendKind::Disabled;
+        config.general.hotkey_backend = HotkeyBackendKind::Disabled;
 
         assert_eq!(backend_name_for_config(&config), "disabled");
     }

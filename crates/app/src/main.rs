@@ -5,6 +5,7 @@ mod daemon_client;
 mod daemon_monitor;
 mod dbus;
 mod hotkey;
+mod models;
 mod recording;
 mod settings;
 mod tray;

@@ -44,10 +44,12 @@ commands:
 ```sh
 cargo run -p daemon --bin myapp-daemon -- --hotkey-down
 cargo run -p daemon --bin myapp-daemon -- --hotkey-up
+cargo run -p daemon --bin myapp-daemon -- --hotkey-down --shortcut-id default
 ```
 
-Those commands call the main app's D-Bus methods. `HotkeyDown` maps to
-`start_recording()`, and `HotkeyUp` maps to `stop_recording()`.
+Those commands call the main app's D-Bus methods. `HotkeyDown(shortcut_id)` maps
+to `start_recording(shortcut_id)`, and `HotkeyUp(shortcut_id)` maps to
+`stop_recording(shortcut_id)`.
 
 Manual tray recording uses a single toggle command. The tray menu should show
 `Start Recording` while idle, `Stop Recording` while recording, and a disabled
@@ -121,8 +123,8 @@ Shared constants currently use:
 
 App-side methods:
 
-- `HotkeyDown()`
-- `HotkeyUp()`
+- `HotkeyDown(shortcut_id: String)`
+- `HotkeyUp(shortcut_id: String)`
 - `DaemonStatus(status: String)`
 - `GetShortcutConfig() -> ShortcutRuntimeConfig`
 
@@ -143,13 +145,24 @@ config file directly.
 Current app config format:
 
 ```toml
-schema_version = 1
+schema_version = 2
+
+[general]
 mode = "push_to_talk"
 hotkey_backend = "auto"
+default_model_id = "large-v3-turbo-q5_0"
+default_language = "auto"
+compute_backend = "auto"
+default_output = { type = "clipboard" }
 
-[shortcuts.push_to_talk]
-accelerator = "Ctrl+Space"
+[[shortcuts]]
+id = "default"
+name = "Default"
 enabled = true
+accelerator = "Ctrl+Alt+Space"
+model_id = "default"
+language = "default"
+output = { type = "default" }
 ```
 
 The app stores config under the normal user config directory, currently:
@@ -164,12 +177,14 @@ shortcut config should be sent from the app to the daemon over D-Bus. The daemon
 may store a host-side last-known cache, but that cache is disposable and app
 config always wins.
 
-New default configs use `hotkey_backend = "auto"`. Existing configs may still
-contain `disabled`; do not migrate them silently to active capture.
+Only the current schema v2 config is supported during development. Do not add
+old-config migration paths unless explicitly requested.
 
-The settings UI can record a shortcut while the recorder dialog is focused, but
-this is only a settings convenience. Global capture is performed by the selected
-runtime backend. Saving settings remains explicit through the `Save` button.
+Settings has `General`, `Models`, one page per shortcut profile, and `Add New`.
+The `Default` shortcut is permanent. The settings UI can record a shortcut while
+the recorder dialog is focused, but this is only a settings convenience. Global
+capture is performed by the selected runtime backend. Saving remains explicit
+through the `Save` button.
 
 ## UI Rules
 
@@ -237,6 +252,7 @@ cargo run -p app --bin myapp
 cargo run -p daemon --bin myapp-daemon
 cargo run -p daemon --bin myapp-daemon -- --hotkey-down
 cargo run -p daemon --bin myapp-daemon -- --hotkey-up
+cargo run -p daemon --bin myapp-daemon -- --hotkey-down --shortcut-id default
 ```
 
 This container may not have `gtk4.pc`, `libadwaita-1.pc`, or
@@ -281,12 +297,15 @@ two-way and idempotent:
   `~/.config/myapp-input-daemon/shortcut-cache.toml`.
 
 The runtime config sent to the daemon is daemon-effective, not a verbatim app
-config copy. If the resolved backend is `daemon`, enabled shortcuts are sent as
+config copy. It contains only shortcut ids, names, accelerators, and enabled
+flags. If the resolved backend is `daemon`, enabled shortcuts are sent as
 enabled. If the resolved backend is `disabled` or `x11`, the app sends the same
 shortcuts as disabled so the daemon clears any active watcher and does not keep
 listening behind the user's selected backend.
 
 The daemon must not read the app config file directly.
+If the daemon cache cannot be parsed as the current runtime config schema, the
+daemon should log a warning and start unconfigured.
 
 ## Future Work
 

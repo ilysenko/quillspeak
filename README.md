@@ -67,6 +67,7 @@ Simulate daemon hotkey events while `myapp` is running:
 ```sh
 cargo run -p daemon --bin myapp-daemon -- --hotkey-down
 cargo run -p daemon --bin myapp-daemon -- --hotkey-up
+cargo run -p daemon --bin myapp-daemon -- --hotkey-down --shortcut-id default
 ```
 
 The first command should make the app log `Start recording`; the second should
@@ -80,10 +81,10 @@ The tray icon reflects the recording phase:
 
 Real hotkey behavior:
 
-- pressing the configured shortcut sends `HotkeyDown` and turns the tray icon
-  red,
-- releasing any required key sends `HotkeyUp`, turns the icon orange while the
-  placeholder transcription runs, then returns it to white,
+- pressing a configured shortcut sends `HotkeyDown(shortcut_id)` and turns the
+  tray icon red,
+- releasing any required key sends `HotkeyUp(shortcut_id)`, turns the icon
+  orange while the placeholder transcription runs, then returns it to white,
 - unrelated keys are ignored by the daemon and are not logged.
 
 ## Configuration
@@ -97,13 +98,24 @@ The main app owns user settings and writes TOML to:
 Default config:
 
 ```toml
-schema_version = 1
+schema_version = 2
+
+[general]
 mode = "push_to_talk"
 hotkey_backend = "auto"
+default_model_id = "large-v3-turbo-q5_0"
+default_language = "auto"
+compute_backend = "auto"
+default_output = { type = "clipboard" }
 
-[shortcuts.push_to_talk]
-accelerator = "Ctrl+Space"
+[[shortcuts]]
+id = "default"
+name = "Default"
 enabled = true
+accelerator = "Ctrl+Alt+Space"
+model_id = "default"
+language = "default"
+output = { type = "default" }
 ```
 
 The daemon does not read this config directly. The app sends the current
@@ -112,12 +124,19 @@ daemon-effective: shortcuts are enabled only when the resolved backend is
 `daemon`; for `disabled` or `x11`, the app sends disabled bindings so the daemon
 clears any active watcher. The daemon stores an accepted last-known cache at
 `~/.config/myapp-input-daemon/shortcut-cache.toml` so it can start before the app
-and still know the last configured shortcuts.
+and still know the last configured shortcuts. During development only schema v2
+is supported; invalid old configs/caches are errors or ignored with a warning,
+not migrated.
 
-The settings window has a shortcut text field, a `Record` button, and a backend
-selector. The recorder captures a focused key combination in the settings dialog
-only; global capture is performed by the selected runtime backend. Click `Save`
-to persist the shortcut and reconfigure the active backend and daemon.
+Settings has `General`, `Models`, `Default`, and `Add New` pages. `Models`
+manages downloaded whisper.cpp ggml models under `~/.local/share/myapp/models`.
+Shortcut pages choose only ready models, or `Default` to inherit the general
+model. Model downloads use `*.part`, progress updates, SHA-1 verification, and
+atomic rename.
+
+Each shortcut profile has its own shortcut, model override, language override,
+and output action. Output actions are `Copy to clipboard` or `Run script`; real
+transcription, clipboard writing, and script execution are still placeholders.
 
 Backend values:
 
@@ -135,8 +154,8 @@ Session bus names and object paths are defined in `shared`:
 - daemon bus: `org.example.MyApp.InputDaemon`
 - daemon object: `/org/example/MyApp/InputDaemon`
 
-The app exposes `HotkeyDown`, `HotkeyUp`, `DaemonStatus`, and
-`GetShortcutConfig` methods for the daemon. The daemon exposes
+The app exposes `HotkeyDown(shortcut_id)`, `HotkeyUp(shortcut_id)`,
+`DaemonStatus`, and `GetShortcutConfig` methods for the daemon. The daemon exposes
 `Ping`, `GetDaemonStatus`, and `UpdateShortcutConfig`.
 
 Daemon status is synchronized in both directions:

@@ -1,21 +1,20 @@
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use directories::BaseDirs;
 use shared::{
     APP_BUS_NAME, APP_INTERFACE, APP_OBJECT_PATH, DAEMON_BUS_NAME, DAEMON_INTERFACE,
-    DAEMON_OBJECT_PATH, DaemonStatus, ShortcutRuntimeConfig,
+    DAEMON_OBJECT_PATH, DEFAULT_SHORTCUT_ID, DaemonStatus, ShortcutRuntimeConfig,
 };
 use tracing::{debug, info, warn};
 use zbus::{blocking::Proxy, blocking::connection, interface};
 
+mod cache;
 mod evdev_backend;
 mod hotkey;
 
+use cache::DaemonCacheStore;
 use evdev_backend::EvdevHotkeyHandle;
 
 #[derive(Debug, Parser)]
@@ -27,6 +26,9 @@ struct Cli {
 
     #[arg(long, conflicts_with = "hotkey_down")]
     hotkey_up: bool,
+
+    #[arg(long, default_value = DEFAULT_SHORTCUT_ID)]
+    shortcut_id: String,
 }
 
 fn main() -> Result<()> {
@@ -34,10 +36,10 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
     if cli.hotkey_down {
-        return send_hotkey_method("HotkeyDown");
+        return send_hotkey_method("HotkeyDown", &cli.shortcut_id);
     }
     if cli.hotkey_up {
-        return send_hotkey_method("HotkeyUp");
+        return send_hotkey_method("HotkeyUp", &cli.shortcut_id);
     }
 
     run_daemon()
@@ -52,9 +54,10 @@ fn init_logging() {
         .try_init();
 }
 
-pub(crate) fn send_hotkey_method(method_name: &'static str) -> Result<()> {
+pub(crate) fn send_hotkey_method(method_name: &'static str, shortcut_id: &str) -> Result<()> {
     info!(
         method = method_name,
+        shortcut_id,
         bus_name = APP_BUS_NAME,
         "calling app D-Bus method"
     );
@@ -64,10 +67,13 @@ pub(crate) fn send_hotkey_method(method_name: &'static str) -> Result<()> {
         .context("failed to create app D-Bus proxy; is myapp running?")?;
 
     proxy
-        .call::<_, _, ()>(method_name, &())
+        .call::<_, _, ()>(method_name, &(shortcut_id.to_string(),))
         .with_context(|| format!("failed to call app method {method_name}; is myapp running?"))?;
 
-    info!(method_name, "sent simulated hotkey event to app");
+    info!(
+        method_name,
+        shortcut_id, "sent simulated hotkey event to app"
+    );
     Ok(())
 }
 
@@ -93,6 +99,7 @@ fn run_daemon() -> Result<()> {
         bus_name = DAEMON_BUS_NAME,
         object_path = DAEMON_OBJECT_PATH,
         interface = DAEMON_INTERFACE,
+        cache_path = %cache_store.path().display(),
         "myapp input daemon is running"
     );
 
@@ -298,7 +305,8 @@ fn log_shortcut_runtime_config(context: &'static str, config: &ShortcutRuntimeCo
     for binding in &config.shortcuts {
         debug!(
             context,
-            action = %binding.action,
+            shortcut_id = %binding.id,
+            shortcut_name = %binding.name,
             accelerator = %binding.accelerator,
             enabled = binding.enabled,
             "daemon shortcut binding"
@@ -307,7 +315,8 @@ fn log_shortcut_runtime_config(context: &'static str, config: &ShortcutRuntimeCo
         if is_dev_logging_enabled() {
             info!(
                 context,
-                action = %binding.action,
+                shortcut_id = %binding.id,
+                shortcut_name = %binding.name,
                 accelerator = %binding.accelerator,
                 enabled = binding.enabled,
                 "daemon dev shortcut binding"
@@ -318,53 +327,4 @@ fn log_shortcut_runtime_config(context: &'static str, config: &ShortcutRuntimeCo
 
 fn is_dev_logging_enabled() -> bool {
     std::env::var_os("MYAPP_DEV_LOG").is_some()
-}
-
-#[derive(Debug, Clone)]
-struct DaemonCacheStore {
-    path: PathBuf,
-}
-
-impl DaemonCacheStore {
-    fn new() -> Result<Self> {
-        let base_dirs = BaseDirs::new().context("failed to resolve user config directory")?;
-        Ok(Self {
-            path: base_dirs
-                .config_dir()
-                .join("myapp-input-daemon/shortcut-cache.toml"),
-        })
-    }
-
-    fn load(&self) -> Result<Option<ShortcutRuntimeConfig>> {
-        if !self.path.exists() {
-            return Ok(None);
-        }
-
-        let contents = fs::read_to_string(&self.path)
-            .with_context(|| format!("failed to read daemon cache {}", self.path.display()))?;
-        let config = toml::from_str(&contents)
-            .with_context(|| format!("failed to parse daemon cache {}", self.path.display()))?;
-        Ok(Some(config))
-    }
-
-    fn save(&self, config: &ShortcutRuntimeConfig) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "failed to create daemon cache directory {}",
-                    parent.display()
-                )
-            })?;
-        }
-        let contents =
-            toml::to_string_pretty(config).context("failed to encode daemon cache as TOML")?;
-        fs::write(&self.path, contents)
-            .with_context(|| format!("failed to write daemon cache {}", self.path.display()))?;
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    fn path(&self) -> &Path {
-        &self.path
-    }
 }

@@ -16,7 +16,9 @@ directories.workspace = true
 gtk4.workspace = true
 ksni.workspace = true
 libadwaita.workspace = true
+reqwest.workspace = true
 shared = { path = "../shared" }
+sha1.workspace = true
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

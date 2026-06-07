@@ -21,7 +21,9 @@ evdev = "0.13"
 gtk4 = "0.11"
 ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
 libadwaita = { version = "0.9", features = ["v1_2"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
+sha1 = "0.10"
 thiserror = "2"
 toml = "0.9"
 tracing = "0.1"

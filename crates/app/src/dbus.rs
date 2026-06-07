@@ -96,15 +96,21 @@ struct AppDbusService {
 #[interface(name = "org.example.MyApp.App1")]
 impl AppDbusService {
     #[zbus(name = "HotkeyDown")]
-    fn hotkey_down(&self) -> fdo::Result<()> {
-        info!(method = "HotkeyDown", "received app D-Bus method");
-        self.send_command(AppCommand::StartRecording)
+    fn hotkey_down(&self, shortcut_id: String) -> fdo::Result<()> {
+        info!(
+            method = "HotkeyDown",
+            shortcut_id, "received app D-Bus method"
+        );
+        self.send_command(AppCommand::StartRecording(shortcut_id))
     }
 
     #[zbus(name = "HotkeyUp")]
-    fn hotkey_up(&self) -> fdo::Result<()> {
-        info!(method = "HotkeyUp", "received app D-Bus method");
-        self.send_command(AppCommand::StopRecording)
+    fn hotkey_up(&self, shortcut_id: String) -> fdo::Result<()> {
+        info!(
+            method = "HotkeyUp",
+            shortcut_id, "received app D-Bus method"
+        );
+        self.send_command(AppCommand::StopRecording(shortcut_id))
     }
 
     #[zbus(name = "DaemonStatus")]

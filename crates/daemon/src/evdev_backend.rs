@@ -129,10 +129,17 @@ fn run_evdev_backend(
 
 #[derive(Default)]
 struct EvdevRuntime {
-    machine: Option<HotkeyStateMachine<KeyCode>>,
+    machines: Vec<EvdevShortcutMachine>,
     watched_keys: HashSet<KeyCode>,
     devices: Vec<KeyboardDevice>,
     last_scan: Option<Instant>,
+}
+
+struct EvdevShortcutMachine {
+    shortcut_id: String,
+    shortcut_name: String,
+    accelerator: String,
+    machine: HotkeyStateMachine<KeyCode>,
 }
 
 impl EvdevRuntime {
@@ -141,31 +148,43 @@ impl EvdevRuntime {
         config: &ShortcutRuntimeConfig,
         permission_error: &AtomicBool,
     ) -> Result<()> {
-        let shortcut = match RuntimeShortcut::push_to_talk_from_config(config) {
-            Ok(shortcut) => shortcut,
+        let shortcuts = match RuntimeShortcut::from_config(config) {
+            Ok(shortcuts) => shortcuts,
             Err(error) => {
                 self.disable(permission_error);
                 return Err(error);
             }
         };
 
-        let Some(shortcut) = shortcut else {
-            info!("evdev hotkey backend has no configured push-to-talk shortcut");
+        if shortcuts.is_empty() {
+            info!("evdev hotkey backend has no configured shortcuts");
             self.disable(permission_error);
             return Ok(());
-        };
+        }
 
-        let requirements = match requirements_for_chord(shortcut.chord) {
-            Ok(requirements) => requirements,
-            Err(error) => {
-                self.disable(permission_error);
-                return Err(error);
-            }
-        };
-        let machine = HotkeyStateMachine::new(requirements);
+        let mut machines = Vec::with_capacity(shortcuts.len());
+        let mut watched_keys = HashSet::new();
+        for shortcut in shortcuts {
+            let requirements = match requirements_for_chord(shortcut.chord) {
+                Ok(requirements) => requirements,
+                Err(error) => {
+                    self.disable(permission_error);
+                    return Err(error);
+                }
+            };
+            let machine = HotkeyStateMachine::new(requirements);
+            watched_keys.extend(machine.watched_keys().iter().copied());
+            machines.push(EvdevShortcutMachine {
+                shortcut_id: shortcut.id,
+                shortcut_name: shortcut.name,
+                accelerator: shortcut.accelerator,
+                machine,
+            });
+        }
+
         self.reset_active();
-        self.watched_keys = machine.watched_keys().clone();
-        self.machine = Some(machine);
+        self.watched_keys = watched_keys;
+        self.machines = machines;
         self.devices.clear();
         self.last_scan = None;
         if let Err(error) = self.rescan_devices(permission_error) {
@@ -174,17 +193,25 @@ impl EvdevRuntime {
         }
 
         info!(
-            accelerator = %shortcut.accelerator,
+            shortcut_count = self.machines.len(),
             watched_key_count = self.watched_keys.len(),
             device_count = self.devices.len(),
             "evdev hotkey backend configured"
         );
+        for machine in &self.machines {
+            info!(
+                shortcut_id = %machine.shortcut_id,
+                shortcut_name = %machine.shortcut_name,
+                accelerator = %machine.accelerator,
+                "evdev shortcut configured"
+            );
+        }
         Ok(())
     }
 
     fn disable(&mut self, permission_error: &AtomicBool) {
         self.reset_active();
-        self.machine = None;
+        self.machines.clear();
         self.watched_keys.clear();
         self.devices.clear();
         self.last_scan = None;
@@ -192,15 +219,15 @@ impl EvdevRuntime {
     }
 
     fn reset_active(&mut self) {
-        if let Some(machine) = self.machine.as_mut()
-            && machine.reset() == HotkeyTransition::HotkeyUp
-        {
-            send_hotkey_up();
+        for machine in &mut self.machines {
+            if machine.machine.reset() == HotkeyTransition::HotkeyUp {
+                send_hotkey_up(&machine.shortcut_id);
+            }
         }
     }
 
     fn poll_devices(&mut self, permission_error: &AtomicBool) -> Result<()> {
-        if self.machine.is_none() {
+        if self.machines.is_empty() {
             return Ok(());
         }
 
@@ -210,10 +237,6 @@ impl EvdevRuntime {
         {
             self.rescan_devices(permission_error)?;
         }
-
-        let Some(machine) = self.machine.as_mut() else {
-            return Ok(());
-        };
 
         for device in &mut self.devices {
             loop {
@@ -233,9 +256,16 @@ impl EvdevRuntime {
                                 value,
                                 "evdev watched key event"
                             );
-                            dispatch_transition(
-                                machine.handle_key(keycode, transition_from_evdev_value(value)),
-                            );
+                            let transition = transition_from_evdev_value(value);
+                            for machine in &mut self.machines {
+                                if !machine.machine.watched_keys().contains(&keycode) {
+                                    continue;
+                                }
+                                dispatch_transition(
+                                    &machine.shortcut_id,
+                                    machine.machine.handle_key(keycode, transition),
+                                );
+                            }
                         }
                     }
                     Err(error) if error.kind() == ErrorKind::WouldBlock => break,
@@ -263,22 +293,22 @@ impl EvdevRuntime {
     }
 }
 
-fn dispatch_transition(transition: HotkeyTransition) {
+fn dispatch_transition(shortcut_id: &str, transition: HotkeyTransition) {
     match transition {
-        HotkeyTransition::HotkeyDown => send_hotkey_down(),
-        HotkeyTransition::HotkeyUp => send_hotkey_up(),
+        HotkeyTransition::HotkeyDown => send_hotkey_down(shortcut_id),
+        HotkeyTransition::HotkeyUp => send_hotkey_up(shortcut_id),
         HotkeyTransition::None => {}
     }
 }
 
-fn send_hotkey_down() {
-    if let Err(error) = crate::send_hotkey_method("HotkeyDown") {
+fn send_hotkey_down(shortcut_id: &str) {
+    if let Err(error) = crate::send_hotkey_method("HotkeyDown", shortcut_id) {
         debug!(?error, "failed to send HotkeyDown to app");
     }
 }
 
-fn send_hotkey_up() {
-    if let Err(error) = crate::send_hotkey_method("HotkeyUp") {
+fn send_hotkey_up(shortcut_id: &str) {
+    if let Err(error) = crate::send_hotkey_method("HotkeyUp", shortcut_id) {
         debug!(?error, "failed to send HotkeyUp to app");
     }
 }
@@ -293,16 +323,18 @@ fn transition_from_evdev_value(value: i32) -> KeyTransition {
 }
 
 fn status_for_config(config: &ShortcutRuntimeConfig) -> Result<DaemonStatus> {
-    let shortcut = match RuntimeShortcut::push_to_talk_from_config(config) {
-        Ok(Some(shortcut)) => shortcut,
-        Ok(None) => return Ok(DaemonStatus::RunningUnconfigured),
+    let shortcuts = match RuntimeShortcut::from_config(config) {
+        Ok(shortcuts) if !shortcuts.is_empty() => shortcuts,
+        Ok(_) => return Ok(DaemonStatus::RunningUnconfigured),
         Err(error) => return Err(error).context("daemon received invalid shortcut config"),
     };
 
-    let requirements = requirements_for_chord(shortcut.chord)
-        .context("daemon cannot map shortcut to evdev key codes")?;
-
-    let watched_keys = HotkeyStateMachine::new(requirements).watched_keys().clone();
+    let mut watched_keys = HashSet::new();
+    for shortcut in shortcuts {
+        let requirements = requirements_for_chord(shortcut.chord)
+            .context("daemon cannot map shortcut to evdev key codes")?;
+        watched_keys.extend(HotkeyStateMachine::new(requirements).watched_keys().clone());
+    }
     let scan =
         open_devices_for_watched_keys(&watched_keys).context("failed to probe evdev devices")?;
     Ok(status_from_device_scan(
@@ -535,20 +567,22 @@ mod tests {
     }
 
     #[test]
-    fn extracts_push_to_talk_runtime_shortcut() {
+    fn extracts_runtime_shortcuts() {
         let config = ShortcutRuntimeConfig {
             schema_version: 1,
             shortcuts: vec![ShortcutRuntimeBinding {
-                action: "push_to_talk".to_string(),
+                id: "default".to_string(),
+                name: "Default".to_string(),
                 accelerator: "Ctrl+Alt+F".to_string(),
                 enabled: true,
             }],
         };
 
-        let shortcut = RuntimeShortcut::push_to_talk_from_config(&config)
-            .expect("valid config")
-            .expect("shortcut");
+        let shortcuts = RuntimeShortcut::from_config(&config).expect("valid config");
+        let shortcut = shortcuts.first().expect("shortcut");
 
+        assert_eq!(shortcut.id, "default");
+        assert_eq!(shortcut.name, "Default");
         assert_eq!(shortcut.accelerator, "Ctrl+Alt+F");
         assert!(shortcut.chord.modifiers.ctrl);
         assert!(shortcut.chord.modifiers.alt);

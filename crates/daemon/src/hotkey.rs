@@ -2,33 +2,36 @@ use std::collections::HashSet;
 use std::hash::Hash;
 
 use anyhow::{Context, Result};
-use shared::{ShortcutAction, ShortcutChord, ShortcutRuntimeConfig};
+use shared::{ShortcutChord, ShortcutRuntimeBinding, ShortcutRuntimeConfig};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeShortcut {
+    pub id: String,
+    pub name: String,
     pub accelerator: String,
     pub chord: ShortcutChord,
 }
 
 impl RuntimeShortcut {
-    pub fn push_to_talk_from_config(config: &ShortcutRuntimeConfig) -> Result<Option<Self>> {
-        let Some(binding) = config.shortcuts.iter().find(|binding| {
-            binding.enabled && binding.action() == Some(ShortcutAction::PushToTalk)
-        }) else {
-            return Ok(None);
-        };
+    pub fn from_config(config: &ShortcutRuntimeConfig) -> Result<Vec<Self>> {
+        config
+            .shortcuts
+            .iter()
+            .filter(|binding| binding.enabled && !binding.accelerator.trim().is_empty())
+            .map(Self::from_binding)
+            .collect()
+    }
 
-        if binding.accelerator.trim().is_empty() {
-            return Ok(None);
-        }
-
+    fn from_binding(binding: &ShortcutRuntimeBinding) -> Result<Self> {
         let chord = ShortcutChord::parse(&binding.accelerator)
             .with_context(|| format!("failed to parse shortcut {}", binding.accelerator))?;
 
-        Ok(Some(Self {
+        Ok(Self {
+            id: binding.id.clone(),
+            name: binding.name.clone(),
             accelerator: binding.accelerator.clone(),
             chord,
-        }))
+        })
     }
 }
 
