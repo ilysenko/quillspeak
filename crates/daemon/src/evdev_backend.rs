@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use evdev::{Device, EventSummary, KeyCode};
 use shared::{DaemonStatus, ShortcutChord, ShortcutKey, ShortcutRuntimeConfig};
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, warn};
 
 use crate::app_client::AppClient;
 use crate::hotkey::{
@@ -281,7 +281,7 @@ impl EvdevRuntime {
                                 continue;
                             }
 
-                            trace!(
+                            debug!(
                                 path = %device.path.display(),
                                 name = %device.name,
                                 keycode = keycode.code(),

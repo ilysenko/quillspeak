@@ -473,6 +473,10 @@ output = { type = "default" }
             Ok("Ctrl+Alt+Space".to_string())
         );
         assert_eq!(
+            normalize_accelerator("Ctrl+Space"),
+            Ok("Ctrl+Space".to_string())
+        );
+        assert_eq!(
             normalize_accelerator("ctrl+alt+f"),
             Ok("Ctrl+Alt+F".to_string())
         );
@@ -562,6 +566,11 @@ output = { type = "default" }
         assert!(chord.modifiers.alt);
         assert!(!chord.modifiers.shift);
         assert_eq!(chord.key, ShortcutKey::Character('F'));
+
+        let chord = ShortcutChord::parse("Ctrl+Space").expect("valid shortcut");
+        assert!(chord.modifiers.ctrl);
+        assert!(!chord.modifiers.alt);
+        assert_eq!(chord.key, ShortcutKey::Space);
 
         let chord = ShortcutChord::parse("Super+F12").expect("valid shortcut");
         assert!(chord.modifiers.super_key);

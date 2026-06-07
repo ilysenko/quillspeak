@@ -269,11 +269,7 @@ fn render_stack(
         state.daemon_status.get(),
         state.draft.clone(),
     );
-    stack.add_titled(
-        &widgets::scrollable_page(general_page.widget()),
-        Some("general"),
-        "General",
-    );
+    stack.add_titled(general_page.widget(), Some("general"), "General");
     general_page_slot.replace(Some(general_page));
     let models_page = pages::models::build(
         state.model_states.borrow().clone(),

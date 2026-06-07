@@ -67,6 +67,7 @@ fn show_shortcut_recorder(shortcut_entry: &adw::EntryRow) {
     });
 
     let controller = gtk::EventControllerKey::new();
+    controller.set_propagation_phase(gtk::PropagationPhase::Capture);
     controller.connect_key_pressed({
         let recorder = recorder.clone();
         let shortcut_entry = shortcut_entry.clone();
@@ -90,7 +91,7 @@ fn show_shortcut_recorder(shortcut_entry: &adw::EntryRow) {
             gtk::glib::Propagation::Stop
         }
     });
-    content.add_controller(controller);
+    recorder.add_controller(controller);
 
     recorder.present();
     content.grab_focus();
@@ -102,10 +103,6 @@ fn shortcut_from_key_event(keyval: gdk::Key, state: gdk::ModifierType) -> Result
     }
 
     let modifiers = significant_modifiers(state);
-    if !gtk::accelerator_valid(keyval, modifiers) {
-        return Err("Shortcut is not valid".to_string());
-    }
-
     let key = key_name_for_config(keyval).ok_or_else(|| "Unsupported shortcut key".to_string())?;
     let mut parts = Vec::new();
     if modifiers.contains(gdk::ModifierType::CONTROL_MASK) {
@@ -172,4 +169,36 @@ fn key_name_for_config(keyval: gdk::Key) -> Option<String> {
     }
 
     keyval.name().map(|name| name.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn records_ctrl_space() {
+        assert_eq!(
+            shortcut_from_key_event(gdk::Key::space, gdk::ModifierType::CONTROL_MASK),
+            Ok("Ctrl+Space".to_string())
+        );
+    }
+
+    #[test]
+    fn records_ctrl_alt_space() {
+        assert_eq!(
+            shortcut_from_key_event(
+                gdk::Key::space,
+                gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::ALT_MASK
+            ),
+            Ok("Ctrl+Alt+Space".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_modifier_only_shortcut() {
+        assert_eq!(
+            shortcut_from_key_event(gdk::Key::Control_L, gdk::ModifierType::CONTROL_MASK),
+            Err("Press a non-modifier key as part of the shortcut".to_string())
+        );
+    }
 }
