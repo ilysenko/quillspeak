@@ -3,11 +3,13 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod audio;
 mod language;
 mod model;
 mod output;
 mod shortcut;
 
+pub use audio::AudioInputRef;
 pub use language::{
     AUTO_LANGUAGE_VALUE, SUPPORTED_LANGUAGES, SupportedLanguage, supported_language_label,
 };
@@ -18,7 +20,7 @@ pub use shortcut::{
     ShortcutProfile, next_shortcut_id, normalize_accelerator,
 };
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 2;
+pub const CONFIG_SCHEMA_VERSION: u32 = 4;
 pub const INHERIT_VALUE: &str = "default";
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -117,7 +119,7 @@ impl TryFrom<&str> for HotkeyBackend {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ComputeBackend {
     #[default]
@@ -163,9 +165,11 @@ impl TryFrom<&str> for ComputeBackend {
 pub struct GeneralConfig {
     pub mode: HotkeyMode,
     pub hotkey_backend: HotkeyBackend,
+    pub default_input: AudioInputRef,
     pub default_model_id: String,
     pub default_language: String,
     pub compute_backend: ComputeBackend,
+    pub keep_model_loaded: bool,
     pub default_output: OutputAction,
 }
 
@@ -183,9 +187,11 @@ impl Default for GeneralConfig {
         Self {
             mode: HotkeyMode::PushToTalk,
             hotkey_backend: HotkeyBackend::Auto,
+            default_input: AudioInputRef::SystemDefault,
             default_model_id: DEFAULT_MODEL_ID.to_string(),
             default_language: AUTO_LANGUAGE_VALUE.to_string(),
             compute_backend: ComputeBackend::Auto,
+            keep_model_loaded: true,
             default_output: OutputAction::Clipboard,
         }
     }
@@ -343,6 +349,8 @@ mod tests {
         assert_eq!(config.schema_version, CONFIG_SCHEMA_VERSION);
         assert_eq!(config.general.mode, HotkeyMode::PushToTalk);
         assert_eq!(config.general.hotkey_backend, HotkeyBackend::Auto);
+        assert_eq!(config.general.default_input, AudioInputRef::SystemDefault);
+        assert!(config.general.keep_model_loaded);
         assert_eq!(config.shortcuts.len(), 1);
         assert_eq!(config.default_shortcut().id, DEFAULT_SHORTCUT_ID);
         assert_eq!(config.default_shortcut().name, DEFAULT_SHORTCUT_NAME);
@@ -379,14 +387,72 @@ hotkey = "Ctrl-Alt-F"
     #[test]
     fn rejects_wrong_schema_version() {
         let config = AppConfig {
-            schema_version: 1,
+            schema_version: 3,
             ..AppConfig::default()
         };
 
         assert_eq!(
             config.normalized(),
-            Err(ConfigError::UnsupportedSchemaVersion(1))
+            Err(ConfigError::UnsupportedSchemaVersion(3))
         );
+    }
+
+    #[test]
+    fn rejects_schema_without_default_input() {
+        let result = toml::from_str::<AppConfig>(
+            r#"
+schema_version = 4
+
+[general]
+mode = "push_to_talk"
+hotkey_backend = "auto"
+default_model_id = "large-v3-turbo-q5_0"
+default_language = "auto"
+compute_backend = "auto"
+keep_model_loaded = true
+default_output = { type = "clipboard" }
+
+[[shortcuts]]
+id = "default"
+name = "Default"
+enabled = true
+accelerator = "Ctrl+Alt+Space"
+model_id = "default"
+language = "default"
+output = { type = "default" }
+"#,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_schema_without_keep_model_loaded() {
+        let result = toml::from_str::<AppConfig>(
+            r#"
+schema_version = 4
+
+[general]
+mode = "push_to_talk"
+hotkey_backend = "auto"
+default_input = { type = "system_default" }
+default_model_id = "large-v3-turbo-q5_0"
+default_language = "auto"
+compute_backend = "auto"
+default_output = { type = "clipboard" }
+
+[[shortcuts]]
+id = "default"
+name = "Default"
+enabled = true
+accelerator = "Ctrl+Alt+Space"
+model_id = "default"
+language = "default"
+output = { type = "default" }
+"#,
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]

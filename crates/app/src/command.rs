@@ -1,6 +1,8 @@
 use shared::AppConfig;
 use shared::DaemonStatus;
 
+use crate::transcription::TranscriptionResult;
+
 pub type DownloadId = u64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,8 +13,9 @@ pub enum AppCommand {
     StopRecording(String),
     TranscriptionFinished {
         shortcut_id: String,
-        result: Result<(), String>,
+        result: Result<TranscriptionResult, String>,
     },
+    AudioInputDevicesRefreshed(Vec<crate::audio::AudioInputDevice>),
     SaveConfig(AppConfig),
     DownloadModel(String),
     CancelModelDownload(String),

@@ -8,6 +8,7 @@ use libadwaita as adw;
 use libadwaita::prelude::*;
 use shared::{AppConfig, DEFAULT_SHORTCUT_ID, DaemonStatus};
 
+use crate::audio::AudioInputDevice;
 use crate::command::AppCommand;
 use crate::models::ModelRowState;
 
@@ -22,6 +23,7 @@ pub use draft::SettingsDraft;
 pub struct SettingsState {
     draft: SettingsDraft,
     daemon_status: Rc<Cell<DaemonStatus>>,
+    audio_input_devices: Rc<RefCell<Vec<AudioInputDevice>>>,
     model_states: Rc<RefCell<Vec<ModelRowState>>>,
     ready_model_ids: Rc<RefCell<HashSet<String>>>,
     command_tx: mpsc::Sender<AppCommand>,
@@ -40,6 +42,7 @@ impl SettingsWindow {
     pub fn new(
         application: &adw::Application,
         config: &AppConfig,
+        audio_input_devices: Vec<AudioInputDevice>,
         model_states: Vec<ModelRowState>,
         ready_model_ids: HashSet<String>,
         daemon_status: DaemonStatus,
@@ -48,6 +51,7 @@ impl SettingsWindow {
         let state = SettingsState {
             draft: SettingsDraft::new(config.clone()),
             daemon_status: Rc::new(Cell::new(daemon_status)),
+            audio_input_devices: Rc::new(RefCell::new(audio_input_devices)),
             model_states: Rc::new(RefCell::new(model_states)),
             ready_model_ids: Rc::new(RefCell::new(ready_model_ids)),
             command_tx: command_tx.clone(),
@@ -151,6 +155,12 @@ impl SettingsWindow {
         }
     }
 
+    pub fn update_audio_input_devices(&self, audio_input_devices: Vec<AudioInputDevice>) {
+        let visible = self.stack.visible_child_name().map(|name| name.to_string());
+        self.state.audio_input_devices.replace(audio_input_devices);
+        self.render(visible);
+    }
+
     pub fn update_model_inventory(
         &self,
         model_states: Vec<ModelRowState>,
@@ -238,6 +248,7 @@ pub(super) fn render_stack(
     let ready_model_ids = state.ready_model_ids.borrow().clone();
     let general_page = pages::general::build(
         &config,
+        state.audio_input_devices.borrow().clone(),
         ready_model_ids.clone(),
         state.daemon_status.get(),
         state.draft.clone(),

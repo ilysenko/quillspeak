@@ -21,12 +21,14 @@ The current prototype includes:
 - optional daemon-side evdev hotkey capture for Wayland,
 - zbus-based D-Bus between the app and daemon,
 - whisper.cpp model catalog and download management,
-- placeholder recording/transcription/output functions that only log.
+- CPAL microphone capture from the configured default input,
+- whisper-rs/whisper.cpp transcription on downloaded ggml models,
+- placeholder output actions that only log clipboard/script behavior.
 
 Do not add Electron or Tauri. Do not require the daemon for main app startup.
-Do not require sudo for the main app. Do not implement real microphone
-recording, Whisper inference, clipboard insertion, script execution, XDG portal
-shortcuts, Flatpak packaging, or `.deb` packaging unless explicitly requested.
+Do not require sudo for the main app. Do not implement clipboard insertion,
+script execution, text insertion, XDG portal shortcuts, Flatpak packaging, or
+`.deb` packaging unless explicitly requested.
 
 ## Workspace
 
@@ -78,7 +80,9 @@ cargo run -p daemon --bin myapp-daemon -- --hotkey-down --shortcut-id default
 - `crates/app/src/main.rs`: app module wiring and tracing setup.
 - `crates/app/src/app.rs`: app runtime, command pump, lifecycle hold, Ctrl-C,
   tray/settings startup, config apply/save, daemon sync, model commands,
-  recording state, and quit path.
+  recording/audio/transcription orchestration, and quit path.
+- `crates/app/src/audio/*`: CPAL input device enumeration, capture stream
+  management, mono conversion, and 16 kHz resampling for Whisper.
 - `crates/app/src/command.rs`: `AppCommand`, download IDs, and model download
   outcome messages. Worker threads should communicate with app state through
   these commands.
@@ -122,8 +126,11 @@ cargo run -p daemon --bin myapp-daemon -- --hotkey-down --shortcut-id default
   dropdown mapping helpers.
 - `crates/app/src/tray.rs`: StatusNotifierItem tray, menu, recording-state
   labels, and generated color icon.
-- `crates/app/src/recording.rs`: recording state machine and placeholder
-  `start_recording`, `stop_recording`, and `transcribe_audio` logging.
+- `crates/app/src/recording.rs`: recording state machine and start/stop
+  logging.
+- `crates/app/src/transcription/mod.rs`: background Whisper worker, last-used
+  model context cache, transcription request/result types, language handling,
+  and debug logs.
 - `crates/daemon/src/main.rs`: daemon CLI, D-Bus service, startup flow, app
   config request, status notification, and Ctrl-C handling.
 - `crates/daemon/src/cache.rs`: daemon last-known shortcut runtime config cache.
@@ -175,12 +182,14 @@ Recording action labels are stateful:
 
 Manual tray recording uses `AppCommand::ToggleRecording`. Hotkey backends must
 not use the toggle because push-to-talk requires explicit key down/up semantics.
-Hotkey down starts recording for a shortcut id. Hotkey up stops that same
-shortcut and starts placeholder processing.
+Hotkey down starts CPAL audio capture for a shortcut id. Hotkey up stops that
+same shortcut, snapshots the shortcut model/language/output settings, and sends
+a transcription job to the Whisper worker.
 
-`RecordingService` is the recording state owner. The current implementation
-only logs. Do not fake real recording, transcription, clipboard, or script
-execution.
+`RecordingService` owns only the state machine. `AppRuntime` owns the active
+CPAL capture stream, and `TranscriptionService` owns background Whisper
+inference. Clipboard and script output are still placeholders that log what
+would happen with recognized text.
 
 ## D-Bus Contract
 
@@ -236,14 +245,16 @@ Current app config path:
 Current schema:
 
 ```toml
-schema_version = 2
+schema_version = 4
 
 [general]
 mode = "push_to_talk"
 hotkey_backend = "auto"
+default_input = { type = "system_default" }
 default_model_id = "large-v3-turbo-q5_0"
 default_language = "auto"
 compute_backend = "auto"
+keep_model_loaded = true
 default_output = { type = "clipboard" }
 
 [[shortcuts]]
@@ -256,10 +267,14 @@ language = "default"
 output = { type = "default" }
 ```
 
-Only schema v2 is supported during development. Do not add old-config
+Only schema v4 is supported during development. Do not add old-config
 migration paths unless explicitly requested. If the schema changes during
 active development, update the current schema and tests directly instead of
 layering legacy compatibility.
+
+If a local development config is from an older schema, remove
+`~/.config/myapp/config.toml` and restart the app to generate the current
+default config.
 
 The daemon receives daemon-effective runtime config, not the full app config.
 `ShortcutRuntimeConfig::for_daemon` enables bindings only when the resolved
@@ -280,8 +295,8 @@ should not appear at startup.
 
 Current pages:
 
-- `General`: daemon status, backend, compute backend, default model, default
-  language, and default output.
+- `General`: daemon status, backend, compute backend, default input, default
+  model, default language, and default output.
 - `Models`: whisper.cpp model download/remove/status management.
 - one page per shortcut profile, with `Default` permanent.
 - `Add New`: creates a new shortcut profile.
@@ -354,6 +369,45 @@ UI rules:
 - `Remove Model` should ask for confirmation before deleting;
 - referenced models should not be silently deleted.
 
+## Audio And Transcription
+
+The app records audio through CPAL. Keep audio capture display-server agnostic:
+X11/Wayland affects global hotkeys, not microphone capture.
+
+Current audio behavior:
+
+- `GeneralConfig.default_input` stores either `system_default` or a CPAL device
+  reference with `host`, `id`, and human label;
+- Settings > General lists `System Default` first, then discovered input
+  devices;
+- `System Default` resolves to the current host default at recording time;
+- the default build uses CPAL's ALSA host;
+- optional Cargo features `audio-pipewire` and `audio-pulseaudio` enable native
+  CPAL PipeWire/PulseAudio hosts when the system development packages are
+  installed.
+
+Current transcription behavior:
+
+- stop recording converts captured audio to 16 kHz mono `f32`;
+- each shortcut resolves its own model, language, compute backend, and output
+  snapshot before the worker starts;
+- only ready/downloaded models may be used;
+- `whisper-rs` is the Rust wrapper over whisper.cpp;
+- model contexts are cached inside the transcription worker by model path and
+  compute backend;
+- recognized text is logged at `info`;
+- full request/result metadata is logged at `debug`.
+
+Compute backend is selected from config. `auto` enables whisper.cpp GPU usage
+when the binary is built with a GPU backend and otherwise falls back to CPU
+behavior. Explicit Vulkan/CUDA/ROCm selections should fail clearly if the app
+was not compiled with the matching Cargo feature. OpenVINO is a future setting
+placeholder and is not implemented by the current `whisper-rs` integration.
+
+Do not block the GTK main thread with audio capture, model loading, inference,
+downloads, hashing, or output execution. Keep those paths worker based and send
+state changes back through `AppCommand`.
+
 ## Hotkey Architecture
 
 Hotkey handling is pluggable. Current app-side backend types:
@@ -402,14 +456,24 @@ git diff --check
 System dependencies for the full app build on Debian/Ubuntu-style systems:
 
 ```sh
-sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev
+sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libgtk-4-dev libadwaita-1-dev
+```
+
+Optional native CPAL hosts require extra dev packages and features:
+
+```sh
+sudo apt install libpipewire-0.3-dev libpulse-dev
+cargo run -p app --bin myapp --features audio-pipewire
+cargo run -p app --bin myapp --features audio-pulseaudio
 ```
 
 Run commands:
 
 ```sh
 cargo run -p app --bin myapp
+cargo run -p app --bin myapp --features audio-pipewire
 cargo run -p daemon --bin myapp-daemon
+RUST_LOG=debug cargo run -p app --bin myapp
 RUST_LOG=debug MYAPP_DEV_LOG=1 cargo run -p daemon --bin myapp-daemon
 cargo run -p daemon --bin myapp-daemon -- --hotkey-down
 cargo run -p daemon --bin myapp-daemon -- --hotkey-up
@@ -433,11 +497,11 @@ testing only. The main app must not depend on it.
 - Prefer pure tests in `shared`, model logic, hotkey state machines, daemon
   logic, and non-GTK app modules.
 - Do not touch GTK from worker threads.
-- Do not block the GTK main thread with network, hashing, or filesystem-heavy
-  work.
+- Do not block the GTK main thread with network, hashing, filesystem-heavy
+  work, model loading, audio capture, or Whisper inference.
 - Use XDG/directories helpers instead of hardcoded user paths.
-- Keep placeholder functions honest: log what would happen, but do not pretend
-  integration is complete.
+- Keep incomplete output integrations honest: log what clipboard/script/text
+  insertion would do, but do not pretend those integrations are complete.
 - Treat existing user changes as intentional. Do not revert unrelated work.
 - During this development phase, do not preserve legacy config compatibility
   unless the user explicitly asks for it.
@@ -462,8 +526,8 @@ Possible later additions, only when requested:
 
 - XDG GlobalShortcuts portal backend,
 - robust packaged evdev permissions through udev/logind/service integration,
-- microphone recording,
-- Whisper inference,
+- production-grade audio buffering/resampling,
+- streaming/VAD transcription,
 - clipboard insertion,
 - script execution with recognized text,
 - text insertion into the focused app,

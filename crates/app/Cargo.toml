@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
+cpal.workspace = true
 ctrlc.workspace = true
 directories.workspace = true
 gtk4.workspace = true
@@ -23,5 +24,14 @@ sha1.workspace = true
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+whisper-rs.workspace = true
 x11rb.workspace = true
 zbus.workspace = true
+
+[features]
+default = []
+audio-pipewire = ["cpal/pipewire"]
+audio-pulseaudio = ["cpal/pulseaudio"]
+whisper-cuda = ["whisper-rs/cuda"]
+whisper-rocm = ["whisper-rs/hipblas"]
+whisper-vulkan = ["whisper-rs/vulkan"]

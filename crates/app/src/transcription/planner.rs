@@ -1,0 +1,109 @@
+use std::collections::HashSet;
+use std::path::PathBuf;
+
+use anyhow::{Result, anyhow, ensure};
+use shared::{AppConfig, ModelCatalogEntry, OutputAction, ResolvedOutput, model_catalog_entry};
+
+use crate::transcription::types::TranscriptionPlan;
+
+pub fn build_transcription_plan(
+    config: &AppConfig,
+    ready_model_ids: &HashSet<String>,
+    model_path: impl FnOnce(ModelCatalogEntry) -> PathBuf,
+    shortcut_id: &str,
+) -> Result<TranscriptionPlan> {
+    let shortcut = config
+        .shortcut_by_id(shortcut_id)
+        .ok_or_else(|| anyhow!("unknown shortcut {shortcut_id}"))?;
+    let model_id = config.resolved_model_id(shortcut).to_string();
+    let entry =
+        model_catalog_entry(&model_id).ok_or_else(|| anyhow!("unknown model {model_id}"))?;
+    ensure!(
+        ready_model_ids.contains(&model_id),
+        "model {model_id} is not downloaded; open Settings > Models and download it first"
+    );
+    let model_path = model_path(entry);
+    ensure!(
+        model_path.exists(),
+        "model file is missing even though inventory marks it ready: {}",
+        model_path.display()
+    );
+    let output = resolved_output_action(config.resolved_output(shortcut));
+
+    Ok(TranscriptionPlan {
+        shortcut_id: shortcut.id.clone(),
+        shortcut_name: shortcut.name.clone(),
+        model_id,
+        model_path,
+        language: config.resolved_language(shortcut).to_string(),
+        compute_backend: config.general.compute_backend,
+        output,
+        input: config.general.default_input.clone(),
+    })
+}
+
+fn resolved_output_action(output: ResolvedOutput<'_>) -> OutputAction {
+    match output {
+        ResolvedOutput::General(action) => action.clone(),
+        ResolvedOutput::Clipboard => OutputAction::Clipboard,
+        ResolvedOutput::Script(path) => OutputAction::Script {
+            path: path.to_string(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use shared::{DEFAULT_MODEL_ID, DEFAULT_SHORTCUT_ID};
+
+    use super::*;
+
+    #[test]
+    fn rejects_shortcut_when_model_is_not_ready() {
+        let config = AppConfig::default();
+        let ready_model_ids = HashSet::new();
+
+        let result = build_transcription_plan(
+            &config,
+            &ready_model_ids,
+            |entry| PathBuf::from(entry.filename),
+            DEFAULT_SHORTCUT_ID,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn plan_snapshots_current_shortcut_settings() {
+        let config = AppConfig::default();
+        let ready_model_ids = HashSet::from([DEFAULT_MODEL_ID.to_string()]);
+        let model_path = temp_model_path();
+        fs::write(&model_path, b"model").expect("test model file should be writable");
+
+        let plan = build_transcription_plan(
+            &config,
+            &ready_model_ids,
+            |_| model_path.clone(),
+            DEFAULT_SHORTCUT_ID,
+        )
+        .expect("ready model should build a plan");
+
+        assert_eq!(plan.shortcut_id, DEFAULT_SHORTCUT_ID);
+        assert_eq!(plan.model_id, DEFAULT_MODEL_ID);
+        assert_eq!(plan.model_path, model_path);
+        assert_eq!(plan.input, config.general.default_input);
+
+        let _ = fs::remove_file(plan.model_path);
+    }
+
+    fn temp_model_path() -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("myapp-test-model-{suffix}.bin"))
+    }
+}

@@ -1,4 +1,5 @@
 mod app;
+mod audio;
 mod command;
 mod config_store;
 mod daemon_client;
@@ -6,8 +7,10 @@ mod daemon_monitor;
 mod dbus;
 mod hotkey;
 mod models;
+mod output;
 mod recording;
 mod settings;
+mod transcription;
 mod tray;
 
 fn main() -> gtk4::glib::ExitCode {

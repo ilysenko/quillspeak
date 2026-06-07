@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -9,11 +10,10 @@ use gtk::gio;
 use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use shared::{
-    APP_ID, AppConfig, DEFAULT_SHORTCUT_ID, DaemonStatus, ResolvedOutput, ShortcutRuntimeConfig,
-};
+use shared::{APP_ID, AppConfig, DEFAULT_SHORTCUT_ID, DaemonStatus, ShortcutRuntimeConfig};
 use tracing::{debug, error, info, warn};
 
+use crate::audio::{AudioInputDevice, list_input_devices};
 use crate::command::{AppCommand, DownloadId, ModelDownloadOutcome};
 use crate::config_store::ConfigStore;
 use crate::daemon_client::DaemonClient;
@@ -23,8 +23,10 @@ use crate::hotkey::{
     HotkeyBackendHandle, backend_name_for_config, configure_hotkey_backend, resolve_backend_kind,
 };
 use crate::models::{FinishEffect, ModelDownloadManager, ModelRowState, ModelStore};
-use crate::recording::{RecordingPhase, RecordingService, spawn_transcription_job};
+use crate::output::OutputService;
+use crate::recording::{RecordingPhase, RecordingPipeline, RecordingService};
 use crate::settings::SettingsWindow;
+use crate::transcription::{TranscriptionResult, TranscriptionService, build_transcription_plan};
 use crate::tray::Tray;
 
 const COMMAND_PUMP_INTERVAL: Duration = Duration::from_millis(50);
@@ -63,6 +65,9 @@ struct AppRuntime {
     config_store: ConfigStore,
     model_store: ModelStore,
     download_manager: RefCell<ModelDownloadManager>,
+    audio_input_devices: RefCell<Vec<AudioInputDevice>>,
+    recording_pipeline: RefCell<RecordingPipeline>,
+    transcription_service: TranscriptionService,
     config: RefCell<AppConfig>,
     daemon_client: DaemonClient,
     daemon_status: Cell<DaemonStatus>,
@@ -82,6 +87,7 @@ impl AppRuntime {
 
         let config_store = ConfigStore::new()?;
         let model_store = ModelStore::new()?;
+        let audio_input_devices = list_input_devices();
         let config = config_store.load_or_create_default().with_context(|| {
             format!(
                 "failed to load config from {}",
@@ -94,6 +100,8 @@ impl AppRuntime {
         let shortcut_runtime_config = Arc::new(Mutex::new(daemon_runtime_config.clone()));
         let dbus_handle =
             AppDbusHandle::spawn(command_tx.clone(), Arc::clone(&shortcut_runtime_config));
+        let transcription_service =
+            TranscriptionService::spawn(command_tx.clone(), config.general.keep_model_loaded)?;
 
         let daemon_status = daemon_client.status();
         let hotkey_backend = configure_hotkey_backend(command_tx.clone(), &config);
@@ -120,6 +128,9 @@ impl AppRuntime {
             config_store,
             model_store,
             download_manager: RefCell::new(ModelDownloadManager::default()),
+            audio_input_devices: RefCell::new(audio_input_devices),
+            recording_pipeline: RefCell::new(RecordingPipeline::default()),
+            transcription_service,
             config: RefCell::new(config),
             daemon_client,
             daemon_status: Cell::new(daemon_status),
@@ -161,6 +172,9 @@ impl AppRuntime {
                 shortcut_id,
                 result,
             } => self.finish_transcription(&shortcut_id, result),
+            AppCommand::AudioInputDevicesRefreshed(devices) => {
+                self.update_audio_input_devices(devices)
+            }
             AppCommand::SaveConfig(config) => self.save_config(config),
             AppCommand::DownloadModel(model_id) => self.download_model(model_id),
             AppCommand::CancelModelDownload(model_id) => self.cancel_model_download(model_id),
@@ -201,10 +215,36 @@ impl AppRuntime {
     }
 
     fn start_recording(&self, shortcut_id: &str) {
-        if self.config.borrow().shortcut_by_id(shortcut_id).is_none() {
-            warn!(shortcut_id, "Start recording ignored for unknown shortcut");
+        if self.recording.borrow().phase() != RecordingPhase::Idle {
+            let phase = self.recording.borrow_mut().start_recording(shortcut_id);
+            self.set_recording_phase(phase);
             return;
         }
+
+        let plan = match build_transcription_plan(
+            &self.config.borrow(),
+            &self.model_store.ready_model_ids(),
+            |entry| self.model_store.model_path(entry),
+            shortcut_id,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                warn!(?error, shortcut_id, "Start recording ignored");
+                return;
+            }
+        };
+        let input_label = plan.input.display_label().to_string();
+        if let Err(error) = self.recording_pipeline.borrow_mut().start(plan) {
+            warn!(
+                ?error,
+                shortcut_id,
+                input = input_label,
+                "failed to start audio capture"
+            );
+            return;
+        }
+        info!(shortcut_id, input = input_label, "audio capture started");
+
         let phase = self.recording.borrow_mut().start_recording(shortcut_id);
         self.set_recording_phase(phase);
     }
@@ -214,13 +254,32 @@ impl AppRuntime {
         self.set_recording_phase(phase);
 
         if let Some(job) = job {
-            spawn_transcription_job(job, self.command_sender());
+            let shortcut_id = job.shortcut_id;
+            let result = self
+                .recording_pipeline
+                .borrow_mut()
+                .stop()
+                .and_then(|request| self.transcription_service.submit(request));
+
+            if let Err(error) = result {
+                warn!(?error, shortcut_id, "failed to submit transcription job");
+                let _ = self
+                    .command_sender()
+                    .send(AppCommand::TranscriptionFinished {
+                        shortcut_id,
+                        result: Err(format!("{error:#}")),
+                    });
+            }
         }
     }
 
-    fn finish_transcription(&self, shortcut_id: &str, result: Result<(), String>) {
-        if result.is_ok() {
-            self.apply_transcription_output(shortcut_id);
+    fn finish_transcription(
+        &self,
+        shortcut_id: &str,
+        result: std::result::Result<TranscriptionResult, String>,
+    ) {
+        if let Ok(result) = &result {
+            self.apply_transcription_output(shortcut_id, result);
         }
         let phase = self
             .recording
@@ -229,39 +288,8 @@ impl AppRuntime {
         self.set_recording_phase(phase);
     }
 
-    fn apply_transcription_output(&self, shortcut_id: &str) {
-        let config = self.config.borrow();
-        let Some(shortcut) = config.shortcut_by_id(shortcut_id) else {
-            warn!(
-                shortcut_id,
-                "No shortcut config found for transcription output"
-            );
-            return;
-        };
-        let model_id = config.resolved_model_id(shortcut);
-        let language = config.resolved_language(shortcut);
-        let output = config.resolved_output(shortcut);
-
-        match output {
-            ResolvedOutput::General(action) => info!(
-                shortcut_id,
-                model_id,
-                language,
-                output = action.label(),
-                "Transcription output placeholder"
-            ),
-            ResolvedOutput::Clipboard => info!(
-                shortcut_id,
-                model_id, language, "Would copy recognized text to clipboard"
-            ),
-            ResolvedOutput::Script(path) => info!(
-                shortcut_id,
-                model_id,
-                language,
-                script = path,
-                "Would run output script with recognized text argument"
-            ),
-        }
+    fn apply_transcription_output(&self, shortcut_id: &str, result: &TranscriptionResult) {
+        OutputService::apply(shortcut_id, result);
     }
 
     fn set_recording_phase(&self, phase: RecordingPhase) {
@@ -275,6 +303,7 @@ impl AppRuntime {
             let window = SettingsWindow::new(
                 &self.application,
                 &self.config.borrow(),
+                self.audio_input_devices.borrow().clone(),
                 self.model_row_states(),
                 self.model_store.ready_model_ids(),
                 self.daemon_status.get(),
@@ -289,6 +318,7 @@ impl AppRuntime {
             window.update_daemon_status(self.daemon_status.get());
             window.present();
         }
+        self.request_audio_input_refresh();
     }
 
     fn save_config(&self, config: AppConfig) {
@@ -316,6 +346,12 @@ impl AppRuntime {
             *runtime_config = daemon_runtime_config.clone();
         }
         sync_shortcut_config_to_daemon(&self.daemon_client, &daemon_runtime_config);
+        if let Err(error) = self
+            .transcription_service
+            .set_keep_model_loaded(config.general.keep_model_loaded)
+        {
+            warn!(?error, "failed to update whisper model cache policy");
+        }
 
         self.config.replace(config.clone());
         if let Some(window) = self.settings_window.borrow().as_ref() {
@@ -367,11 +403,23 @@ impl AppRuntime {
             warn!(model_id, "model delete ignored while download is active");
             return;
         }
-        if let Err(error) = self
+        let model_path = self.model_store.model_path_for_id(model_id);
+        match self
             .model_store
             .delete_model(model_id, &self.config.borrow())
         {
-            warn!(?error, model_id, "failed to delete model");
+            Ok(()) => {
+                if let Some(model_path) = model_path
+                    && let Err(error) = self
+                        .transcription_service
+                        .clear_cached_model_path(model_path)
+                {
+                    warn!(?error, model_id, "failed to clear cached deleted model");
+                }
+            }
+            Err(error) => {
+                warn!(?error, model_id, "failed to delete model");
+            }
         }
         self.refresh_model_inventory();
     }
@@ -480,6 +528,26 @@ impl AppRuntime {
         }
     }
 
+    fn request_audio_input_refresh(&self) {
+        let command_tx = self.command_sender();
+        if let Err(error) = thread::Builder::new()
+            .name("myapp-audio-devices".to_string())
+            .spawn(move || {
+                let devices = list_input_devices();
+                let _ = command_tx.send(AppCommand::AudioInputDevicesRefreshed(devices));
+            })
+        {
+            warn!(?error, "failed to spawn audio input device refresh worker");
+        }
+    }
+
+    fn update_audio_input_devices(&self, devices: Vec<AudioInputDevice>) {
+        self.audio_input_devices.replace(devices.clone());
+        if let Some(window) = self.settings_window.borrow().as_ref() {
+            window.update_audio_input_devices(devices);
+        }
+    }
+
     fn model_row_states(&self) -> Vec<ModelRowState> {
         let config = self.config.borrow();
         let download_manager = self.download_manager.borrow();
@@ -515,6 +583,7 @@ impl AppRuntime {
 
     fn quit(&self) {
         info!("Quitting MyApp");
+        self.recording_pipeline.borrow_mut().cancel();
         self.hotkey_backend.borrow_mut().take();
         self.daemon_monitor.borrow_mut().take();
         self.dbus_handle.borrow_mut().take();
@@ -531,6 +600,8 @@ impl AppRuntime {
             shortcut_count = config.shortcuts.len(),
             mode = %config.general.mode.as_str(),
             backend = %backend_name_for_config(&config),
+            default_input = %config.general.default_input.display_label(),
+            keep_model_loaded = config.general.keep_model_loaded,
             daemon_status = %self.daemon_status.get().display_label(),
             model_dir = %self.model_store.root().display(),
             "MyApp started in foreground development mode"

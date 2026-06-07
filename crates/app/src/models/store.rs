@@ -41,6 +41,10 @@ impl ModelStore {
         model_path(&self.root, entry)
     }
 
+    pub fn model_path_for_id(&self, model_id: &str) -> Option<PathBuf> {
+        model_catalog_entry(model_id).map(|entry| self.model_path(entry))
+    }
+
     pub fn ready_model_ids(&self) -> HashSet<String> {
         self.ready_model_ids.borrow().clone()
     }

@@ -16,12 +16,25 @@ D-Bus architecture.
 
 ## System Dependencies
 
-On Debian/Ubuntu-style systems install the GTK development packages before
-building the main app:
+On Debian/Ubuntu-style systems install the desktop, audio, and whisper.cpp build
+dependencies before building the main app:
 
 ```sh
-sudo apt install build-essential pkg-config libgtk-4-dev libadwaita-1-dev
+sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libgtk-4-dev libadwaita-1-dev
 ```
+
+The default build uses CPAL's ALSA backend because it is widely available and
+does not require extra PipeWire/PulseAudio development packages. Native
+PipeWire or PulseAudio hosts can be enabled for local testing with Cargo
+features:
+
+```sh
+cargo run -p app --bin myapp --features audio-pipewire
+cargo run -p app --bin myapp --features audio-pulseaudio
+```
+
+Those features require the matching system development packages, for example
+`libpipewire-0.3-dev` or `libpulse-dev`.
 
 The daemon and shared crate do not require GTK. Real Wayland hotkey capture uses
 Linux evdev devices under `/dev/input/event*`; normal runtime should not use
@@ -33,7 +46,7 @@ through your distro's input group, logind ACLs, or a future udev/package rule.
 Run the main app in foreground development mode:
 
 ```sh
-cargo run -p app --bin myapp
+RUST_LOG=info cargo run -p app --bin myapp
 ```
 
 Expected behavior:
@@ -56,9 +69,10 @@ On X11, `hotkey_backend = "auto"` makes the main app capture the shortcut
 in-process and the daemon is not needed. On Wayland, `auto` uses the daemon for
 precise key down/up events.
 
-Verbose development logs:
+Verbose development logs for transcription details:
 
 ```sh
+RUST_LOG=debug cargo run -p app --bin myapp
 RUST_LOG=debug MYAPP_DEV_LOG=1 cargo run -p daemon --bin myapp-daemon
 ```
 
@@ -71,7 +85,8 @@ cargo run -p daemon --bin myapp-daemon -- --hotkey-down --shortcut-id default
 ```
 
 The first command should make the app log `Start recording`; the second should
-make it log `Stop recording`.
+make it log `Stop recording` and start transcription if the selected model is
+downloaded.
 
 The tray icon reflects the recording phase:
 
@@ -84,8 +99,35 @@ Real hotkey behavior:
 - pressing a configured shortcut sends `HotkeyDown(shortcut_id)` and turns the
   tray icon red,
 - releasing any required key sends `HotkeyUp(shortcut_id)`, turns the icon
-  orange while the placeholder transcription runs, then returns it to white,
+  orange while transcription runs, then returns it to white,
 - unrelated keys are ignored by the daemon and are not logged.
+
+## Audio And Transcription
+
+The app records audio with CPAL from the General page `Default input` setting.
+`System Default` is always available and resolves to the current Linux default
+input device at recording time. The settings dropdown also lists discovered
+input devices with stable CPAL device IDs when the host backend provides them.
+Audio capture is independent of X11/Wayland.
+
+On stop, the app converts captured audio to 16 kHz mono `f32`, runs
+`whisper-rs`/whisper.cpp on the model selected by the active shortcut, and logs
+recognized text:
+
+```text
+recognized text shortcut_id=default model_id=tiny language=auto text="..."
+```
+
+`RUST_LOG=debug` prints the full transcription debug structure: shortcut name,
+model path, compute backend, input device, capture duration, source sample rate,
+Whisper sample count, inference time, and segments.
+
+Models must be downloaded in Settings > Models before they can be used. If a
+shortcut points to a model that is not ready, recording stops with a clear log
+error and no hidden download starts during the hotkey flow.
+
+The first implementation only logs output actions. `Copy to clipboard` and
+`Run script` are not executed yet.
 
 ## Configuration
 
@@ -98,7 +140,7 @@ The main app owns user settings and writes TOML to:
 Default config:
 
 ```toml
-schema_version = 2
+schema_version = 4
 
 [general]
 mode = "push_to_talk"
@@ -106,6 +148,8 @@ hotkey_backend = "auto"
 default_model_id = "large-v3-turbo-q5_0"
 default_language = "auto"
 compute_backend = "auto"
+keep_model_loaded = true
+default_input = { type = "system_default" }
 default_output = { type = "clipboard" }
 
 [[shortcuts]]
@@ -122,11 +166,17 @@ The daemon does not read this config directly. The app sends the current
 shortcut runtime config to the daemon over D-Bus. That runtime config is
 daemon-effective: shortcuts are enabled only when the resolved backend is
 `daemon`; for `disabled` or `x11`, the app sends disabled bindings so the daemon
-clears any active watcher. The daemon stores an accepted last-known cache at
+clears any active watcher. `keep_model_loaded = true` keeps only the last used
+Whisper model context in memory to speed up repeated transcription; `false`
+loads and drops the model for every transcription. The daemon stores an accepted last-known cache at
 `~/.config/myapp-input-daemon/shortcut-cache.toml` so it can start before the app
-and still know the last configured shortcuts. During development only schema v2
+and still know the last configured shortcuts. During development only schema v4
 is supported; invalid old configs/caches are errors or ignored with a warning,
 not migrated.
+
+If a local development config is from an older schema, remove
+`~/.config/myapp/config.toml` and restart the app to generate the current
+default config.
 
 Settings has `General`, `Models`, `Default`, and `Add New` pages. `Models`
 manages downloaded whisper.cpp ggml models under `~/.local/share/myapp/models`.
@@ -135,8 +185,9 @@ model. Model downloads use `*.part`, progress updates, SHA-1 verification, and
 atomic rename.
 
 Each shortcut profile has its own shortcut, model override, language override,
-and output action. Output actions are `Copy to clipboard` or `Run script`; real
-transcription, clipboard writing, and script execution are still placeholders.
+and output action. Output actions are `Copy to clipboard` or `Run script`;
+clipboard writing and script execution are still placeholders that log what
+would happen with the recognized text.
 
 Backend values:
 
@@ -199,8 +250,9 @@ The prototype intentionally leaves these unimplemented:
 
 - XDG GlobalShortcuts portal support,
 - libinput/logind integration and robust packaged device permissions,
-- microphone recording,
-- Whisper integration,
+- production-grade audio buffering/resampling,
+- streaming/VAD transcription,
 - text insertion,
+- clipboard/script output execution,
 - Flatpak packaging for the main app,
 - `.deb` packaging for the optional daemon.

@@ -1,12 +1,8 @@
-use std::sync::mpsc;
-use std::thread;
-use std::time::Duration;
-
 use tracing::{info, warn};
 
-use crate::command::AppCommand;
+mod pipeline;
 
-const PLACEHOLDER_TRANSCRIPTION_DELAY: Duration = Duration::from_millis(250);
+pub use pipeline::RecordingPipeline;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum RecordingPhase {
@@ -101,10 +97,10 @@ impl RecordingService {
         }
     }
 
-    pub fn finish_processing(
+    pub fn finish_processing<T>(
         &mut self,
         shortcut_id: &str,
-        result: &Result<(), String>,
+        result: &Result<T, String>,
     ) -> RecordingPhase {
         if self.phase != RecordingPhase::Processing {
             info!(
@@ -124,7 +120,7 @@ impl RecordingService {
         }
 
         if let Err(error) = result {
-            warn!(shortcut_id, error, "Transcription placeholder failed");
+            warn!(shortcut_id, error, "Transcription failed");
         }
 
         self.phase = RecordingPhase::Idle;
@@ -133,28 +129,12 @@ impl RecordingService {
     }
 }
 
-pub fn spawn_transcription_job(job: TranscriptionJob, command_tx: mpsc::Sender<AppCommand>) {
-    thread::spawn(move || {
-        thread::sleep(PLACEHOLDER_TRANSCRIPTION_DELAY);
-        let result = transcribe_audio(&job.shortcut_id);
-        let _ = command_tx.send(AppCommand::TranscriptionFinished {
-            shortcut_id: job.shortcut_id,
-            result,
-        });
-    });
-}
-
 pub fn start_recording(shortcut_id: &str) {
     info!(shortcut_id, "Start recording");
 }
 
 pub fn stop_recording(shortcut_id: &str) {
     info!(shortcut_id, "Stop recording");
-}
-
-pub fn transcribe_audio(shortcut_id: &str) -> Result<(), String> {
-    info!(shortcut_id, "Transcribe audio placeholder");
-    Ok(())
 }
 
 #[cfg(test)]
