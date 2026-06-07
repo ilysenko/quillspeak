@@ -15,6 +15,7 @@ use crate::models::ModelRowState;
 mod draft;
 mod pages;
 mod shortcut_recorder;
+mod sidebar;
 mod widgets;
 
 pub use draft::SettingsDraft;
@@ -32,6 +33,7 @@ pub struct SettingsState {
 pub struct SettingsWindow {
     window: adw::ApplicationWindow,
     stack: gtk::Stack,
+    sidebar: sidebar::SettingsSidebar,
     toast_overlay: adw::ToastOverlay,
     state: SettingsState,
     general_page: Rc<RefCell<Option<pages::general::GeneralPage>>>,
@@ -80,18 +82,8 @@ impl SettingsWindow {
             .vhomogeneous(false)
             .transition_type(gtk::StackTransitionType::Crossfade)
             .build();
-        let sidebar = gtk::StackSidebar::builder()
-            .stack(&stack)
-            .width_request(170)
-            .build();
-        let sidebar_scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .width_request(180)
-            .vexpand(true)
-            .child(&sidebar)
-            .build();
-        layout.append(&sidebar_scroll);
+        let sidebar = sidebar::SettingsSidebar::new(&stack);
+        layout.append(sidebar.widget());
         layout.append(&stack);
         content.append(&layout);
 
@@ -101,8 +93,8 @@ impl SettingsWindow {
         let window = adw::ApplicationWindow::builder()
             .application(application)
             .title("MyApp Settings")
-            .default_width(860)
-            .default_height(680)
+            .default_width(900)
+            .default_height(760)
             .content(&toast_overlay)
             .build();
 
@@ -121,6 +113,7 @@ impl SettingsWindow {
         let this = Self {
             window,
             stack,
+            sidebar,
             toast_overlay,
             state,
             general_page: Rc::new(RefCell::new(None)),
@@ -202,6 +195,7 @@ impl SettingsWindow {
     fn render(&self, preferred_page: Option<String>) {
         render_stack(
             &self.stack,
+            &self.sidebar,
             &self.state,
             preferred_page,
             &self.general_page,
@@ -228,8 +222,9 @@ fn connect_save_button(
     });
 }
 
-pub(super) fn render_stack(
+fn render_stack(
     stack: &gtk::Stack,
+    settings_sidebar: &sidebar::SettingsSidebar,
     state: &SettingsState,
     preferred_page: Option<String>,
     general_page_slot: &Rc<RefCell<Option<pages::general::GeneralPage>>>,
@@ -244,12 +239,14 @@ pub(super) fn render_stack(
     let config = state.draft.snapshot();
     let render_request: Rc<dyn Fn(Option<String>)> = Rc::new({
         let stack = stack.clone();
+        let settings_sidebar = settings_sidebar.clone();
         let state = state.clone();
         let general_page_slot = Rc::clone(general_page_slot);
         let models_page_slot = Rc::clone(models_page_slot);
         move |preferred_page| {
             render_stack(
                 &stack,
+                &settings_sidebar,
                 &state,
                 preferred_page,
                 &general_page_slot,
@@ -259,6 +256,12 @@ pub(super) fn render_stack(
     });
 
     let ready_model_ids = state.ready_model_ids.borrow().clone();
+    let app_pages = vec![
+        sidebar::SidebarPage::new("general", "General"),
+        sidebar::SidebarPage::new("models", "Models"),
+    ];
+    let mut shortcut_pages = Vec::new();
+
     let general_page = pages::general::build(
         &config,
         state.audio_input_devices.borrow().clone(),
@@ -300,6 +303,10 @@ pub(super) fn render_stack(
             Some(&shortcut_page_name(&shortcut.id)),
             &title,
         );
+        shortcut_pages.push(sidebar::SidebarPage::new(
+            shortcut_page_name(&shortcut.id),
+            title,
+        ));
     }
 
     let add_shortcut_page = pages::add_shortcut::build(
@@ -312,11 +319,19 @@ pub(super) fn render_stack(
         Some("add-shortcut"),
         "Add New",
     );
+    shortcut_pages.push(sidebar::SidebarPage::new("add-shortcut", "Add New"));
 
     let target = preferred_page
         .filter(|name| stack.child_by_name(name).is_some())
         .unwrap_or_else(|| "general".to_string());
     stack.set_visible_child_name(&target);
+    settings_sidebar.set_sections(
+        &[
+            sidebar::SidebarSection::new("App", app_pages),
+            sidebar::SidebarSection::new("Shortcuts", shortcut_pages),
+        ],
+        &target,
+    );
 }
 
 pub(super) fn shortcut_page_name(shortcut_id: &str) -> String {
