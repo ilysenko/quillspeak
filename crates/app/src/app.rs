@@ -439,7 +439,11 @@ impl AppRuntime {
         match effect {
             FinishEffect::Completed => {
                 match self.model_store.mark_ready(&model_id) {
-                    Ok(_) => info!(model_id, "model download completed"),
+                    Ok(ready_model_ids) => info!(
+                        model_id,
+                        ready_model_count = ready_model_ids.len(),
+                        "model download completed"
+                    ),
                     Err(error) => {
                         warn!(?error, model_id, "failed to update model inventory");
                         self.download_manager

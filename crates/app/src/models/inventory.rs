@@ -5,12 +5,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use shared::{ModelCatalogEntry, model_catalog_entry};
-use tracing::warn;
+use tracing::{info, warn};
 
 const INVENTORY_FILE_NAME: &str = "inventory.toml";
-const INVENTORY_SCHEMA_VERSION: u32 = 1;
+const INVENTORY_SCHEMA_VERSION: u32 = 2;
+const BROKEN_SIZE_CACHE_SCHEMA_VERSION: u32 = 1;
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ModelInventory {
     schema_version: u32,
@@ -37,10 +38,7 @@ pub fn load_ready_model_ids(root: &Path) -> HashSet<String> {
         .into_iter()
         .filter_map(|entry| {
             let catalog_entry = model_catalog_entry(&entry.id)?;
-            inventory_entry_matches_catalog(&entry, catalog_entry)
-                .then_some(catalog_entry)
-                .filter(|entry| cached_model_file_exists(root, *entry))
-                .map(|entry| entry.id.to_string())
+            ready_entry_is_valid(root, &entry, catalog_entry).then(|| entry.id.to_string())
         })
         .collect()
 }
@@ -48,8 +46,14 @@ pub fn load_ready_model_ids(root: &Path) -> HashSet<String> {
 pub fn mark_model_ready(root: &Path, entry: ModelCatalogEntry) -> Result<HashSet<String>> {
     let mut inventory = load_inventory(root).unwrap_or_default();
     inventory.schema_version = INVENTORY_SCHEMA_VERSION;
-    inventory.ready.retain(|cached| cached.id != entry.id);
-    inventory.ready.push(ModelInventoryEntry::from(entry));
+    let ready_entry = ModelInventoryEntry::from_verified_file(root, entry)?;
+    info!(
+        model_id = %ready_entry.id,
+        size_bytes = ready_entry.size_bytes,
+        "marking model ready in inventory"
+    );
+    inventory.ready.retain(|cached| cached.id != ready_entry.id);
+    inventory.ready.push(ready_entry);
     save_inventory(root, &inventory)?;
     Ok(load_ready_model_ids(root))
 }
@@ -73,23 +77,25 @@ pub fn partial_model_path(root: &Path, entry: ModelCatalogEntry) -> PathBuf {
 fn load_inventory(root: &Path) -> Result<ModelInventory> {
     let path = inventory_path(root);
     if !path.exists() {
-        return Ok(ModelInventory {
-            schema_version: INVENTORY_SCHEMA_VERSION,
-            ready: Vec::new(),
-        });
+        return Ok(ModelInventory::default());
     }
 
     let text = fs::read_to_string(&path)
         .with_context(|| format!("failed to read model inventory {}", path.display()))?;
     let inventory: ModelInventory = toml::from_str(&text)
         .with_context(|| format!("failed to parse model inventory {}", path.display()))?;
-    if inventory.schema_version != INVENTORY_SCHEMA_VERSION {
-        return Ok(ModelInventory {
-            schema_version: INVENTORY_SCHEMA_VERSION,
-            ready: Vec::new(),
-        });
+    match inventory.schema_version {
+        INVENTORY_SCHEMA_VERSION => Ok(inventory),
+        BROKEN_SIZE_CACHE_SCHEMA_VERSION => repair_broken_size_inventory(root, inventory),
+        version => {
+            warn!(
+                version,
+                expected = INVENTORY_SCHEMA_VERSION,
+                "ignoring unsupported model inventory schema"
+            );
+            Ok(ModelInventory::default())
+        }
     }
-    Ok(inventory)
 }
 
 fn save_inventory(root: &Path, inventory: &ModelInventory) -> Result<()> {
@@ -105,26 +111,113 @@ fn inventory_path(root: &Path) -> PathBuf {
     root.join(INVENTORY_FILE_NAME)
 }
 
-fn inventory_entry_matches_catalog(
+fn repair_broken_size_inventory(root: &Path, inventory: ModelInventory) -> Result<ModelInventory> {
+    let mut repaired = ModelInventory::default();
+    for entry in inventory.ready {
+        let Some(catalog_entry) = model_catalog_entry(&entry.id) else {
+            warn!(model_id = %entry.id, "skipping unknown cached model entry");
+            continue;
+        };
+        if !inventory_entry_matches_catalog_identity(&entry, catalog_entry) {
+            warn!(
+                model_id = %entry.id,
+                "skipping cached model entry with stale catalog identity"
+            );
+            continue;
+        }
+        let Ok(size_bytes) = actual_model_size(root, catalog_entry) else {
+            warn!(
+                model_id = %entry.id,
+                filename = catalog_entry.filename,
+                "skipping cached model entry because final file is missing"
+            );
+            continue;
+        };
+
+        info!(
+            model_id = %entry.id,
+            old_size_bytes = entry.size_bytes,
+            size_bytes,
+            "repairing model inventory entry with actual file size"
+        );
+        repaired.ready.push(ModelInventoryEntry {
+            id: entry.id,
+            filename: entry.filename,
+            size_bytes,
+            sha1: entry.sha1,
+        });
+    }
+
+    save_inventory(root, &repaired)?;
+    Ok(repaired)
+}
+
+fn inventory_entry_matches_catalog_identity(
     entry: &ModelInventoryEntry,
     catalog_entry: ModelCatalogEntry,
 ) -> bool {
-    entry.filename == catalog_entry.filename
-        && entry.size_bytes == catalog_entry.size_bytes
-        && entry.sha1 == catalog_entry.sha1
+    entry.filename == catalog_entry.filename && entry.sha1 == catalog_entry.sha1
 }
 
-fn cached_model_file_exists(root: &Path, entry: ModelCatalogEntry) -> bool {
-    fs::metadata(model_path(root, entry)).is_ok_and(|metadata| metadata.len() == entry.size_bytes)
+fn ready_entry_is_valid(
+    root: &Path,
+    entry: &ModelInventoryEntry,
+    catalog_entry: ModelCatalogEntry,
+) -> bool {
+    if !inventory_entry_matches_catalog_identity(entry, catalog_entry) {
+        warn!(
+            model_id = %entry.id,
+            "model inventory entry does not match current catalog identity"
+        );
+        return false;
+    }
+
+    match actual_model_size(root, catalog_entry) {
+        Ok(actual_size) if actual_size == entry.size_bytes => true,
+        Ok(actual_size) => {
+            warn!(
+                model_id = %entry.id,
+                recorded_size_bytes = entry.size_bytes,
+                actual_size_bytes = actual_size,
+                "model inventory entry size does not match local file"
+            );
+            false
+        }
+        Err(error) => {
+            warn!(
+                ?error,
+                model_id = %entry.id,
+                filename = catalog_entry.filename,
+                "model inventory entry points to missing local file"
+            );
+            false
+        }
+    }
 }
 
-impl From<ModelCatalogEntry> for ModelInventoryEntry {
-    fn from(entry: ModelCatalogEntry) -> Self {
-        Self {
+fn actual_model_size(root: &Path, entry: ModelCatalogEntry) -> Result<u64> {
+    let path = model_path(root, entry);
+    Ok(fs::metadata(&path)
+        .with_context(|| format!("failed to stat model file {}", path.display()))?
+        .len())
+}
+
+impl ModelInventoryEntry {
+    fn from_verified_file(root: &Path, entry: ModelCatalogEntry) -> Result<Self> {
+        Ok(Self {
             id: entry.id.to_string(),
             filename: entry.filename.to_string(),
-            size_bytes: entry.size_bytes,
+            size_bytes: actual_model_size(root, entry)?,
             sha1: entry.sha1.to_string(),
+        })
+    }
+}
+
+impl Default for ModelInventory {
+    fn default() -> Self {
+        Self {
+            schema_version: INVENTORY_SCHEMA_VERSION,
+            ready: Vec::new(),
         }
     }
 }
@@ -139,15 +232,19 @@ mod tests {
     static TEST_ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
-    fn inventory_cache_marks_model_ready_without_hashing_file_contents() {
+    fn inventory_cache_marks_model_ready_with_actual_file_size() {
         let root = temp_model_root();
         let entry = model_catalog_entry("tiny").unwrap();
-        create_sparse_model(&root, entry);
+        let actual_size = entry.size_bytes - 1024;
+        create_sparse_model(&root, entry, actual_size);
 
         let ready = mark_model_ready(&root, entry).unwrap();
 
         assert!(ready.contains(entry.id));
         assert!(load_ready_model_ids(&root).contains(entry.id));
+        let inventory = load_inventory(&root).unwrap();
+        assert_eq!(inventory.schema_version, INVENTORY_SCHEMA_VERSION);
+        assert_eq!(inventory.ready[0].size_bytes, actual_size);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -156,23 +253,37 @@ mod tests {
         let root = temp_model_root();
         let entry = model_catalog_entry("tiny").unwrap();
 
-        mark_model_ready(&root, entry).unwrap();
+        assert!(mark_model_ready(&root, entry).is_err());
+        save_inventory(
+            &root,
+            &ModelInventory {
+                schema_version: INVENTORY_SCHEMA_VERSION,
+                ready: vec![ModelInventoryEntry {
+                    id: entry.id.to_string(),
+                    filename: entry.filename.to_string(),
+                    size_bytes: entry.size_bytes,
+                    sha1: entry.sha1.to_string(),
+                }],
+            },
+        )
+        .unwrap();
 
         assert!(!load_ready_model_ids(&root).contains(entry.id));
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn wrong_size_cached_file_is_not_ready() {
+    fn changed_file_size_after_mark_ready_is_not_ready() {
         let root = temp_model_root();
         let entry = model_catalog_entry("tiny").unwrap();
-        fs::create_dir_all(&root).unwrap();
-        File::create(model_path(&root, entry))
-            .unwrap()
-            .set_len(1)
-            .unwrap();
+        let actual_size = entry.size_bytes - 2048;
+        create_sparse_model(&root, entry, actual_size);
 
         mark_model_ready(&root, entry).unwrap();
+        File::create(model_path(&root, entry))
+            .unwrap()
+            .set_len(actual_size + 1)
+            .unwrap();
 
         assert!(!load_ready_model_ids(&root).contains(entry.id));
         let _ = fs::remove_dir_all(root);
@@ -182,13 +293,42 @@ mod tests {
     fn remove_model_updates_inventory_cache() {
         let root = temp_model_root();
         let entry = model_catalog_entry("tiny").unwrap();
-        create_sparse_model(&root, entry);
+        create_sparse_model(&root, entry, entry.size_bytes);
         mark_model_ready(&root, entry).unwrap();
 
         let ready = remove_model_from_inventory(&root, entry.id).unwrap();
 
         assert!(!ready.contains(entry.id));
         assert!(!load_ready_model_ids(&root).contains(entry.id));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repairs_broken_v1_inventory_cache_with_actual_file_size() {
+        let root = temp_model_root();
+        let entry = model_catalog_entry("tiny").unwrap();
+        let actual_size = entry.size_bytes - 4096;
+        create_sparse_model(&root, entry, actual_size);
+        save_inventory(
+            &root,
+            &ModelInventory {
+                schema_version: BROKEN_SIZE_CACHE_SCHEMA_VERSION,
+                ready: vec![ModelInventoryEntry {
+                    id: entry.id.to_string(),
+                    filename: entry.filename.to_string(),
+                    size_bytes: entry.size_bytes,
+                    sha1: entry.sha1.to_string(),
+                }],
+            },
+        )
+        .unwrap();
+
+        let ready = load_ready_model_ids(&root);
+
+        assert!(ready.contains(entry.id));
+        let inventory = load_inventory(&root).unwrap();
+        assert_eq!(inventory.schema_version, INVENTORY_SCHEMA_VERSION);
+        assert_eq!(inventory.ready[0].size_bytes, actual_size);
         let _ = fs::remove_dir_all(root);
     }
 
@@ -200,11 +340,11 @@ mod tests {
         root
     }
 
-    fn create_sparse_model(root: &Path, entry: ModelCatalogEntry) {
+    fn create_sparse_model(root: &Path, entry: ModelCatalogEntry, size_bytes: u64) {
         fs::create_dir_all(root).unwrap();
         File::create(model_path(root, entry))
             .unwrap()
-            .set_len(entry.size_bytes)
+            .set_len(size_bytes)
             .unwrap();
     }
 }

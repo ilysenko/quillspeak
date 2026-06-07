@@ -235,8 +235,13 @@ pub(super) fn render_stack(
         }
     });
 
-    let general_page =
-        pages::general::build(&config, state.daemon_status.get(), state.draft.clone());
+    let ready_model_ids = state.ready_model_ids.borrow().clone();
+    let general_page = pages::general::build(
+        &config,
+        ready_model_ids.clone(),
+        state.daemon_status.get(),
+        state.draft.clone(),
+    );
     stack.add_titled(
         &widgets::scrollable_page(general_page.widget()),
         Some("general"),
@@ -254,7 +259,6 @@ pub(super) fn render_stack(
     );
     models_page_slot.replace(Some(models_page));
 
-    let ready_model_ids = state.ready_model_ids.borrow().clone();
     for shortcut in &config.shortcuts {
         let title = if shortcut.id == DEFAULT_SHORTCUT_ID {
             "Default".to_string()

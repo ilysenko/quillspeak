@@ -57,12 +57,21 @@ pub fn model_dropdown_row(
     models: &[ModelCatalogEntry],
     selected_model_id: &str,
 ) -> ValueDropDownRow {
-    let values = models
+    let mut values = models
         .iter()
         .map(|entry| entry.id.to_string())
         .collect::<Vec<_>>();
-    let labels = models.iter().map(|entry| entry.label).collect::<Vec<_>>();
-    value_dropdown_row(title, labels, values, selected_model_id)
+    let mut labels = models
+        .iter()
+        .map(|entry| entry.label.to_string())
+        .collect::<Vec<_>>();
+    if !selected_model_id.trim().is_empty()
+        && !values.iter().any(|value| value == selected_model_id)
+    {
+        labels.push(format!("Missing: {selected_model_id}"));
+        values.push(selected_model_id.to_string());
+    }
+    value_dropdown_row_owned(title, labels, values, selected_model_id)
 }
 
 pub fn all_model_entries() -> Vec<ModelCatalogEntry> {
@@ -109,20 +118,6 @@ pub fn language_dropdown_row(
         values.push(language.code.to_string());
     }
     value_dropdown_row_owned(title, labels, values, selected_language)
-}
-
-fn value_dropdown_row(
-    title: &str,
-    labels: Vec<&str>,
-    values: Vec<String>,
-    selected_value: &str,
-) -> ValueDropDownRow {
-    value_dropdown_row_owned(
-        title,
-        labels.into_iter().map(ToString::to_string).collect(),
-        values,
-        selected_value,
-    )
 }
 
 fn value_dropdown_row_owned(

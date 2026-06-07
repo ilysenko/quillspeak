@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use shared::{AppConfig, DaemonStatus};
@@ -30,7 +32,12 @@ impl GeneralPage {
     }
 }
 
-pub fn build(config: &AppConfig, daemon_status: DaemonStatus, draft: SettingsDraft) -> GeneralPage {
+pub fn build(
+    config: &AppConfig,
+    ready_model_ids: HashSet<String>,
+    daemon_status: DaemonStatus,
+    draft: SettingsDraft,
+) -> GeneralPage {
     let page = preferences_page("General");
     let status_group = adw::PreferencesGroup::builder().title("Status").build();
     let daemon_status_row = property_row("Daemon status", daemon_status.display_label());
@@ -72,7 +79,10 @@ pub fn build(config: &AppConfig, daemon_status: DaemonStatus, draft: SettingsDra
     });
     general_group.add(&compute.row);
 
-    let model_entries = all_model_entries();
+    let model_entries = all_model_entries()
+        .into_iter()
+        .filter(|entry| ready_model_ids.contains(entry.id))
+        .collect::<Vec<_>>();
     let model = model_dropdown_row(
         "Default model",
         &model_entries,

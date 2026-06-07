@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, ensure};
 use directories::BaseDirs;
 use shared::{AppConfig, MODEL_CATALOG, ModelCatalogEntry, model_catalog_entry};
 
@@ -49,6 +49,10 @@ impl ModelStore {
         let entry =
             model_catalog_entry(model_id).ok_or_else(|| anyhow!("unknown model id {model_id}"))?;
         let ready_model_ids = mark_model_ready(&self.root, entry)?;
+        ensure!(
+            ready_model_ids.contains(model_id),
+            "model {model_id} was written to inventory but did not load as ready"
+        );
         self.ready_model_ids.replace(ready_model_ids.clone());
         Ok(ready_model_ids)
     }

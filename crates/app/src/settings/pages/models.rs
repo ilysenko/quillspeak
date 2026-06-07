@@ -9,7 +9,7 @@ use crate::command::AppCommand;
 use crate::models::{ModelRowState, ModelStatus};
 use crate::settings::widgets::preferences_page;
 
-const ACTION_WIDTH: i32 = 108;
+const ACTION_WIDTH: i32 = 132;
 
 #[derive(Clone)]
 pub struct ModelsPage {
@@ -33,19 +33,49 @@ impl ModelsPage {
 
 #[derive(Clone)]
 struct ModelRow {
-    container: gtk::Box,
-    row: adw::ActionRow,
+    row: adw::PreferencesRow,
+    subtitle: gtk::Label,
     progress: gtk::ProgressBar,
     action_stack: gtk::Stack,
-    delete_button: gtk::Button,
+    remove_button: gtk::Button,
     cancel_button: gtk::Button,
     canceling_button: gtk::Button,
 }
 
 impl ModelRow {
     fn new(state: &ModelRowState, command_tx: &mpsc::Sender<AppCommand>) -> Self {
-        let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let row = adw::ActionRow::builder().title(state.entry.label).build();
+        let row = adw::PreferencesRow::builder()
+            .title(state.entry.label)
+            .build();
+        let container = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .margin_top(10)
+            .margin_bottom(10)
+            .margin_start(18)
+            .margin_end(18)
+            .build();
+        let header = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .build();
+        let labels = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .hexpand(true)
+            .valign(gtk::Align::Center)
+            .build();
+        let title = gtk::Label::builder()
+            .label(state.entry.label)
+            .xalign(0.0)
+            .hexpand(true)
+            .build();
+        title.add_css_class("heading");
+        let subtitle = gtk::Label::builder().xalign(0.0).hexpand(true).build();
+        subtitle.add_css_class("dim-label");
+        subtitle.set_wrap(true);
+        labels.append(&title);
+        labels.append(&subtitle);
 
         let action_stack = gtk::Stack::builder()
             .hhomogeneous(false)
@@ -75,39 +105,45 @@ impl ModelRow {
         let canceling_button = action_button("Canceling...");
         canceling_button.set_sensitive(false);
 
-        let delete_button = action_button("Delete");
-        delete_button.connect_clicked({
+        let remove_button = action_button("Remove Model");
+        remove_button.add_css_class("destructive-action");
+        remove_button.connect_clicked({
             let command_tx = command_tx.clone();
             let model_id = state.entry.id.to_string();
-            move |_| {
-                let _ = command_tx.send(AppCommand::DeleteModel(model_id.clone()));
+            let model_label = state.entry.label.to_string();
+            move |button| {
+                confirm_remove_model(
+                    button,
+                    command_tx.clone(),
+                    model_id.clone(),
+                    model_label.clone(),
+                );
             }
         });
 
         action_stack.add_named(&download_button, Some("download"));
         action_stack.add_named(&cancel_button, Some("cancel"));
         action_stack.add_named(&canceling_button, Some("canceling"));
-        action_stack.add_named(&delete_button, Some("delete"));
-        row.add_suffix(&action_stack);
+        action_stack.add_named(&remove_button, Some("remove"));
+        header.append(&labels);
+        header.append(&action_stack);
 
         let progress = gtk::ProgressBar::new();
         progress.set_show_text(true);
         progress.set_hexpand(true);
-        progress.set_margin_start(18);
-        progress.set_margin_end(18);
-        progress.set_margin_bottom(10);
         progress.set_height_request(28);
         progress.set_opacity(0.0);
 
-        container.append(&row);
+        container.append(&header);
         container.append(&progress);
+        row.set_child(Some(&container));
 
         let model_row = Self {
-            container,
             row,
+            subtitle,
             progress,
             action_stack,
-            delete_button,
+            remove_button,
             cancel_button,
             canceling_button,
         };
@@ -115,13 +151,15 @@ impl ModelRow {
         model_row
     }
 
-    fn widget(&self) -> &gtk::Box {
-        &self.container
+    fn widget(&self) -> &adw::PreferencesRow {
+        &self.row
     }
 
     fn update(&self, state: &ModelRowState) {
-        self.row.set_subtitle(&model_subtitle(state));
-        self.delete_button.set_sensitive(!state.referenced);
+        self.subtitle.set_label(&model_subtitle(state));
+        self.remove_button.set_sensitive(!state.referenced);
+        self.remove_button
+            .set_tooltip_text(state.referenced.then_some("Model is used by settings"));
         self.cancel_button.set_sensitive(true);
         self.canceling_button.set_sensitive(false);
 
@@ -138,7 +176,7 @@ impl ModelRow {
 
         self.action_stack
             .set_visible_child_name(match state.status {
-                ModelStatus::Ready => "delete",
+                ModelStatus::Ready => "remove",
                 ModelStatus::Downloading { .. } => "cancel",
                 ModelStatus::Verifying { .. } => "cancel",
                 ModelStatus::Canceling { .. } => "canceling",
@@ -171,6 +209,35 @@ fn action_button(label: &str) -> gtk::Button {
         .width_request(ACTION_WIDTH)
         .valign(gtk::Align::Center)
         .build()
+}
+
+fn confirm_remove_model(
+    parent: &gtk::Button,
+    command_tx: mpsc::Sender<AppCommand>,
+    model_id: String,
+    model_label: String,
+) {
+    let parent_window = parent
+        .root()
+        .and_then(|root| root.downcast::<gtk::Window>().ok());
+    let dialog = adw::MessageDialog::builder()
+        .heading("Remove model?")
+        .body(format!(
+            "Remove {model_label} from this computer? It can be downloaded again later."
+        ))
+        .close_response("cancel")
+        .default_response("cancel")
+        .build();
+    dialog.set_transient_for(parent_window.as_ref());
+    dialog.add_responses(&[("cancel", "Cancel"), ("remove", "Remove Model")]);
+    dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+    dialog.connect_response(None, move |dialog, response| {
+        if response == "remove" {
+            let _ = command_tx.send(AppCommand::DeleteModel(model_id.clone()));
+        }
+        dialog.close();
+    });
+    dialog.present();
 }
 
 fn model_subtitle(state: &ModelRowState) -> String {
