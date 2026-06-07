@@ -19,9 +19,10 @@ pub enum ConfigError {
     UnsupportedBackend(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HotkeyMode {
+    #[default]
     PushToTalk,
 }
 
@@ -30,12 +31,6 @@ impl HotkeyMode {
         match self {
             Self::PushToTalk => "push_to_talk",
         }
-    }
-}
-
-impl Default for HotkeyMode {
-    fn default() -> Self {
-        Self::PushToTalk
     }
 }
 
@@ -50,9 +45,10 @@ impl TryFrom<&str> for HotkeyMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HotkeyBackend {
+    #[default]
     Disabled,
     Daemon,
     X11,
@@ -67,12 +63,6 @@ impl HotkeyBackend {
             Self::X11 => "x11",
             Self::Portal => "portal",
         }
-    }
-}
-
-impl Default for HotkeyBackend {
-    fn default() -> Self {
-        Self::Disabled
     }
 }
 
@@ -136,6 +126,11 @@ impl ShortcutBinding {
     }
 
     pub fn normalized(mut self) -> Result<Self, ConfigError> {
+        if !self.enabled && self.accelerator.trim().is_empty() {
+            self.accelerator.clear();
+            return Ok(self);
+        }
+
         self.accelerator = normalize_accelerator(&self.accelerator)?;
         Ok(self)
     }
@@ -147,7 +142,7 @@ impl Default for ShortcutBinding {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShortcutSettings {
     pub push_to_talk: ShortcutBinding,
 }
@@ -155,14 +150,6 @@ pub struct ShortcutSettings {
 impl ShortcutSettings {
     pub fn iter(&self) -> [(ShortcutAction, &ShortcutBinding); 1] {
         [(ShortcutAction::PushToTalk, &self.push_to_talk)]
-    }
-}
-
-impl Default for ShortcutSettings {
-    fn default() -> Self {
-        Self {
-            push_to_talk: ShortcutBinding::default(),
-        }
     }
 }
 
@@ -369,5 +356,18 @@ hotkey = "Ctrl-Alt-F"
             normalize_accelerator("Ctrl+Alt"),
             Err(ConfigError::MissingShortcutKey)
         );
+    }
+
+    #[test]
+    fn disabled_shortcut_can_have_empty_accelerator() {
+        let mut config = AppConfig::default();
+        config.shortcuts.push_to_talk = ShortcutBinding::new("", false);
+
+        let normalized = config
+            .normalized()
+            .expect("disabled empty shortcut is valid");
+
+        assert!(!normalized.shortcuts.push_to_talk.enabled);
+        assert_eq!(normalized.shortcuts.push_to_talk.accelerator, "");
     }
 }

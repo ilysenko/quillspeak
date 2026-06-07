@@ -40,7 +40,8 @@ Expected behavior:
 - the app keeps running after the settings window is closed,
 - Ctrl-C exits the app from the terminal,
 - tray `Quit` exits the app,
-- tray `Start Recording` and `Stop Recording` log placeholder messages.
+- the tray recording item toggles between `Start Recording` and
+  `Stop Recording`.
 
 Run the optional daemon stub:
 
@@ -63,6 +64,12 @@ cargo run -p daemon --bin myapp-daemon -- --hotkey-up
 
 The first command should make the app log `Start recording`; the second should
 make it log `Stop recording`.
+
+The tray icon reflects the recording phase:
+
+- white: idle,
+- red: recording,
+- orange: processing/transcription.
 
 ## Configuration
 

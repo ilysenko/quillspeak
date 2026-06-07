@@ -131,6 +131,10 @@ impl SettingsWindow {
         self.advanced_hotkey_row
             .set_subtitle(advanced_hotkey_status(daemon_status));
     }
+
+    pub fn update_save_status(&self, status: &str) {
+        self.save_status_row.set_subtitle(status);
+    }
 }
 
 fn connect_save_button(
@@ -144,7 +148,9 @@ fn connect_save_button(
     let save_status_row = save_status_row.clone();
     save_button.connect_clicked(move |_| {
         let mut config = draft_config.borrow().clone();
-        config.shortcuts.push_to_talk.accelerator = shortcut_entry.text().to_string();
+        let accelerator = shortcut_entry.text().to_string();
+        config.shortcuts.push_to_talk.enabled = !accelerator.trim().is_empty();
+        config.shortcuts.push_to_talk.accelerator = accelerator;
         match config.normalized() {
             Ok(config) => {
                 save_status_row.set_subtitle("Saving...");

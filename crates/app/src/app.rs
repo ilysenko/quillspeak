@@ -20,7 +20,7 @@ use crate::daemon_client::DaemonClient;
 use crate::daemon_monitor::DaemonMonitorHandle;
 use crate::dbus::AppDbusHandle;
 use crate::hotkey::{DaemonBackend, DisabledBackend, HotkeyBackend, backend_name_for_config};
-use crate::recording::RecordingController;
+use crate::recording::{RecordingController, RecordingPhase};
 use crate::settings::SettingsWindow;
 use crate::tray::Tray;
 
@@ -137,13 +137,46 @@ impl AppRuntime {
     fn handle_command(&self, command: AppCommand) {
         match command {
             AppCommand::ShowSettings => self.show_settings(),
-            AppCommand::StartRecording => self.recording.borrow_mut().start_recording(),
-            AppCommand::StopRecording => self.recording.borrow_mut().stop_recording(),
+            AppCommand::ToggleRecording => self.toggle_recording(),
+            AppCommand::StartRecording => self.start_recording(),
+            AppCommand::StopRecording => self.stop_recording(),
             AppCommand::SaveConfig(config) => self.save_config(config),
             AppCommand::DaemonAppeared(status) => self.handle_daemon_appeared(status),
             AppCommand::DaemonVanished(status) => self.set_daemon_status(status),
             AppCommand::DaemonStatusChanged(status) => self.set_daemon_status(status),
             AppCommand::Quit => self.quit(),
+        }
+    }
+
+    fn toggle_recording(&self) {
+        let phase = self.recording.borrow().phase();
+        match phase {
+            RecordingPhase::Idle => self.start_recording(),
+            RecordingPhase::Recording => self.stop_recording(),
+            RecordingPhase::Processing => {
+                info!("Recording toggle ignored while processing audio");
+            }
+        }
+    }
+
+    fn start_recording(&self) {
+        let phase = self.recording.borrow_mut().start_recording();
+        self.set_recording_phase(phase);
+    }
+
+    fn stop_recording(&self) {
+        let phase = self.recording.borrow_mut().stop_recording();
+        self.set_recording_phase(phase);
+
+        if phase == RecordingPhase::Processing {
+            let phase = self.recording.borrow_mut().finish_processing();
+            self.set_recording_phase(phase);
+        }
+    }
+
+    fn set_recording_phase(&self, phase: RecordingPhase) {
+        if let Some(tray) = self.tray.borrow().as_ref() {
+            tray.set_recording_phase(phase);
         }
     }
 
@@ -168,6 +201,9 @@ impl AppRuntime {
     fn save_config(&self, config: AppConfig) {
         if let Err(error) = self.save_config_inner(config) {
             warn!(?error, "failed to save settings config");
+            if let Some(window) = self.settings_window.borrow().as_ref() {
+                window.update_save_status(&format!("Failed to save settings: {error}"));
+            }
         }
     }
 

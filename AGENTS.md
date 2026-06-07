@@ -49,6 +49,11 @@ cargo run -p daemon --bin myapp-daemon -- --hotkey-up
 Those commands call the main app's D-Bus methods. `HotkeyDown` maps to
 `start_recording()`, and `HotkeyUp` maps to `stop_recording()`.
 
+Manual tray recording uses a single toggle command. The tray menu should show
+`Start Recording` while idle, `Stop Recording` while recording, and a disabled
+`Processing...` item during processing. Do not use the toggle for daemon hotkey
+events; push-to-talk requires explicit key down/up semantics.
+
 Daemon status is intentionally redundant. The daemon notifies the app with
 `DaemonStatus` when it starts and after config updates, while the app also
 watches the daemon's D-Bus name with `NameOwnerChanged`. Keep both paths
@@ -168,7 +173,7 @@ Required behavior:
 - do not show a window at startup,
 - show a tray/top-bar indicator,
 - indicator menu must contain `Show Settings`, `Start Recording`,
-  `Stop Recording`, and `Quit`,
+  or `Stop Recording` depending on recording state, and `Quit`,
 - `Show Settings` opens the settings window,
 - closing the settings window hides it instead of quitting the app,
 - tray `Quit` terminates the app,
@@ -176,6 +181,12 @@ Required behavior:
 
 Keep GTK/libadwaita object access on the GTK main thread. Tray callbacks, D-Bus
 handlers, and Ctrl-C handlers should send `AppCommand`s.
+
+The tray icon color is part of the user-facing state contract:
+
+- white means idle,
+- red means recording,
+- orange means processing/transcription.
 
 ## Hotkey Architecture
 

@@ -3,8 +3,12 @@ use std::sync::mpsc;
 use ksni::blocking::{Handle as KsniHandle, TrayMethods as KsniTrayMethods};
 
 use crate::command::AppCommand;
+use crate::recording::RecordingPhase;
 
 const TRAY_ICON_SIZE: i32 = 22;
+const TRAY_IDLE_COLOR: [u8; 4] = [255, 255, 255, 255];
+const TRAY_RECORDING_COLOR: [u8; 4] = [239, 68, 68, 255];
+const TRAY_PROCESSING_COLOR: [u8; 4] = [245, 158, 11, 255];
 
 pub struct Tray {
     handle: KsniHandle<MyAppTray>,
@@ -12,9 +16,18 @@ pub struct Tray {
 
 impl Tray {
     pub fn new(command_tx: mpsc::Sender<AppCommand>) -> Result<Self, ksni::Error> {
-        let tray = MyAppTray { command_tx };
+        let tray = MyAppTray {
+            command_tx,
+            recording_phase: RecordingPhase::Idle,
+        };
         let handle = tray.spawn()?;
         Ok(Self { handle })
+    }
+
+    pub fn set_recording_phase(&self, phase: RecordingPhase) {
+        let _ = self.handle.update(|tray| {
+            tray.recording_phase = phase;
+        });
     }
 }
 
@@ -26,6 +39,7 @@ impl Drop for Tray {
 
 struct MyAppTray {
     command_tx: mpsc::Sender<AppCommand>,
+    recording_phase: RecordingPhase,
 }
 
 impl MyAppTray {
@@ -44,7 +58,11 @@ impl ksni::Tray for MyAppTray {
     }
 
     fn title(&self) -> String {
-        "MyApp".to_string()
+        match self.recording_phase {
+            RecordingPhase::Idle => "MyApp".to_string(),
+            RecordingPhase::Recording => "MyApp - Recording".to_string(),
+            RecordingPhase::Processing => "MyApp - Processing".to_string(),
+        }
     }
 
     fn icon_name(&self) -> String {
@@ -52,7 +70,7 @@ impl ksni::Tray for MyAppTray {
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        vec![tray_icon_pixmap()]
+        vec![tray_icon_pixmap(icon_color(self.recording_phase))]
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
@@ -62,6 +80,7 @@ impl ksni::Tray for MyAppTray {
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::*;
 
+        let recording_item = recording_menu_item(self.recording_phase);
         vec![
             StandardItem {
                 label: "Show Settings".to_string(),
@@ -70,20 +89,7 @@ impl ksni::Tray for MyAppTray {
                 ..Default::default()
             }
             .into(),
-            StandardItem {
-                label: "Start Recording".to_string(),
-                icon_name: "media-record".to_string(),
-                activate: Box::new(|tray: &mut Self| tray.send(AppCommand::StartRecording)),
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: "Stop Recording".to_string(),
-                icon_name: "media-playback-stop".to_string(),
-                activate: Box::new(|tray: &mut Self| tray.send(AppCommand::StopRecording)),
-                ..Default::default()
-            }
-            .into(),
+            recording_item.into(),
             ksni::MenuItem::Separator,
             StandardItem {
                 label: "Quit".to_string(),
@@ -96,9 +102,32 @@ impl ksni::Tray for MyAppTray {
     }
 }
 
-fn tray_icon_pixmap() -> ksni::Icon {
+fn recording_menu_item(phase: RecordingPhase) -> ksni::menu::StandardItem<MyAppTray> {
+    let (label, icon_name, enabled) = match phase {
+        RecordingPhase::Idle => ("Start Recording", "media-record", true),
+        RecordingPhase::Recording => ("Stop Recording", "media-playback-stop", true),
+        RecordingPhase::Processing => ("Processing...", "media-playback-pause", false),
+    };
+
+    ksni::menu::StandardItem {
+        label: label.to_string(),
+        icon_name: icon_name.to_string(),
+        enabled,
+        activate: Box::new(|tray: &mut MyAppTray| tray.send(AppCommand::ToggleRecording)),
+        ..Default::default()
+    }
+}
+
+fn icon_color(phase: RecordingPhase) -> [u8; 4] {
+    match phase {
+        RecordingPhase::Idle => TRAY_IDLE_COLOR,
+        RecordingPhase::Recording => TRAY_RECORDING_COLOR,
+        RecordingPhase::Processing => TRAY_PROCESSING_COLOR,
+    }
+}
+
+fn tray_icon_pixmap(color: [u8; 4]) -> ksni::Icon {
     let mut data = vec![0; (TRAY_ICON_SIZE * TRAY_ICON_SIZE * 4) as usize];
-    let color = [255, 255, 255, 255];
 
     for y in 0..TRAY_ICON_SIZE {
         for x in 0..TRAY_ICON_SIZE {
@@ -136,4 +165,30 @@ fn write_argb_pixel(data: &mut [u8], x: i32, y: i32, color: [u8; 4]) {
     data[offset + 1] = red;
     data[offset + 2] = green;
     data[offset + 3] = blue;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tray_icon_color_tracks_recording_phase() {
+        assert_eq!(icon_color(RecordingPhase::Idle), TRAY_IDLE_COLOR);
+        assert_eq!(icon_color(RecordingPhase::Recording), TRAY_RECORDING_COLOR);
+        assert_eq!(
+            icon_color(RecordingPhase::Processing),
+            TRAY_PROCESSING_COLOR
+        );
+    }
+
+    #[test]
+    fn tray_icon_pixmap_writes_argb_pixels() {
+        let icon = tray_icon_pixmap(TRAY_RECORDING_COLOR);
+        let offset = ((5 * TRAY_ICON_SIZE + 8) * 4) as usize;
+
+        assert_eq!(icon.data[offset], TRAY_RECORDING_COLOR[3]);
+        assert_eq!(icon.data[offset + 1], TRAY_RECORDING_COLOR[0]);
+        assert_eq!(icon.data[offset + 2], TRAY_RECORDING_COLOR[1]);
+        assert_eq!(icon.data[offset + 3], TRAY_RECORDING_COLOR[2]);
+    }
 }
