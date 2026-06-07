@@ -50,7 +50,7 @@ pub struct TranscriptionSegment {
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptionDebugInfo {
     pub shortcut_name: String,
     pub model_id: String,
@@ -65,12 +65,14 @@ pub struct TranscriptionDebugInfo {
     pub source_frames: usize,
     pub dropped_samples: u64,
     pub missed_audio_chunks: u64,
+    pub audio_rms: f32,
+    pub audio_peak: f32,
     pub whisper_sample_rate: u32,
     pub whisper_samples: usize,
     pub inference_duration_ms: u128,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptionResult {
     pub text: String,
     pub segments: Vec<TranscriptionSegment>,

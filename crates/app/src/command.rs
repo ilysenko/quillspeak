@@ -5,7 +5,7 @@ use crate::transcription::TranscriptionResult;
 
 pub type DownloadId = u64;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum AppCommand {
     ShowSettings,
     ToggleRecording,

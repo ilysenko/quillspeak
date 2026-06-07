@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use evdev::{Device, EventSummary, KeyCode};
 use shared::{DaemonStatus, ShortcutChord, ShortcutKey, ShortcutRuntimeConfig};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::hotkey::{
     HotkeyStateMachine, HotkeyTransition, KeyRequirement, KeyTransition, RuntimeShortcut,
@@ -132,6 +132,7 @@ struct EvdevRuntime {
     machines: Vec<EvdevShortcutMachine>,
     watched_keys: HashSet<KeyCode>,
     devices: Vec<KeyboardDevice>,
+    device_set: Option<DeviceSetSnapshot>,
     last_scan: Option<Instant>,
 }
 
@@ -186,6 +187,7 @@ impl EvdevRuntime {
         self.watched_keys = watched_keys;
         self.machines = machines;
         self.devices.clear();
+        self.device_set = None;
         self.last_scan = None;
         if let Err(error) = self.rescan_devices(permission_error) {
             permission_error.store(true, Ordering::Relaxed);
@@ -214,6 +216,7 @@ impl EvdevRuntime {
         self.machines.clear();
         self.watched_keys.clear();
         self.devices.clear();
+        self.device_set = None;
         self.last_scan = None;
         permission_error.store(false, Ordering::Relaxed);
     }
@@ -250,13 +253,19 @@ impl EvdevRuntime {
                                 continue;
                             }
 
-                            debug!(
+                            let transition = transition_from_evdev_value(value);
+                            if transition == KeyTransition::Repeat {
+                                continue;
+                            }
+
+                            trace!(
                                 path = %device.path.display(),
+                                name = %device.name,
                                 keycode = keycode.code(),
                                 value,
+                                ?transition,
                                 "evdev watched key event"
                             );
-                            let transition = transition_from_evdev_value(value);
                             for machine in &mut self.machines {
                                 if !machine.machine.watched_keys().contains(&keycode) {
                                     continue;
@@ -287,6 +296,22 @@ impl EvdevRuntime {
     fn rescan_devices(&mut self, permission_error: &AtomicBool) -> Result<()> {
         let scan = open_devices_for_watched_keys(&self.watched_keys)?;
         permission_error.store(scan.permission_error, Ordering::Relaxed);
+        let next_device_set = DeviceSetSnapshot::from_devices(&scan.devices);
+        if self.device_set.as_ref() != Some(&next_device_set) {
+            info!(
+                device_count = next_device_set.devices.len(),
+                devices = %next_device_set.display_label(),
+                permission_error = scan.permission_error,
+                "evdev keyboard device set changed"
+            );
+        } else {
+            debug!(
+                device_count = next_device_set.devices.len(),
+                permission_error = scan.permission_error,
+                "evdev keyboard device set unchanged"
+            );
+        }
+        self.device_set = Some(next_device_set);
         self.devices = scan.devices;
         self.last_scan = Some(Instant::now());
         Ok(())
@@ -295,8 +320,14 @@ impl EvdevRuntime {
 
 fn dispatch_transition(shortcut_id: &str, transition: HotkeyTransition) {
     match transition {
-        HotkeyTransition::HotkeyDown => send_hotkey_down(shortcut_id),
-        HotkeyTransition::HotkeyUp => send_hotkey_up(shortcut_id),
+        HotkeyTransition::HotkeyDown => {
+            info!(shortcut_id, "evdev shortcut down");
+            send_hotkey_down(shortcut_id);
+        }
+        HotkeyTransition::HotkeyUp => {
+            info!(shortcut_id, "evdev shortcut up");
+            send_hotkey_up(shortcut_id);
+        }
         HotkeyTransition::None => {}
     }
 }
@@ -470,7 +501,45 @@ struct DeviceScan {
 
 struct KeyboardDevice {
     path: PathBuf,
+    name: String,
     device: Device,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeviceSetSnapshot {
+    devices: Vec<DeviceIdentity>,
+}
+
+impl DeviceSetSnapshot {
+    fn from_devices(devices: &[KeyboardDevice]) -> Self {
+        let mut devices = devices
+            .iter()
+            .map(|device| DeviceIdentity {
+                path: device.path.clone(),
+                name: device.name.clone(),
+            })
+            .collect::<Vec<_>>();
+        devices.sort_by(|left, right| left.path.cmp(&right.path));
+        Self { devices }
+    }
+
+    fn display_label(&self) -> String {
+        if self.devices.is_empty() {
+            return "none".to_string();
+        }
+
+        self.devices
+            .iter()
+            .map(|device| format!("{} ({})", device.name, device.path.display()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeviceIdentity {
+    path: PathBuf,
+    name: String,
 }
 
 fn open_devices_for_watched_keys(watched_keys: &HashSet<KeyCode>) -> Result<DeviceScan> {
@@ -522,12 +591,13 @@ fn open_devices_for_watched_keys(watched_keys: &HashSet<KeyCode>) -> Result<Devi
         device
             .set_nonblocking(true)
             .with_context(|| format!("failed to set {} nonblocking", path.display()))?;
-        info!(
+        let name = device.name().unwrap_or("unknown").to_string();
+        debug!(
             path = %path.display(),
-            name = device.name().unwrap_or("unknown"),
+            name = %name,
             "opened evdev keyboard device for watched shortcut keys"
         );
-        devices.push(KeyboardDevice { path, device });
+        devices.push(KeyboardDevice { path, name, device });
     }
 
     Ok(DeviceScan {
@@ -611,5 +681,35 @@ mod tests {
             status_from_device_scan(true, 0),
             DaemonStatus::PermissionError
         );
+    }
+
+    #[test]
+    fn evdev_autorepeat_maps_to_repeat_transition() {
+        assert_eq!(transition_from_evdev_value(0), KeyTransition::Released);
+        assert_eq!(transition_from_evdev_value(1), KeyTransition::Pressed);
+        assert_eq!(transition_from_evdev_value(2), KeyTransition::Repeat);
+        assert_eq!(transition_from_evdev_value(99), KeyTransition::Repeat);
+    }
+
+    #[test]
+    fn device_set_snapshot_is_order_independent() {
+        let devices = [
+            DeviceIdentity {
+                path: PathBuf::from("/dev/input/event2"),
+                name: "Second".to_string(),
+            },
+            DeviceIdentity {
+                path: PathBuf::from("/dev/input/event1"),
+                name: "First".to_string(),
+            },
+        ];
+        let mut unsorted = devices.to_vec();
+        let mut sorted = devices.to_vec();
+        sorted.reverse();
+
+        unsorted.sort_by(|left, right| left.path.cmp(&right.path));
+        sorted.sort_by(|left, right| left.path.cmp(&right.path));
+
+        assert_eq!(unsorted, sorted);
     }
 }

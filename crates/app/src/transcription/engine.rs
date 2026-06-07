@@ -1,10 +1,10 @@
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use shared::ComputeBackend;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
 
 use crate::audio::prepare_whisper_audio;
@@ -159,7 +159,36 @@ impl WhisperEngine {
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
         params.set_n_threads(default_thread_count());
+        install_progress_logger(&mut params, &request);
 
+        let audio_stats = request.audio.signal_stats();
+        if audio_stats.is_near_silent() {
+            warn!(
+                shortcut_id = %request.shortcut_id,
+                input = %request.audio.input_label,
+                capture_duration_ms = request.audio.duration_ms(),
+                source_frames = request.audio.frame_count(),
+                audio_rms = audio_stats.rms,
+                audio_peak = audio_stats.peak,
+                "captured audio is near silent"
+            );
+        }
+        info!(
+            shortcut_id = %request.shortcut_id,
+            shortcut_name = %request.shortcut_name,
+            model_id = %request.model_id,
+            input = %request.audio.input_label,
+            capture_duration_ms = request.audio.duration_ms(),
+            source_sample_rate = request.audio.sample_rate,
+            source_channels = request.audio.channels,
+            source_frames = request.audio.frame_count(),
+            dropped_samples = request.audio.dropped_samples,
+            missed_audio_chunks = request.audio.missed_chunks,
+            audio_rms = audio_stats.rms,
+            audio_peak = audio_stats.peak,
+            whisper_samples = prepared.samples.len(),
+            "captured audio prepared for whisper"
+        );
         debug!(
             shortcut_id = %request.shortcut_id,
             shortcut_name = %request.shortcut_name,
@@ -183,6 +212,12 @@ impl WhisperEngine {
             .full(params, &prepared.samples)
             .context("whisper inference failed")?;
         let inference_duration_ms = inference_start.elapsed().as_millis();
+        info!(
+            shortcut_id = %request.shortcut_id,
+            model_id = %request.model_id,
+            inference_duration_ms,
+            "finished whisper inference"
+        );
 
         let mut segments = Vec::new();
         for index in 0..state.full_n_segments() {
@@ -225,6 +260,8 @@ impl WhisperEngine {
                 source_frames,
                 dropped_samples,
                 missed_audio_chunks,
+                audio_rms: audio_stats.rms,
+                audio_peak: audio_stats.peak,
                 whisper_sample_rate: prepared.sample_rate,
                 whisper_samples: prepared.samples.len(),
                 inference_duration_ms,
@@ -238,6 +275,19 @@ impl WhisperEngine {
             text = %result.text,
             "recognized text"
         );
+        if result.text.is_empty() {
+            warn!(
+                shortcut_id = %request.shortcut_id,
+                model_id = %result.debug.model_id,
+                language = %result.debug.language,
+                segment_count = result.segments.len(),
+                audio_rms = result.debug.audio_rms,
+                audio_peak = result.debug.audio_peak,
+                capture_duration_ms = result.debug.capture_duration_ms,
+                inference_duration_ms = result.debug.inference_duration_ms,
+                "recognized text is empty"
+            );
+        }
         debug!(?result, "transcription debug result");
         Ok(result)
     }
@@ -253,6 +303,33 @@ impl WhisperEngine {
             "cleared cached whisper model"
         );
     }
+}
+
+fn install_progress_logger(params: &mut FullParams<'_, '_>, request: &TranscriptionRequest) {
+    let shortcut_id = request.shortcut_id.clone();
+    let model_id = request.model_id.clone();
+    let mut last_logged = Instant::now()
+        .checked_sub(Duration::from_secs(5))
+        .unwrap_or_else(Instant::now);
+    let mut last_progress = -1;
+
+    params.set_progress_callback_safe(move |progress| {
+        if progress < 100
+            && progress - last_progress < 10
+            && last_logged.elapsed() < Duration::from_secs(5)
+        {
+            return;
+        }
+
+        last_progress = progress;
+        last_logged = Instant::now();
+        info!(
+            shortcut_id = %shortcut_id,
+            model_id = %model_id,
+            progress_percent = progress,
+            "whisper transcription progress"
+        );
+    });
 }
 
 impl Default for WhisperEngine {

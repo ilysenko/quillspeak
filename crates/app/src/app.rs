@@ -26,7 +26,9 @@ use crate::models::{FinishEffect, ModelDownloadManager, ModelRowState, ModelStor
 use crate::output::OutputService;
 use crate::recording::{RecordingPhase, RecordingPipeline, RecordingService};
 use crate::settings::SettingsWindow;
-use crate::transcription::{TranscriptionResult, TranscriptionService, build_transcription_plan};
+use crate::transcription::{
+    CompiledWhisperBackends, TranscriptionResult, TranscriptionService, build_transcription_plan,
+};
 use crate::tray::Tray;
 
 const COMMAND_PUMP_INTERVAL: Duration = Duration::from_millis(50);
@@ -594,6 +596,7 @@ impl AppRuntime {
 
     fn log_startup_state(&self) {
         let config = self.config.borrow();
+        let whisper_backends = CompiledWhisperBackends::current();
         info!(
             config_path = %self.config_store.path().display(),
             shortcut = %config.default_shortcut().accelerator,
@@ -602,6 +605,9 @@ impl AppRuntime {
             backend = %backend_name_for_config(&config),
             default_input = %config.general.default_input.display_label(),
             keep_model_loaded = config.general.keep_model_loaded,
+            whisper_compute = %config.general.compute_backend.as_str(),
+            compiled_whisper_backends = %whisper_backends.display_label(),
+            whisper_gpu_compiled = whisper_backends.has_gpu(),
             daemon_status = %self.daemon_status.get().display_label(),
             model_dir = %self.model_store.root().display(),
             "MyApp started in foreground development mode"

@@ -36,6 +36,41 @@ impl CapturedAudio {
     pub fn duration_ms(&self) -> u128 {
         self.stopped_at.duration_since(self.started_at).as_millis()
     }
+
+    pub fn signal_stats(&self) -> AudioSignalStats {
+        AudioSignalStats::from_samples(&self.samples)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct AudioSignalStats {
+    pub rms: f32,
+    pub peak: f32,
+}
+
+impl AudioSignalStats {
+    fn from_samples(samples: &[f32]) -> Self {
+        if samples.is_empty() {
+            return Self::default();
+        }
+
+        let mut sum_squares = 0.0f64;
+        let mut peak = 0.0f32;
+        for sample in samples {
+            let absolute = sample.abs();
+            peak = peak.max(absolute);
+            sum_squares += f64::from(*sample) * f64::from(*sample);
+        }
+
+        Self {
+            rms: (sum_squares / samples.len() as f64).sqrt() as f32,
+            peak,
+        }
+    }
+
+    pub fn is_near_silent(self) -> bool {
+        self.rms < 0.001 && self.peak < 0.01
+    }
 }
 
 pub struct AudioCaptureService {
@@ -268,5 +303,15 @@ mod tests {
             max_capture_samples(48_000, 2),
             48_000 * 2 * MAX_CAPTURE_SECONDS
         );
+    }
+
+    #[test]
+    fn audio_signal_stats_detect_peak_and_rms() {
+        let stats = AudioSignalStats::from_samples(&[0.0, 0.5, -0.5, 0.0]);
+
+        assert_eq!(stats.peak, 0.5);
+        assert!((stats.rms - 0.35355338).abs() < 0.000001);
+        assert!(!stats.is_near_silent());
+        assert!(AudioSignalStats::from_samples(&[0.0; 16]).is_near_silent());
     }
 }

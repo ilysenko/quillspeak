@@ -1,15 +1,56 @@
 use anyhow::Result;
 use shared::{AUTO_LANGUAGE_VALUE, ComputeBackend};
-use tracing::warn;
+use tracing::{info, warn};
 use whisper_rs::WhisperContextParameters;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompiledWhisperBackends {
+    pub cuda: bool,
+    pub rocm: bool,
+    pub vulkan: bool,
+}
+
+impl CompiledWhisperBackends {
+    pub const fn current() -> Self {
+        Self {
+            cuda: cfg!(feature = "whisper-cuda"),
+            rocm: cfg!(feature = "whisper-rocm"),
+            vulkan: cfg!(feature = "whisper-vulkan"),
+        }
+    }
+
+    pub const fn has_gpu(self) -> bool {
+        self.cuda || self.rocm || self.vulkan
+    }
+
+    pub fn display_label(self) -> String {
+        let mut backends = vec!["cpu"];
+        if self.vulkan {
+            backends.push("vulkan");
+        }
+        if self.cuda {
+            backends.push("cuda");
+        }
+        if self.rocm {
+            backends.push("rocm");
+        }
+        backends.join(",")
+    }
+}
 
 pub fn context_params(
     compute_backend: ComputeBackend,
 ) -> Result<WhisperContextParameters<'static>> {
     let mut params = WhisperContextParameters::new();
+    let compiled_backends = CompiledWhisperBackends::current();
     match compute_backend {
         ComputeBackend::Auto => {
-            params.use_gpu(true).flash_attn(true);
+            if compiled_backends.has_gpu() {
+                params.use_gpu(true).flash_attn(true);
+            } else {
+                info!("whisper auto compute is CPU-only because no GPU backend is compiled");
+                params.use_gpu(false);
+            }
         }
         ComputeBackend::Cpu => {
             params.use_gpu(false);
@@ -72,6 +113,19 @@ mod tests {
     #[test]
     fn auto_backend_is_supported_without_gpu_feature() {
         assert!(context_params(ComputeBackend::Auto).is_ok());
+    }
+
+    #[test]
+    fn compiled_backends_match_enabled_features() {
+        let backends = CompiledWhisperBackends::current();
+
+        assert_eq!(backends.cuda, cfg!(feature = "whisper-cuda"));
+        assert_eq!(backends.rocm, cfg!(feature = "whisper-rocm"));
+        assert_eq!(backends.vulkan, cfg!(feature = "whisper-vulkan"));
+        assert_eq!(
+            backends.has_gpu(),
+            backends.cuda || backends.rocm || backends.vulkan
+        );
     }
 
     #[test]

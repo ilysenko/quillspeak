@@ -70,10 +70,7 @@ pub(crate) fn send_hotkey_method(method_name: &'static str, shortcut_id: &str) -
         .call::<_, _, ()>(method_name, &(shortcut_id.to_string(),))
         .with_context(|| format!("failed to call app method {method_name}; is myapp running?"))?;
 
-    info!(
-        method_name,
-        shortcut_id, "sent simulated hotkey event to app"
-    );
+    info!(method_name, shortcut_id, "sent hotkey event to app");
     Ok(())
 }
 

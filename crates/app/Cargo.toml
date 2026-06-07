@@ -29,7 +29,7 @@ x11rb.workspace = true
 zbus.workspace = true
 
 [features]
-default = []
+default = ["audio-pulseaudio"]
 audio-pipewire = ["cpal/pipewire"]
 audio-pulseaudio = ["cpal/pulseaudio"]
 whisper-cuda = ["whisper-rs/cuda"]

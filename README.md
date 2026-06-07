@@ -20,21 +20,35 @@ On Debian/Ubuntu-style systems install the desktop, audio, and whisper.cpp build
 dependencies before building the main app:
 
 ```sh
-sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libgtk-4-dev libadwaita-1-dev
+sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libpulse-dev libgtk-4-dev libadwaita-1-dev
 ```
 
-The default build uses CPAL's ALSA backend because it is widely available and
-does not require extra PipeWire/PulseAudio development packages. Native
-PipeWire or PulseAudio hosts can be enabled for local testing with Cargo
-features:
+The default development build enables CPAL's PulseAudio backend, which follows
+the PipeWire Pulse compatibility server on modern Linux desktops. Native
+PipeWire can be enabled for local testing when the development package is
+installed:
 
 ```sh
+cargo run -p app --bin myapp
 cargo run -p app --bin myapp --features audio-pipewire
-cargo run -p app --bin myapp --features audio-pulseaudio
+cargo run -p app --no-default-features --bin myapp
 ```
 
-Those features require the matching system development packages, for example
-`libpipewire-0.3-dev` or `libpulse-dev`.
+The PipeWire feature requires `libpipewire-0.3-dev`. The `--no-default-features`
+command is an ALSA-only fallback for debugging.
+
+Vulkan is the intended packaged GPU backend because users should be able to
+install a future `.deb` without compiling CUDA locally. Builder machines need
+Vulkan development dependencies:
+
+```sh
+sudo apt install libvulkan-dev glslc
+cargo check -p app --features whisper-vulkan,audio-pulseaudio
+cargo run -p app --features whisper-vulkan,audio-pulseaudio --bin myapp
+```
+
+Do not enable `whisper-vulkan` by default until the feature builds consistently
+in the development/build environment.
 
 The daemon and shared crate do not require GTK. Real Wayland hotkey capture uses
 Linux evdev devices under `/dev/input/event*`; normal runtime should not use
@@ -120,7 +134,9 @@ recognized text shortcut_id=default model_id=tiny language=auto text="..."
 
 `RUST_LOG=debug` prints the full transcription debug structure: shortcut name,
 model path, compute backend, input device, capture duration, source sample rate,
-Whisper sample count, inference time, and segments.
+audio RMS/peak, Whisper sample count, inference time, and segments. Empty
+recognized text also logs segment count and audio RMS/peak to help distinguish a
+wrong or silent microphone from a transcription problem.
 
 Models must be downloaded in Settings > Models before they can be used. If a
 shortcut points to a model that is not ready, recording stops with a clear log

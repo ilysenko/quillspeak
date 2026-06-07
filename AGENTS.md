@@ -381,10 +381,11 @@ Current audio behavior:
 - Settings > General lists `System Default` first, then discovered input
   devices;
 - `System Default` resolves to the current host default at recording time;
-- the default build uses CPAL's ALSA host;
-- optional Cargo features `audio-pipewire` and `audio-pulseaudio` enable native
-  CPAL PipeWire/PulseAudio hosts when the system development packages are
-  installed.
+- the default app build enables CPAL's PulseAudio host, which follows
+  pipewire-pulse on modern Linux desktops;
+- optional Cargo feature `audio-pipewire` enables native CPAL PipeWire when
+  `libpipewire-0.3-dev` is installed;
+- `--no-default-features` is the ALSA-only fallback for debugging.
 
 Current transcription behavior:
 
@@ -393,16 +394,23 @@ Current transcription behavior:
   snapshot before the worker starts;
 - only ready/downloaded models may be used;
 - `whisper-rs` is the Rust wrapper over whisper.cpp;
-- model contexts are cached inside the transcription worker by model path and
-  compute backend;
+- model contexts are cached inside the transcription worker as one last-used
+  model path and compute backend when `keep_model_loaded = true`;
 - recognized text is logged at `info`;
-- full request/result metadata is logged at `debug`.
+- full request/result metadata is logged at `debug`;
+- capture diagnostics include input device, duration, frames, RMS, peak,
+  dropped samples, and missed audio chunks;
+- empty recognized text should warn with segment count and audio RMS/peak.
 
 Compute backend is selected from config. `auto` enables whisper.cpp GPU usage
 when the binary is built with a GPU backend and otherwise falls back to CPU
 behavior. Explicit Vulkan/CUDA/ROCm selections should fail clearly if the app
 was not compiled with the matching Cargo feature. OpenVINO is a future setting
 placeholder and is not implemented by the current `whisper-rs` integration.
+Vulkan is the intended packaged GPU backend so end users can install a future
+`.deb` without compiling CUDA locally; builder machines need Vulkan development
+packages and a working `whisper-vulkan` feature build before it can become a
+release default.
 
 Do not block the GTK main thread with audio capture, model loading, inference,
 downloads, hashing, or output execution. Keep those paths worker based and send
@@ -456,15 +464,24 @@ git diff --check
 System dependencies for the full app build on Debian/Ubuntu-style systems:
 
 ```sh
-sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libgtk-4-dev libadwaita-1-dev
+sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libpulse-dev libgtk-4-dev libadwaita-1-dev
 ```
 
 Optional native CPAL hosts require extra dev packages and features:
 
 ```sh
-sudo apt install libpipewire-0.3-dev libpulse-dev
+sudo apt install libpipewire-0.3-dev
 cargo run -p app --bin myapp --features audio-pipewire
-cargo run -p app --bin myapp --features audio-pulseaudio
+cargo run -p app --no-default-features --bin myapp
+```
+
+Vulkan GPU builds are the intended packaged GPU path, but must pass explicitly
+before becoming a default:
+
+```sh
+sudo apt install libvulkan-dev glslc
+cargo check -p app --features whisper-vulkan,audio-pulseaudio
+cargo run -p app --features whisper-vulkan,audio-pulseaudio --bin myapp
 ```
 
 Run commands:
@@ -472,6 +489,7 @@ Run commands:
 ```sh
 cargo run -p app --bin myapp
 cargo run -p app --bin myapp --features audio-pipewire
+cargo run -p app --no-default-features --bin myapp
 cargo run -p daemon --bin myapp-daemon
 RUST_LOG=debug cargo run -p app --bin myapp
 RUST_LOG=debug MYAPP_DEV_LOG=1 cargo run -p daemon --bin myapp-daemon
