@@ -32,6 +32,8 @@ pub struct SettingsWindow {
     stack: gtk::Stack,
     toast_overlay: adw::ToastOverlay,
     state: SettingsState,
+    general_page: Rc<RefCell<Option<pages::general::GeneralPage>>>,
+    models_page: Rc<RefCell<Option<pages::models::ModelsPage>>>,
 }
 
 impl SettingsWindow {
@@ -70,13 +72,22 @@ impl SettingsWindow {
         let stack = gtk::Stack::builder()
             .hexpand(true)
             .vexpand(true)
+            .hhomogeneous(false)
+            .vhomogeneous(false)
             .transition_type(gtk::StackTransitionType::Crossfade)
             .build();
         let sidebar = gtk::StackSidebar::builder()
             .stack(&stack)
-            .width_request(150)
+            .width_request(170)
             .build();
-        layout.append(&sidebar);
+        let sidebar_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .width_request(180)
+            .vexpand(true)
+            .child(&sidebar)
+            .build();
+        layout.append(&sidebar_scroll);
         layout.append(&stack);
         content.append(&layout);
 
@@ -86,8 +97,8 @@ impl SettingsWindow {
         let window = adw::ApplicationWindow::builder()
             .application(application)
             .title("MyApp Settings")
-            .default_width(760)
-            .default_height(540)
+            .default_width(860)
+            .default_height(680)
             .content(&toast_overlay)
             .build();
 
@@ -108,6 +119,8 @@ impl SettingsWindow {
             stack,
             toast_overlay,
             state,
+            general_page: Rc::new(RefCell::new(None)),
+            models_page: Rc::new(RefCell::new(None)),
         };
         this.render(None);
         this
@@ -128,6 +141,21 @@ impl SettingsWindow {
         model_states: Vec<ModelRowState>,
         ready_model_ids: HashSet<String>,
     ) {
+        self.state.model_states.replace(model_states);
+        self.state.ready_model_ids.replace(ready_model_ids);
+        if let Some(models_page) = self.models_page.borrow().as_ref() {
+            models_page.update(&self.state.model_states.borrow());
+        } else {
+            let visible = self.stack.visible_child_name().map(|name| name.to_string());
+            self.render(visible);
+        }
+    }
+
+    pub fn update_model_inventory(
+        &self,
+        model_states: Vec<ModelRowState>,
+        ready_model_ids: HashSet<String>,
+    ) {
         let visible = self.stack.visible_child_name().map(|name| name.to_string());
         self.state.model_states.replace(model_states);
         self.state.ready_model_ids.replace(ready_model_ids);
@@ -135,9 +163,13 @@ impl SettingsWindow {
     }
 
     pub fn update_daemon_status(&self, daemon_status: DaemonStatus) {
-        let visible = self.stack.visible_child_name().map(|name| name.to_string());
         self.state.daemon_status.set(daemon_status);
-        self.render(visible);
+        if let Some(general_page) = self.general_page.borrow().as_ref() {
+            general_page.update_daemon_status(daemon_status);
+        } else {
+            let visible = self.stack.visible_child_name().map(|name| name.to_string());
+            self.render(visible);
+        }
     }
 
     pub fn update_save_status(&self, status: &str) {
@@ -145,7 +177,13 @@ impl SettingsWindow {
     }
 
     fn render(&self, preferred_page: Option<String>) {
-        render_stack(&self.stack, &self.state, preferred_page);
+        render_stack(
+            &self.stack,
+            &self.state,
+            preferred_page,
+            &self.general_page,
+            &self.models_page,
+        );
     }
 }
 
@@ -171,7 +209,11 @@ pub(super) fn render_stack(
     stack: &gtk::Stack,
     state: &SettingsState,
     preferred_page: Option<String>,
+    general_page_slot: &Rc<RefCell<Option<pages::general::GeneralPage>>>,
+    models_page_slot: &Rc<RefCell<Option<pages::models::ModelsPage>>>,
 ) {
+    general_page_slot.replace(None);
+    models_page_slot.replace(None);
     while let Some(child) = stack.first_child() {
         stack.remove(&child);
     }
@@ -180,22 +222,37 @@ pub(super) fn render_stack(
     let render_request: Rc<dyn Fn(Option<String>)> = Rc::new({
         let stack = stack.clone();
         let state = state.clone();
-        move |preferred_page| render_stack(&stack, &state, preferred_page)
+        let general_page_slot = Rc::clone(general_page_slot);
+        let models_page_slot = Rc::clone(models_page_slot);
+        move |preferred_page| {
+            render_stack(
+                &stack,
+                &state,
+                preferred_page,
+                &general_page_slot,
+                &models_page_slot,
+            )
+        }
     });
 
+    let general_page =
+        pages::general::build(&config, state.daemon_status.get(), state.draft.clone());
     stack.add_titled(
-        &pages::general::build(&config, state.daemon_status.get(), state.draft.clone()),
+        &widgets::scrollable_page(general_page.widget()),
         Some("general"),
         "General",
     );
+    general_page_slot.replace(Some(general_page));
+    let models_page = pages::models::build(
+        state.model_states.borrow().clone(),
+        state.command_tx.clone(),
+    );
     stack.add_titled(
-        &pages::models::build(
-            state.model_states.borrow().clone(),
-            state.command_tx.clone(),
-        ),
+        &widgets::scrollable_page(models_page.widget()),
         Some("models"),
         "Models",
     );
+    models_page_slot.replace(Some(models_page));
 
     let ready_model_ids = state.ready_model_ids.borrow().clone();
     for shortcut in &config.shortcuts {
@@ -204,24 +261,26 @@ pub(super) fn render_stack(
         } else {
             shortcut.name.clone()
         };
+        let shortcut_page = pages::shortcut::build(
+            shortcut,
+            ready_model_ids.clone(),
+            state.draft.clone(),
+            Rc::clone(&render_request),
+        );
         stack.add_titled(
-            &pages::shortcut::build(
-                shortcut,
-                ready_model_ids.clone(),
-                state.draft.clone(),
-                Rc::clone(&render_request),
-            ),
+            &widgets::scrollable_page(&shortcut_page),
             Some(&shortcut_page_name(&shortcut.id)),
             &title,
         );
     }
 
+    let add_shortcut_page = pages::add_shortcut::build(
+        state.draft.clone(),
+        ready_model_ids,
+        Rc::clone(&render_request),
+    );
     stack.add_titled(
-        &pages::add_shortcut::build(
-            state.draft.clone(),
-            ready_model_ids,
-            Rc::clone(&render_request),
-        ),
+        &widgets::scrollable_page(&add_shortcut_page),
         Some("add-shortcut"),
         "Add New",
     );

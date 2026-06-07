@@ -1,6 +1,8 @@
 use shared::AppConfig;
 use shared::DaemonStatus;
 
+pub type DownloadId = u64;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppCommand {
     ShowSettings,
@@ -13,18 +15,34 @@ pub enum AppCommand {
     },
     SaveConfig(AppConfig),
     DownloadModel(String),
+    CancelModelDownload(String),
     DeleteModel(String),
     ModelDownloadProgress {
+        download_id: DownloadId,
+        model_id: String,
+        downloaded: u64,
+        total: Option<u64>,
+    },
+    ModelDownloadVerifying {
+        download_id: DownloadId,
         model_id: String,
         downloaded: u64,
         total: Option<u64>,
     },
     ModelDownloadFinished {
+        download_id: DownloadId,
         model_id: String,
-        result: Result<(), String>,
+        outcome: ModelDownloadOutcome,
     },
     DaemonAppeared(DaemonStatus),
     DaemonVanished(DaemonStatus),
     DaemonStatusChanged(DaemonStatus),
     Quit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelDownloadOutcome {
+    Completed,
+    Canceled,
+    Failed(String),
 }

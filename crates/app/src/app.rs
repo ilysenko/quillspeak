@@ -1,5 +1,4 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -13,9 +12,9 @@ use libadwaita::prelude::*;
 use shared::{
     APP_ID, AppConfig, DEFAULT_SHORTCUT_ID, DaemonStatus, ResolvedOutput, ShortcutRuntimeConfig,
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
-use crate::command::AppCommand;
+use crate::command::{AppCommand, DownloadId, ModelDownloadOutcome};
 use crate::config_store::ConfigStore;
 use crate::daemon_client::DaemonClient;
 use crate::daemon_monitor::DaemonMonitorHandle;
@@ -23,10 +22,13 @@ use crate::dbus::AppDbusHandle;
 use crate::hotkey::{
     HotkeyBackendHandle, backend_name_for_config, configure_hotkey_backend, resolve_backend_kind,
 };
-use crate::models::{ModelStatus, ModelStore};
+use crate::models::{FinishEffect, ModelDownloadManager, ModelRowState, ModelStore};
 use crate::recording::{RecordingPhase, RecordingService, spawn_transcription_job};
 use crate::settings::SettingsWindow;
 use crate::tray::Tray;
+
+const COMMAND_PUMP_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_COMMANDS_PER_PUMP: usize = 128;
 
 pub fn run() -> gtk::glib::ExitCode {
     let application = adw::Application::builder().application_id(APP_ID).build();
@@ -60,7 +62,7 @@ struct AppRuntime {
     command_tx: mpsc::Sender<AppCommand>,
     config_store: ConfigStore,
     model_store: ModelStore,
-    model_downloads: RefCell<HashMap<String, ModelStatus>>,
+    download_manager: RefCell<ModelDownloadManager>,
     config: RefCell<AppConfig>,
     daemon_client: DaemonClient,
     daemon_status: Cell<DaemonStatus>,
@@ -117,7 +119,7 @@ impl AppRuntime {
             command_tx,
             config_store,
             model_store,
-            model_downloads: RefCell::new(HashMap::new()),
+            download_manager: RefCell::new(ModelDownloadManager::default()),
             config: RefCell::new(config),
             daemon_client,
             daemon_status: Cell::new(daemon_status),
@@ -137,8 +139,11 @@ impl AppRuntime {
 
     fn attach_command_pump(runtime: &Rc<Self>, command_rx: mpsc::Receiver<AppCommand>) {
         let runtime = Rc::clone(runtime);
-        gtk::glib::timeout_add_local(Duration::from_millis(50), move || {
-            while let Ok(command) = command_rx.try_recv() {
+        gtk::glib::timeout_add_local(COMMAND_PUMP_INTERVAL, move || {
+            for _ in 0..MAX_COMMANDS_PER_PUMP {
+                let Ok(command) = command_rx.try_recv() else {
+                    break;
+                };
                 runtime.handle_command(command);
             }
 
@@ -158,15 +163,25 @@ impl AppRuntime {
             } => self.finish_transcription(&shortcut_id, result),
             AppCommand::SaveConfig(config) => self.save_config(config),
             AppCommand::DownloadModel(model_id) => self.download_model(model_id),
+            AppCommand::CancelModelDownload(model_id) => self.cancel_model_download(model_id),
             AppCommand::DeleteModel(model_id) => self.delete_model(&model_id),
             AppCommand::ModelDownloadProgress {
+                download_id,
                 model_id,
                 downloaded,
                 total,
-            } => self.update_model_download_progress(model_id, downloaded, total),
-            AppCommand::ModelDownloadFinished { model_id, result } => {
-                self.finish_model_download(model_id, result)
-            }
+            } => self.update_model_download_progress(download_id, model_id, downloaded, total),
+            AppCommand::ModelDownloadVerifying {
+                download_id,
+                model_id,
+                downloaded,
+                total,
+            } => self.update_model_download_verifying(download_id, model_id, downloaded, total),
+            AppCommand::ModelDownloadFinished {
+                download_id,
+                model_id,
+                outcome,
+            } => self.finish_model_download(download_id, model_id, outcome),
             AppCommand::DaemonAppeared(status) => self.handle_daemon_appeared(status),
             AppCommand::DaemonVanished(status) => self.set_daemon_status(status),
             AppCommand::DaemonStatusChanged(status) => self.set_daemon_status(status),
@@ -260,8 +275,7 @@ impl AppRuntime {
             let window = SettingsWindow::new(
                 &self.application,
                 &self.config.borrow(),
-                self.model_store
-                    .row_states(&self.config.borrow(), &self.model_downloads.borrow()),
+                self.model_row_states(),
                 self.model_store.ready_model_ids(),
                 self.daemon_status.get(),
                 self.command_sender(),
@@ -271,11 +285,7 @@ impl AppRuntime {
 
         if let Some(window) = self.settings_window.borrow().as_ref() {
             window.update_config(&self.config.borrow());
-            window.update_model_states(
-                self.model_store
-                    .row_states(&self.config.borrow(), &self.model_downloads.borrow()),
-                self.model_store.ready_model_ids(),
-            );
+            window.update_model_states(self.model_row_states(), self.model_store.ready_model_ids());
             window.update_daemon_status(self.daemon_status.get());
             window.present();
         }
@@ -310,82 +320,167 @@ impl AppRuntime {
         self.config.replace(config.clone());
         if let Some(window) = self.settings_window.borrow().as_ref() {
             window.update_config(&config);
-            window.update_model_states(
-                self.model_store
-                    .row_states(&config, &self.model_downloads.borrow()),
-                self.model_store.ready_model_ids(),
-            );
+            window.update_model_states(self.model_row_states(), self.model_store.ready_model_ids());
             window.update_save_status("Saved");
         }
     }
 
     fn download_model(&self, model_id: String) {
-        if matches!(
-            self.model_downloads.borrow().get(&model_id),
-            Some(ModelStatus::Downloading { .. })
-        ) {
+        if self.download_manager.borrow().is_active(&model_id) {
             info!(model_id, "model download already in progress");
             return;
         }
-        self.model_downloads.borrow_mut().insert(
-            model_id.clone(),
-            ModelStatus::Downloading {
-                downloaded: 0,
-                total: None,
-            },
-        );
+        if self.model_store.ready_model_ids().contains(&model_id) {
+            info!(
+                model_id,
+                "model download ignored because model is already ready"
+            );
+            return;
+        }
+        let Some(download_id) = self.download_manager.borrow_mut().begin(&model_id) else {
+            info!(model_id, "model download already in progress");
+            return;
+        };
+        let handle =
+            self.model_store
+                .start_download(download_id, model_id.clone(), self.command_sender());
+        self.download_manager
+            .borrow_mut()
+            .attach_handle(&model_id, download_id, handle);
         self.refresh_model_rows();
-        self.model_store
-            .start_download(model_id, self.command_sender());
+    }
+
+    fn cancel_model_download(&self, model_id: String) {
+        let Some(handle) = self.download_manager.borrow_mut().cancel(&model_id) else {
+            info!(
+                model_id,
+                "model download cancel ignored because no download is active"
+            );
+            return;
+        };
+        handle.cancel();
+        self.refresh_model_rows();
     }
 
     fn delete_model(&self, model_id: &str) {
+        if self.download_manager.borrow().is_active(model_id) {
+            warn!(model_id, "model delete ignored while download is active");
+            return;
+        }
         if let Err(error) = self
             .model_store
             .delete_model(model_id, &self.config.borrow())
         {
             warn!(?error, model_id, "failed to delete model");
         }
-        self.refresh_model_rows();
+        self.refresh_model_inventory();
     }
 
     fn update_model_download_progress(
         &self,
+        download_id: DownloadId,
         model_id: String,
         downloaded: u64,
         total: Option<u64>,
     ) {
-        self.model_downloads
+        if !self
+            .download_manager
             .borrow_mut()
-            .insert(model_id, ModelStatus::Downloading { downloaded, total });
+            .progress(download_id, &model_id, downloaded, total)
+        {
+            debug!(
+                model_id,
+                download_id, downloaded, total, "ignoring stale model download progress"
+            );
+            return;
+        }
         self.refresh_model_rows();
     }
 
-    fn finish_model_download(&self, model_id: String, result: Result<(), String>) {
-        match result {
-            Ok(()) => {
-                self.model_downloads.borrow_mut().remove(&model_id);
-                self.model_store.refresh_ready_model_ids();
-                info!(model_id, "model download completed");
-            }
-            Err(error) => {
-                warn!(model_id, error, "model download failed");
-                self.model_downloads
-                    .borrow_mut()
-                    .insert(model_id, ModelStatus::Error(error));
-            }
+    fn update_model_download_verifying(
+        &self,
+        download_id: DownloadId,
+        model_id: String,
+        downloaded: u64,
+        total: Option<u64>,
+    ) {
+        if self
+            .download_manager
+            .borrow_mut()
+            .verifying(download_id, &model_id, downloaded, total)
+        {
+            self.refresh_model_rows();
+        } else {
+            debug!(
+                model_id,
+                download_id, "ignoring stale model download verifying event"
+            );
         }
-        self.refresh_model_rows();
+    }
+
+    fn finish_model_download(
+        &self,
+        download_id: DownloadId,
+        model_id: String,
+        outcome: ModelDownloadOutcome,
+    ) {
+        let effect = self
+            .download_manager
+            .borrow_mut()
+            .finish(download_id, &model_id, outcome);
+        if effect == FinishEffect::Stale {
+            info!(
+                model_id,
+                download_id, "ignoring stale model download outcome"
+            );
+            return;
+        }
+
+        match effect {
+            FinishEffect::Completed => {
+                match self.model_store.mark_ready(&model_id) {
+                    Ok(_) => info!(model_id, "model download completed"),
+                    Err(error) => {
+                        warn!(?error, model_id, "failed to update model inventory");
+                        self.download_manager
+                            .borrow_mut()
+                            .set_error(&model_id, format!("{error:#}"));
+                    }
+                }
+                self.refresh_model_inventory();
+            }
+            FinishEffect::Canceled => {
+                info!(model_id, "model download canceled");
+                self.refresh_model_rows();
+            }
+            FinishEffect::Failed(error) => {
+                warn!(model_id, error, "model download failed");
+                self.refresh_model_rows();
+            }
+            FinishEffect::Stale => {}
+        }
     }
 
     fn refresh_model_rows(&self) {
         if let Some(window) = self.settings_window.borrow().as_ref() {
-            window.update_model_states(
-                self.model_store
-                    .row_states(&self.config.borrow(), &self.model_downloads.borrow()),
+            window.update_model_states(self.model_row_states(), self.model_store.ready_model_ids());
+        }
+    }
+
+    fn refresh_model_inventory(&self) {
+        if let Some(window) = self.settings_window.borrow().as_ref() {
+            window.update_model_inventory(
+                self.model_row_states(),
                 self.model_store.ready_model_ids(),
             );
         }
+    }
+
+    fn model_row_states(&self) -> Vec<ModelRowState> {
+        let config = self.config.borrow();
+        let download_manager = self.download_manager.borrow();
+        self.model_store
+            .row_states(&config, download_manager.statuses())
     }
 
     fn handle_daemon_appeared(&self, status: DaemonStatus) {

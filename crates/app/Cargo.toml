@@ -17,6 +17,7 @@ gtk4.workspace = true
 ksni.workspace = true
 libadwaita.workspace = true
 reqwest.workspace = true
+serde.workspace = true
 shared = { path = "../shared" }
 sha1.workspace = true
 toml.workspace = true

@@ -23,6 +23,16 @@ pub fn preferences_page(title: &str) -> adw::PreferencesPage {
     adw::PreferencesPage::builder().title(title).build()
 }
 
+pub fn scrollable_page(page: &adw::PreferencesPage) -> gtk::ScrolledWindow {
+    gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .hexpand(true)
+        .vexpand(true)
+        .child(page)
+        .build()
+}
+
 pub fn property_row(title: &str, value: &str) -> adw::ActionRow {
     let row = adw::ActionRow::builder()
         .title(title)

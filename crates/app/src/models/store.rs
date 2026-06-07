@@ -8,9 +8,12 @@ use anyhow::{Context, Result, anyhow};
 use directories::BaseDirs;
 use shared::{AppConfig, MODEL_CATALOG, ModelCatalogEntry, model_catalog_entry};
 
-use crate::command::AppCommand;
-use crate::models::downloader;
-use crate::models::inventory::{model_path, partial_model_path, scan_ready_model_ids};
+use crate::command::{AppCommand, DownloadId};
+use crate::models::downloader::{self, DownloadHandle};
+use crate::models::inventory::{
+    load_ready_model_ids, mark_model_ready, model_path, partial_model_path,
+    remove_model_from_inventory,
+};
 use crate::models::view_model::{ModelRowState, ModelStatus, referenced_models};
 
 #[derive(Debug)]
@@ -23,7 +26,7 @@ impl ModelStore {
     pub fn new() -> Result<Self> {
         let base_dirs = BaseDirs::new().context("failed to resolve user data directory")?;
         let root = base_dirs.data_dir().join("myapp/models");
-        let ready_model_ids = scan_ready_model_ids(&root);
+        let ready_model_ids = load_ready_model_ids(&root);
         Ok(Self {
             root,
             ready_model_ids: RefCell::new(ready_model_ids),
@@ -42,10 +45,12 @@ impl ModelStore {
         self.ready_model_ids.borrow().clone()
     }
 
-    pub fn refresh_ready_model_ids(&self) -> HashSet<String> {
-        let ready_model_ids = scan_ready_model_ids(&self.root);
+    pub fn mark_ready(&self, model_id: &str) -> Result<HashSet<String>> {
+        let entry =
+            model_catalog_entry(model_id).ok_or_else(|| anyhow!("unknown model id {model_id}"))?;
+        let ready_model_ids = mark_model_ready(&self.root, entry)?;
         self.ready_model_ids.replace(ready_model_ids.clone());
-        ready_model_ids
+        Ok(ready_model_ids)
     }
 
     pub fn row_states(
@@ -75,8 +80,13 @@ impl ModelStore {
             .collect()
     }
 
-    pub fn start_download(&self, model_id: String, command_tx: mpsc::Sender<AppCommand>) {
-        downloader::start_download(&self.root, model_id, command_tx);
+    pub fn start_download(
+        &self,
+        download_id: DownloadId,
+        model_id: String,
+        command_tx: mpsc::Sender<AppCommand>,
+    ) -> DownloadHandle {
+        downloader::start_download(&self.root, download_id, model_id, command_tx)
     }
 
     pub fn delete_model(&self, model_id: &str, config: &AppConfig) -> Result<()> {
@@ -95,7 +105,8 @@ impl ModelStore {
             fs::remove_file(&partial)
                 .with_context(|| format!("failed to delete partial model {}", partial.display()))?;
         }
-        self.ready_model_ids.borrow_mut().remove(model_id);
+        let ready_model_ids = remove_model_from_inventory(&self.root, model_id)?;
+        self.ready_model_ids.replace(ready_model_ids);
         Ok(())
     }
 }

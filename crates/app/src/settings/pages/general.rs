@@ -10,21 +10,34 @@ use crate::settings::widgets::{
     preferences_page, property_row,
 };
 
-pub fn build(
-    config: &AppConfig,
-    daemon_status: DaemonStatus,
-    draft: SettingsDraft,
-) -> adw::PreferencesPage {
+#[derive(Clone)]
+pub struct GeneralPage {
+    page: adw::PreferencesPage,
+    daemon_status_row: adw::ActionRow,
+    advanced_hotkey_row: adw::ActionRow,
+}
+
+impl GeneralPage {
+    pub fn widget(&self) -> &adw::PreferencesPage {
+        &self.page
+    }
+
+    pub fn update_daemon_status(&self, daemon_status: DaemonStatus) {
+        self.daemon_status_row
+            .set_subtitle(daemon_status.display_label());
+        self.advanced_hotkey_row
+            .set_subtitle(advanced_hotkey_status(daemon_status));
+    }
+}
+
+pub fn build(config: &AppConfig, daemon_status: DaemonStatus, draft: SettingsDraft) -> GeneralPage {
     let page = preferences_page("General");
     let status_group = adw::PreferencesGroup::builder().title("Status").build();
-    status_group.add(&property_row(
-        "Daemon status",
-        daemon_status.display_label(),
-    ));
-    status_group.add(&property_row(
-        "Advanced hotkeys",
-        advanced_hotkey_status(daemon_status),
-    ));
+    let daemon_status_row = property_row("Daemon status", daemon_status.display_label());
+    status_group.add(&daemon_status_row);
+    let advanced_hotkey_row =
+        property_row("Advanced hotkeys", advanced_hotkey_status(daemon_status));
+    status_group.add(&advanced_hotkey_row);
 
     let general_group = adw::PreferencesGroup::builder()
         .title("Configuration")
@@ -101,5 +114,9 @@ pub fn build(
     page.add(&status_group);
     page.add(&general_group);
     page.add(&output_group);
-    page
+    GeneralPage {
+        page,
+        daemon_status_row,
+        advanced_hotkey_row,
+    }
 }
