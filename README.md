@@ -35,6 +35,14 @@ cargo run -p app --no-default-features --bin myapp
 
 The PipeWire feature requires `libpipewire-0.3-dev`. The final
 `--no-default-features` command is an ALSA-only fallback for debugging.
+The same fallback works for local validation on systems without PipeWire
+development headers:
+
+```sh
+cargo check --workspace --no-default-features
+cargo test --workspace --no-default-features
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+```
 
 Vulkan is the intended packaged GPU backend because users should be able to
 install a future `.deb` without compiling CUDA locally. Builder machines need
@@ -243,9 +251,11 @@ Whisper model context in memory to speed up repeated transcription; `false`
 loads and drops the model for every transcription. The daemon stores an accepted
 last-known cache at
 `~/.config/myapp-input-daemon/shortcut-cache.toml` so it can start before the app
-and still know the last configured shortcuts. During development only schema v4
-is supported; invalid old configs/caches are errors or ignored with a warning,
-not migrated.
+and still know the last configured shortcuts. The daemon validates that runtime
+cache schema before applying it; stale or invalid cache files are ignored and
+the app config wins the next time the app is available. During development only
+schema v4 is supported; invalid old configs/caches are errors or ignored with a
+warning, not migrated.
 
 If a local development config is from an older schema, remove
 `~/.config/myapp/config.toml` and restart the app to generate the current

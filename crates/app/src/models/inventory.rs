@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use shared::persistence::atomic_write_text;
 use shared::{ModelCatalogEntry, model_catalog_entry};
 use tracing::{info, warn};
 
@@ -99,11 +100,9 @@ fn load_inventory(root: &Path) -> Result<ModelInventory> {
 }
 
 fn save_inventory(root: &Path, inventory: &ModelInventory) -> Result<()> {
-    fs::create_dir_all(root)
-        .with_context(|| format!("failed to create model directory {}", root.display()))?;
     let path = inventory_path(root);
     let text = toml::to_string_pretty(inventory).context("failed to serialize model inventory")?;
-    fs::write(&path, text)
+    atomic_write_text(&path, &text)
         .with_context(|| format!("failed to write model inventory {}", path.display()))
 }
 

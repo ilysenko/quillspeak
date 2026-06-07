@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use zvariant::Type;
 
-use crate::config::{AppConfig, HotkeyBackend};
+use crate::config::{AppConfig, CONFIG_SCHEMA_VERSION, ConfigError, HotkeyBackend};
 
 pub const APP_ID: &str = "org.example.MyApp";
 pub const APP_BUS_NAME: &str = "org.example.MyApp.App";
@@ -76,6 +76,14 @@ pub struct ShortcutRuntimeConfig {
 }
 
 impl ShortcutRuntimeConfig {
+    pub fn validate_current_schema(&self) -> Result<(), ConfigError> {
+        if self.schema_version == CONFIG_SCHEMA_VERSION {
+            Ok(())
+        } else {
+            Err(ConfigError::UnsupportedSchemaVersion(self.schema_version))
+        }
+    }
+
     pub fn is_configured(&self) -> bool {
         self.shortcuts
             .iter()
@@ -170,5 +178,18 @@ mod tests {
         assert!(!x11_wire.shortcuts[0].enabled);
         assert!(!disabled_wire.is_configured());
         assert!(!disabled_wire.shortcuts[0].enabled);
+    }
+
+    #[test]
+    fn runtime_config_rejects_unsupported_schema() {
+        let mut wire = ShortcutRuntimeConfig::from(&AppConfig::default());
+        wire.schema_version = CONFIG_SCHEMA_VERSION - 1;
+
+        assert_eq!(
+            wire.validate_current_schema(),
+            Err(ConfigError::UnsupportedSchemaVersion(
+                CONFIG_SCHEMA_VERSION - 1
+            ))
+        );
     }
 }

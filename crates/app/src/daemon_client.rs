@@ -1,5 +1,7 @@
 use std::env;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result};
 use directories::BaseDirs;
@@ -8,6 +10,8 @@ use shared::{
 };
 use tracing::{debug, info, warn};
 use zbus::blocking::{Connection, Proxy};
+
+use crate::command::AppCommand;
 
 #[derive(Debug, Clone, Default)]
 pub struct DaemonClient;
@@ -68,6 +72,83 @@ impl DaemonClient {
             warn!("daemon rejected shortcut config update");
         }
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct DaemonClientWorker {
+    worker_tx: mpsc::Sender<DaemonClientCommand>,
+    join_handle: Option<JoinHandle<()>>,
+}
+
+impl DaemonClientWorker {
+    pub fn spawn(command_tx: mpsc::Sender<AppCommand>) -> Result<Self> {
+        let (worker_tx, worker_rx) = mpsc::channel();
+        let join_handle = thread::Builder::new()
+            .name("myapp-daemon-client".to_string())
+            .spawn(move || daemon_client_worker_loop(worker_rx, command_tx))
+            .context("failed to spawn daemon client worker")?;
+        Ok(Self {
+            worker_tx,
+            join_handle: Some(join_handle),
+        })
+    }
+
+    pub fn probe_status(&self) -> Result<()> {
+        self.worker_tx
+            .send(DaemonClientCommand::ProbeStatus)
+            .map_err(|_| anyhow::anyhow!("daemon client worker is not running"))
+    }
+
+    pub fn sync_shortcut_config(&self, config: ShortcutRuntimeConfig) -> Result<()> {
+        self.worker_tx
+            .send(DaemonClientCommand::SyncShortcutConfig(Box::new(config)))
+            .map_err(|_| anyhow::anyhow!("daemon client worker is not running"))
+    }
+
+    pub fn shutdown(mut self) {
+        let _ = self.worker_tx.send(DaemonClientCommand::Shutdown);
+        if let Some(join_handle) = self.join_handle.take()
+            && let Err(error) = join_handle.join()
+        {
+            warn!(?error, "daemon client worker panicked during shutdown");
+        }
+    }
+}
+
+impl Drop for DaemonClientWorker {
+    fn drop(&mut self) {
+        let _ = self.worker_tx.send(DaemonClientCommand::Shutdown);
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = join_handle.join();
+        }
+    }
+}
+
+enum DaemonClientCommand {
+    ProbeStatus,
+    SyncShortcutConfig(Box<ShortcutRuntimeConfig>),
+    Shutdown,
+}
+
+fn daemon_client_worker_loop(
+    worker_rx: mpsc::Receiver<DaemonClientCommand>,
+    command_tx: mpsc::Sender<AppCommand>,
+) {
+    let client = DaemonClient;
+    for command in worker_rx {
+        match command {
+            DaemonClientCommand::ProbeStatus => {
+                let status = client.status();
+                let _ = command_tx.send(AppCommand::DaemonStatusChanged(status));
+            }
+            DaemonClientCommand::SyncShortcutConfig(config) => {
+                if let Err(error) = client.update_shortcut_config(&config) {
+                    warn!(?error, "daemon shortcut config sync is not available yet");
+                }
+            }
+            DaemonClientCommand::Shutdown => break,
+        }
     }
 }
 

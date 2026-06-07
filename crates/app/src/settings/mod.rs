@@ -140,6 +140,19 @@ impl SettingsWindow {
         self.render(visible);
     }
 
+    pub fn refresh_live_state(
+        &self,
+        model_states: Vec<ModelRowState>,
+        ready_model_ids: HashSet<String>,
+        daemon_status: DaemonStatus,
+    ) {
+        let visible = self.stack.visible_child_name().map(|name| name.to_string());
+        self.state.model_states.replace(model_states);
+        self.state.ready_model_ids.replace(ready_model_ids);
+        self.state.daemon_status.set(daemon_status);
+        self.render(visible);
+    }
+
     pub fn update_model_states(
         &self,
         model_states: Vec<ModelRowState>,

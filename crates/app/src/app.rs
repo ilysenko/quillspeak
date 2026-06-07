@@ -16,7 +16,7 @@ use tracing::{debug, error, info, warn};
 use crate::audio::{AudioInputDevice, list_input_devices};
 use crate::command::{AppCommand, DownloadId, ModelDownloadOutcome};
 use crate::config_store::ConfigStore;
-use crate::daemon_client::DaemonClient;
+use crate::daemon_client::{DaemonClient, DaemonClientWorker};
 use crate::daemon_monitor::DaemonMonitorHandle;
 use crate::dbus::AppDbusHandle;
 use crate::hotkey::{
@@ -72,7 +72,7 @@ struct AppRuntime {
     recording_pipeline: RefCell<Option<RecordingPipeline>>,
     transcription_service: TranscriptionService,
     config: RefCell<AppConfig>,
-    daemon_client: DaemonClient,
+    daemon_client_worker: RefCell<Option<DaemonClientWorker>>,
     daemon_status: Cell<DaemonStatus>,
     shortcut_runtime_config: Arc<Mutex<ShortcutRuntimeConfig>>,
     recording: RefCell<RecordingService>,
@@ -99,7 +99,7 @@ impl AppRuntime {
             )
         })?;
 
-        let daemon_client = DaemonClient;
+        let daemon_client_worker = DaemonClientWorker::spawn(command_tx.clone())?;
         let daemon_runtime_config = daemon_runtime_config_for(&config);
         let shortcut_runtime_config = Arc::new(Mutex::new(daemon_runtime_config.clone()));
         let dbus_handle =
@@ -108,9 +108,8 @@ impl AppRuntime {
             TranscriptionService::spawn(command_tx.clone(), config.general.keep_model_loaded)?;
         let recording_pipeline = RecordingPipeline::spawn(command_tx.clone())?;
 
-        let daemon_status = daemon_client.status();
+        let daemon_status = DaemonStatus::NotInstalled;
         let hotkey_backend = configure_hotkey_backend(command_tx.clone(), &config);
-        sync_shortcut_config_to_daemon(&daemon_client, &daemon_runtime_config);
 
         let tray = match Tray::new(command_tx.clone()) {
             Ok(tray) => {
@@ -123,7 +122,7 @@ impl AppRuntime {
             }
         };
 
-        let daemon_monitor = DaemonMonitorHandle::spawn(command_tx.clone(), daemon_client.clone());
+        let daemon_monitor = DaemonMonitorHandle::spawn(command_tx.clone(), DaemonClient);
         install_ctrl_c_handler(command_tx.clone());
 
         let runtime = Rc::new(Self {
@@ -137,7 +136,7 @@ impl AppRuntime {
             recording_pipeline: RefCell::new(Some(recording_pipeline)),
             transcription_service,
             config: RefCell::new(config),
-            daemon_client,
+            daemon_client_worker: RefCell::new(Some(daemon_client_worker)),
             daemon_status: Cell::new(daemon_status),
             shortcut_runtime_config,
             recording: RefCell::new(RecordingService::default()),
@@ -150,6 +149,8 @@ impl AppRuntime {
         });
 
         Self::attach_command_pump(&runtime, command_rx);
+        runtime.probe_daemon_status();
+        runtime.sync_shortcut_config_to_daemon(&daemon_runtime_config);
         runtime.prepare_audio_capture();
         runtime.log_startup_state();
         Ok(runtime)
@@ -453,9 +454,11 @@ impl AppRuntime {
         }
 
         if let Some(window) = self.settings_window.borrow().as_ref() {
-            window.update_config(&self.config.borrow());
-            window.update_model_states(self.model_row_states(), self.model_store.ready_model_ids());
-            window.update_daemon_status(self.daemon_status.get());
+            window.refresh_live_state(
+                self.model_row_states(),
+                self.model_store.ready_model_ids(),
+                self.daemon_status.get(),
+            );
             window.present();
         }
         self.request_audio_input_refresh();
@@ -485,7 +488,7 @@ impl AppRuntime {
         if let Ok(mut runtime_config) = self.shortcut_runtime_config.lock() {
             *runtime_config = daemon_runtime_config.clone();
         }
-        sync_shortcut_config_to_daemon(&self.daemon_client, &daemon_runtime_config);
+        self.sync_shortcut_config_to_daemon(&daemon_runtime_config);
         if let Err(error) = self
             .transcription_service
             .set_keep_model_loaded(config.general.keep_model_loaded)
@@ -734,12 +737,27 @@ impl AppRuntime {
         if let Ok(mut runtime_config) = self.shortcut_runtime_config.lock() {
             *runtime_config = daemon_runtime_config.clone();
         }
-        sync_shortcut_config_to_daemon(&self.daemon_client, &daemon_runtime_config);
+        self.sync_shortcut_config_to_daemon(&daemon_runtime_config);
     }
 
     fn refresh_daemon_status(&self) {
-        let status = self.daemon_client.status();
-        self.set_daemon_status(status);
+        self.probe_daemon_status();
+    }
+
+    fn probe_daemon_status(&self) {
+        if let Some(worker) = self.daemon_client_worker.borrow().as_ref()
+            && let Err(error) = worker.probe_status()
+        {
+            warn!(?error, "failed to request daemon status refresh");
+        }
+    }
+
+    fn sync_shortcut_config_to_daemon(&self, runtime_config: &ShortcutRuntimeConfig) {
+        if let Some(worker) = self.daemon_client_worker.borrow().as_ref()
+            && let Err(error) = worker.sync_shortcut_config(runtime_config.clone())
+        {
+            warn!(?error, "failed to request daemon shortcut config sync");
+        }
     }
 
     fn set_daemon_status(&self, status: DaemonStatus) {
@@ -756,6 +774,9 @@ impl AppRuntime {
         }
         self.hotkey_backend.borrow_mut().take();
         self.daemon_monitor.borrow_mut().take();
+        if let Some(worker) = self.daemon_client_worker.borrow_mut().take() {
+            worker.shutdown();
+        }
         self.dbus_handle.borrow_mut().take();
         self.tray.borrow_mut().take();
         self.hold_guard.borrow_mut().take();
@@ -780,10 +801,6 @@ impl AppRuntime {
             model_dir = %self.model_store.root().display(),
             "MyApp started in foreground development mode"
         );
-
-        if let Ok(status) = self.daemon_client.get_daemon_status() {
-            self.set_daemon_status(status);
-        }
     }
 
     fn command_sender(&self) -> mpsc::Sender<AppCommand> {
@@ -800,15 +817,6 @@ impl AppRuntime {
 
 fn daemon_runtime_config_for(config: &AppConfig) -> ShortcutRuntimeConfig {
     ShortcutRuntimeConfig::for_daemon(config, resolve_backend_kind(config.general.hotkey_backend))
-}
-
-fn sync_shortcut_config_to_daemon(
-    daemon_client: &DaemonClient,
-    runtime_config: &ShortcutRuntimeConfig,
-) {
-    if let Err(error) = daemon_client.update_shortcut_config(runtime_config) {
-        warn!(?error, "daemon shortcut config sync is not available yet");
-    }
 }
 
 fn install_ctrl_c_handler(command_tx: mpsc::Sender<AppCommand>) {

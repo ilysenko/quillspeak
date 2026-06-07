@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use directories::BaseDirs;
 use shared::AppConfig;
+use shared::persistence::atomic_write_text;
 
 #[derive(Debug, Clone)]
 pub struct ConfigStore {
@@ -39,14 +40,9 @@ impl ConfigStore {
 
     pub fn save(&self, config: &AppConfig) -> Result<()> {
         let config = config.clone().normalized()?;
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("failed to create config directory {}", parent.display())
-            })?;
-        }
         let contents =
             toml::to_string_pretty(&config).context("failed to encode config as TOML")?;
-        fs::write(&self.path, contents)
+        atomic_write_text(&self.path, &contents)
             .with_context(|| format!("failed to write config {}", self.path.display()))?;
         Ok(())
     }

@@ -15,6 +15,9 @@ pub struct RuntimeShortcut {
 impl RuntimeShortcut {
     pub fn from_config(config: &ShortcutRuntimeConfig) -> Result<Vec<Self>> {
         config
+            .validate_current_schema()
+            .context("daemon runtime config uses unsupported schema")?;
+        config
             .shortcuts
             .iter()
             .filter(|binding| binding.enabled && !binding.accelerator.trim().is_empty())

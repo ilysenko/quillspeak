@@ -9,6 +9,7 @@ use crate::transcription::types::TranscriptionRequest;
 
 pub struct TranscriptionService {
     worker_tx: mpsc::Sender<TranscriptionWorkerCommand>,
+    join_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl TranscriptionService {
@@ -17,8 +18,11 @@ impl TranscriptionService {
         thread::Builder::new()
             .name("myapp-transcription".to_string())
             .spawn(move || transcription_worker_loop(worker_rx, command_tx, keep_model_loaded))
-            .context("failed to spawn transcription worker")?;
-        Ok(Self { worker_tx })
+            .context("failed to spawn transcription worker")
+            .map(|join_handle| Self {
+                worker_tx,
+                join_handle: Some(join_handle),
+            })
     }
 
     pub fn submit(&self, request: Box<TranscriptionRequest>) -> Result<()> {
@@ -50,11 +54,21 @@ impl TranscriptionService {
     }
 }
 
+impl Drop for TranscriptionService {
+    fn drop(&mut self) {
+        let _ = self.worker_tx.send(TranscriptionWorkerCommand::Shutdown);
+        if let Some(join_handle) = self.join_handle.take() {
+            let _ = join_handle.join();
+        }
+    }
+}
+
 enum TranscriptionWorkerCommand {
     Transcribe(Box<TranscriptionRequest>),
     SetKeepModelLoaded(bool),
     ClearCachedModelPath(std::path::PathBuf),
     ClearCachedContext(String),
+    Shutdown,
 }
 
 fn transcription_worker_loop(
@@ -87,6 +101,7 @@ fn transcription_worker_loop(
             TranscriptionWorkerCommand::ClearCachedContext(reason) => {
                 engine.clear_cached_context_for_config_change(&reason);
             }
+            TranscriptionWorkerCommand::Shutdown => break,
         }
     }
 }

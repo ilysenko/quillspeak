@@ -5,16 +5,18 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result};
 use clap::Parser;
 use shared::{
-    APP_BUS_NAME, APP_INTERFACE, APP_OBJECT_PATH, DAEMON_BUS_NAME, DAEMON_INTERFACE,
-    DAEMON_OBJECT_PATH, DEFAULT_SHORTCUT_ID, DaemonStatus, ShortcutRuntimeConfig,
+    DAEMON_BUS_NAME, DAEMON_INTERFACE, DAEMON_OBJECT_PATH, DEFAULT_SHORTCUT_ID, DaemonStatus,
+    ShortcutRuntimeConfig,
 };
 use tracing::{debug, info, warn};
-use zbus::{blocking::Proxy, blocking::connection, interface};
+use zbus::{blocking::connection, interface};
 
+mod app_client;
 mod cache;
 mod evdev_backend;
 mod hotkey;
 
+use app_client::{AppClient, AppClientHandle, HotkeyMethod};
 use cache::DaemonCacheStore;
 use evdev_backend::EvdevHotkeyHandle;
 
@@ -39,10 +41,10 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
     if cli.hotkey_down {
-        return send_hotkey_method("HotkeyDown", &cli.shortcut_id);
+        return app_client::send_hotkey_method(HotkeyMethod::Down, &cli.shortcut_id);
     }
     if cli.hotkey_up {
-        return send_hotkey_method("HotkeyUp", &cli.shortcut_id);
+        return app_client::send_hotkey_method(HotkeyMethod::Up, &cli.shortcut_id);
     }
 
     run_daemon()
@@ -75,35 +77,17 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub(crate) fn send_hotkey_method(method_name: &'static str, shortcut_id: &str) -> Result<()> {
-    info!(
-        method = method_name,
-        shortcut_id,
-        bus_name = APP_BUS_NAME,
-        "calling app D-Bus method"
-    );
-    let connection = zbus::blocking::Connection::session()
-        .context("failed to connect to the D-Bus session bus")?;
-    let proxy = Proxy::new(&connection, APP_BUS_NAME, APP_OBJECT_PATH, APP_INTERFACE)
-        .context("failed to create app D-Bus proxy; is myapp running?")?;
-
-    proxy
-        .call::<_, _, ()>(method_name, &(shortcut_id.to_string(),))
-        .with_context(|| format!("failed to call app method {method_name}; is myapp running?"))?;
-
-    info!(method_name, shortcut_id, "sent hotkey event to app");
-    Ok(())
-}
-
 fn run_daemon() -> Result<()> {
     let cache_store = DaemonCacheStore::new()?;
-    let hotkey_backend = EvdevHotkeyHandle::spawn();
+    let app_client_handle = AppClientHandle::spawn();
+    let app_client = app_client_handle.client();
+    let hotkey_backend = EvdevHotkeyHandle::spawn(app_client.clone());
     let state = Arc::new(Mutex::new(DaemonState {
         shortcut_config: None,
         cache_store: cache_store.clone(),
         hotkey_backend,
     }));
-    let daemon = InputDaemon::new(Arc::clone(&state));
+    let daemon = InputDaemon::new(Arc::clone(&state), app_client.clone());
     let _connection = connection::Builder::session()
         .context("failed to connect to the D-Bus session bus")?
         .name(DAEMON_BUS_NAME)
@@ -124,7 +108,7 @@ fn run_daemon() -> Result<()> {
     if let Err(error) = initialize_shortcut_config(&state, &cache_store) {
         warn!(?error, "failed to initialize daemon shortcut config");
     }
-    notify_app_status(current_status(&state));
+    app_client.notify_status(current_status(&state));
 
     let (shutdown_tx, shutdown_rx) = mpsc::channel();
     ctrlc::set_handler(move || {
@@ -134,48 +118,14 @@ fn run_daemon() -> Result<()> {
 
     let _ = shutdown_rx.recv();
     info!("myapp input daemon is shutting down");
+    drop(app_client_handle);
     Ok(())
 }
 
 fn request_shortcut_config_from_app() -> Result<ShortcutRuntimeConfig> {
-    info!(
-        method = "GetShortcutConfig",
-        bus_name = APP_BUS_NAME,
-        "calling app D-Bus method"
-    );
-    let connection = zbus::blocking::Connection::session()
-        .context("failed to connect to the D-Bus session bus")?;
-    let proxy = Proxy::new(&connection, APP_BUS_NAME, APP_OBJECT_PATH, APP_INTERFACE)
-        .context("failed to create app D-Bus proxy")?;
-    let config = proxy
-        .call("GetShortcutConfig", &())
-        .context("failed to call app GetShortcutConfig")?;
+    let config = app_client::request_shortcut_config()?;
     log_shortcut_runtime_config("fresh app config", &config);
     Ok(config)
-}
-
-fn notify_app_status(status: DaemonStatus) {
-    info!(
-        daemon_status = %status.display_label(),
-        method = "DaemonStatus",
-        bus_name = APP_BUS_NAME,
-        "calling app D-Bus method"
-    );
-
-    let result = (|| -> Result<()> {
-        let connection = zbus::blocking::Connection::session()
-            .context("failed to connect to the D-Bus session bus")?;
-        let proxy = Proxy::new(&connection, APP_BUS_NAME, APP_OBJECT_PATH, APP_INTERFACE)
-            .context("failed to create app D-Bus proxy")?;
-        proxy
-            .call::<_, _, ()>("DaemonStatus", &(status.as_wire_str().to_string(),))
-            .context("failed to call app DaemonStatus")?;
-        Ok(())
-    })();
-
-    if let Err(error) = result {
-        debug!(?error, "could not notify app about daemon status");
-    }
 }
 
 fn initialize_shortcut_config(
@@ -225,11 +175,12 @@ fn current_status(state: &Arc<Mutex<DaemonState>>) -> DaemonStatus {
 #[derive(Debug)]
 struct InputDaemon {
     state: Arc<Mutex<DaemonState>>,
+    app_client: AppClient,
 }
 
 impl InputDaemon {
-    fn new(state: Arc<Mutex<DaemonState>>) -> Self {
-        Self { state }
+    fn new(state: Arc<Mutex<DaemonState>>, app_client: AppClient) -> Self {
+        Self { state, app_client }
     }
 }
 
@@ -275,7 +226,7 @@ impl InputDaemon {
             }
         };
 
-        notify_app_status(status);
+        self.app_client.notify_status(status);
         true
     }
 }

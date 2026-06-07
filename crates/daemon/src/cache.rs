@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use directories::BaseDirs;
 use shared::ShortcutRuntimeConfig;
+use shared::persistence::atomic_write_text;
 use tracing::warn;
 
 #[derive(Debug, Clone)]
@@ -32,8 +33,18 @@ impl DaemonCacheStore {
 
         let contents = fs::read_to_string(&self.path)
             .with_context(|| format!("failed to read daemon cache {}", self.path.display()))?;
-        match toml::from_str(&contents) {
-            Ok(config) => Ok(Some(config)),
+        match toml::from_str::<ShortcutRuntimeConfig>(&contents) {
+            Ok(config) => match config.validate_current_schema() {
+                Ok(()) => Ok(Some(config)),
+                Err(error) => {
+                    warn!(
+                        ?error,
+                        path = %self.path.display(),
+                        "ignoring daemon shortcut cache with unsupported schema"
+                    );
+                    Ok(None)
+                }
+            },
             Err(error) => {
                 warn!(
                     ?error,
@@ -46,17 +57,9 @@ impl DaemonCacheStore {
     }
 
     pub fn save(&self, config: &ShortcutRuntimeConfig) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!(
-                    "failed to create daemon cache directory {}",
-                    parent.display()
-                )
-            })?;
-        }
         let contents =
             toml::to_string_pretty(config).context("failed to encode daemon cache as TOML")?;
-        fs::write(&self.path, contents)
+        atomic_write_text(&self.path, &contents)
             .with_context(|| format!("failed to write daemon cache {}", self.path.display()))?;
         Ok(())
     }

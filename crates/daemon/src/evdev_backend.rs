@@ -15,6 +15,7 @@ use evdev::{Device, EventSummary, KeyCode};
 use shared::{DaemonStatus, ShortcutChord, ShortcutKey, ShortcutRuntimeConfig};
 use tracing::{debug, info, trace, warn};
 
+use crate::app_client::AppClient;
 use crate::hotkey::{
     HotkeyStateMachine, HotkeyTransition, KeyRequirement, KeyTransition, RuntimeShortcut,
 };
@@ -22,25 +23,26 @@ use crate::hotkey::{
 const DEVICE_RESCAN_INTERVAL: Duration = Duration::from_secs(5);
 const LOOP_SLEEP: Duration = Duration::from_millis(10);
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct EvdevHotkeyHandle {
     config_tx: mpsc::Sender<ShortcutRuntimeConfig>,
     permission_error: Arc<AtomicBool>,
     configured: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
+    join_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl EvdevHotkeyHandle {
-    pub fn spawn() -> Self {
+    pub fn spawn(app_client: AppClient) -> Self {
         let (config_tx, config_rx) = mpsc::channel();
         let permission_error = Arc::new(AtomicBool::new(false));
         let configured = Arc::new(AtomicBool::new(false));
         let shutdown = Arc::new(AtomicBool::new(false));
 
-        thread::spawn({
+        let join_handle = thread::spawn({
             let permission_error = Arc::clone(&permission_error);
             let shutdown = Arc::clone(&shutdown);
-            move || run_evdev_backend(config_rx, permission_error, shutdown)
+            move || run_evdev_backend(config_rx, permission_error, shutdown, app_client)
         });
 
         Self {
@@ -48,6 +50,7 @@ impl EvdevHotkeyHandle {
             permission_error,
             configured,
             shutdown,
+            join_handle: Some(join_handle),
         }
     }
 
@@ -98,6 +101,14 @@ impl EvdevHotkeyHandle {
 impl Drop for EvdevHotkeyHandle {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Relaxed);
+        if let Some(join_handle) = self.join_handle.take()
+            && let Err(error) = join_handle.join()
+        {
+            warn!(
+                ?error,
+                "evdev hotkey backend thread panicked during shutdown"
+            );
+        }
     }
 }
 
@@ -105,8 +116,9 @@ fn run_evdev_backend(
     config_rx: mpsc::Receiver<ShortcutRuntimeConfig>,
     permission_error: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
+    app_client: AppClient,
 ) {
-    let mut runtime = EvdevRuntime::default();
+    let mut runtime = EvdevRuntime::new(app_client);
 
     info!("evdev hotkey backend thread started");
     while !shutdown.load(Ordering::Relaxed) {
@@ -127,8 +139,8 @@ fn run_evdev_backend(
     info!("evdev hotkey backend thread stopped");
 }
 
-#[derive(Default)]
 struct EvdevRuntime {
+    app_client: AppClient,
     machines: Vec<EvdevShortcutMachine>,
     watched_keys: HashSet<KeyCode>,
     devices: Vec<KeyboardDevice>,
@@ -144,6 +156,17 @@ struct EvdevShortcutMachine {
 }
 
 impl EvdevRuntime {
+    fn new(app_client: AppClient) -> Self {
+        Self {
+            app_client,
+            machines: Vec::new(),
+            watched_keys: HashSet::new(),
+            devices: Vec::new(),
+            device_set: None,
+            last_scan: None,
+        }
+    }
+
     fn apply_config(
         &mut self,
         config: &ShortcutRuntimeConfig,
@@ -224,7 +247,7 @@ impl EvdevRuntime {
     fn reset_active(&mut self) {
         for machine in &mut self.machines {
             if machine.machine.reset() == HotkeyTransition::HotkeyUp {
-                send_hotkey_up(&machine.shortcut_id);
+                self.app_client.send_hotkey_up(&machine.shortcut_id);
             }
         }
     }
@@ -271,6 +294,7 @@ impl EvdevRuntime {
                                     continue;
                                 }
                                 dispatch_transition(
+                                    &self.app_client,
                                     &machine.shortcut_id,
                                     machine.machine.handle_key(keycode, transition),
                                 );
@@ -318,29 +342,17 @@ impl EvdevRuntime {
     }
 }
 
-fn dispatch_transition(shortcut_id: &str, transition: HotkeyTransition) {
+fn dispatch_transition(app_client: &AppClient, shortcut_id: &str, transition: HotkeyTransition) {
     match transition {
         HotkeyTransition::HotkeyDown => {
             info!(shortcut_id, "evdev shortcut down");
-            send_hotkey_down(shortcut_id);
+            app_client.send_hotkey_down(shortcut_id);
         }
         HotkeyTransition::HotkeyUp => {
             info!(shortcut_id, "evdev shortcut up");
-            send_hotkey_up(shortcut_id);
+            app_client.send_hotkey_up(shortcut_id);
         }
         HotkeyTransition::None => {}
-    }
-}
-
-fn send_hotkey_down(shortcut_id: &str) {
-    if let Err(error) = crate::send_hotkey_method("HotkeyDown", shortcut_id) {
-        debug!(?error, "failed to send HotkeyDown to app");
-    }
-}
-
-fn send_hotkey_up(shortcut_id: &str) {
-    if let Err(error) = crate::send_hotkey_method("HotkeyUp", shortcut_id) {
-        debug!(?error, "failed to send HotkeyUp to app");
     }
 }
 
@@ -615,7 +627,7 @@ fn device_supports_any_key(device: &Device, watched_keys: &HashSet<KeyCode>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::{ShortcutModifiers, ShortcutRuntimeBinding};
+    use shared::{CONFIG_SCHEMA_VERSION, ShortcutModifiers, ShortcutRuntimeBinding};
 
     #[test]
     fn maps_ctrl_space_to_evdev_requirements() {
@@ -639,7 +651,7 @@ mod tests {
     #[test]
     fn extracts_runtime_shortcuts() {
         let config = ShortcutRuntimeConfig {
-            schema_version: 1,
+            schema_version: CONFIG_SCHEMA_VERSION,
             shortcuts: vec![ShortcutRuntimeBinding {
                 id: "default".to_string(),
                 name: "Default".to_string(),
@@ -657,6 +669,16 @@ mod tests {
         assert!(shortcut.chord.modifiers.ctrl);
         assert!(shortcut.chord.modifiers.alt);
         assert_eq!(shortcut.chord.key, ShortcutKey::Character('F'));
+    }
+
+    #[test]
+    fn rejects_runtime_shortcuts_with_wrong_schema() {
+        let config = ShortcutRuntimeConfig {
+            schema_version: CONFIG_SCHEMA_VERSION - 1,
+            shortcuts: Vec::new(),
+        };
+
+        assert!(RuntimeShortcut::from_config(&config).is_err());
     }
 
     #[test]
