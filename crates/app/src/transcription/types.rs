@@ -6,6 +6,7 @@ use crate::audio::CapturedAudio;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptionPlan {
+    pub recording_id: u64,
     pub shortcut_id: String,
     pub shortcut_name: String,
     pub model_id: String,
@@ -19,6 +20,7 @@ pub struct TranscriptionPlan {
 impl TranscriptionPlan {
     pub fn into_request(self, audio: CapturedAudio) -> TranscriptionRequest {
         TranscriptionRequest {
+            recording_id: self.recording_id,
             shortcut_id: self.shortcut_id,
             shortcut_name: self.shortcut_name,
             model_id: self.model_id,
@@ -33,6 +35,7 @@ impl TranscriptionPlan {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptionRequest {
+    pub recording_id: u64,
     pub shortcut_id: String,
     pub shortcut_name: String,
     pub model_id: String,
@@ -53,7 +56,6 @@ pub struct TranscriptionSegment {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranscriptionSkipReason {
     CaptureTooShort,
-    TooFewAudioCallbacks,
     PreparedAudioTooShort,
 }
 
@@ -63,7 +65,6 @@ impl TranscriptionSkipReason {
             Self::CaptureTooShort => {
                 "captured audio is shorter than the minimum transcription duration"
             }
-            Self::TooFewAudioCallbacks => "audio capture delivered fewer than two callbacks",
             Self::PreparedAudioTooShort => {
                 "prepared whisper audio is shorter than the minimum transcription duration"
             }
@@ -96,6 +97,8 @@ pub struct TranscriptionDebugInfo {
     pub source_frames: usize,
     pub dropped_samples: u64,
     pub missed_audio_chunks: u64,
+    pub stale_callback_count: u64,
+    pub stale_samples: u64,
     pub audio_rms: f32,
     pub audio_peak: f32,
     pub whisper_sample_rate: u32,

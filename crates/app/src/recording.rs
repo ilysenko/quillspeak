@@ -16,7 +16,13 @@ pub enum RecordingPhase {
 #[derive(Debug, Default)]
 pub struct RecordingService {
     phase: RecordingPhase,
-    active_shortcut_id: Option<String>,
+    active: Option<ActiveRecording>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveRecording {
+    id: u64,
+    shortcut_id: String,
 }
 
 impl RecordingService {
@@ -24,28 +30,37 @@ impl RecordingService {
         self.phase
     }
 
-    #[cfg(test)]
     pub fn active_shortcut_id(&self) -> Option<&str> {
-        self.active_shortcut_id.as_deref()
+        self.active
+            .as_ref()
+            .map(|active| active.shortcut_id.as_str())
     }
 
-    pub fn start_recording(&mut self, shortcut_id: &str) -> RecordingPhase {
+    #[cfg(test)]
+    pub fn active_recording_id(&self) -> Option<u64> {
+        self.active.as_ref().map(|active| active.id)
+    }
+
+    pub fn start_recording(&mut self, recording_id: u64, shortcut_id: &str) -> RecordingPhase {
         match self.phase {
             RecordingPhase::Idle => {
                 self.phase = RecordingPhase::Arming;
-                self.active_shortcut_id = Some(shortcut_id.to_string());
+                self.active = Some(ActiveRecording {
+                    id: recording_id,
+                    shortcut_id: shortcut_id.to_string(),
+                });
                 start_recording(shortcut_id);
             }
             RecordingPhase::Arming => {
                 info!(
-                    active_shortcut_id = self.active_shortcut_id.as_deref().unwrap_or("unknown"),
+                    active_shortcut_id = self.active_shortcut_id().unwrap_or("unknown"),
                     requested_shortcut_id = shortcut_id,
                     "Start recording requested while audio capture is arming"
                 );
             }
             RecordingPhase::Recording => {
                 info!(
-                    active_shortcut_id = self.active_shortcut_id.as_deref().unwrap_or("unknown"),
+                    active_shortcut_id = self.active_shortcut_id().unwrap_or("unknown"),
                     requested_shortcut_id = shortcut_id,
                     "Start recording requested while already recording"
                 );
@@ -61,10 +76,12 @@ impl RecordingService {
         self.phase
     }
 
-    pub fn capture_started(&mut self, shortcut_id: &str) -> RecordingPhase {
-        if self.active_shortcut_id.as_deref() != Some(shortcut_id) {
+    pub fn capture_started(&mut self, recording_id: u64, shortcut_id: &str) -> RecordingPhase {
+        if !self.matches_active(recording_id, shortcut_id) {
             info!(
-                active_shortcut_id = self.active_shortcut_id.as_deref().unwrap_or("unknown"),
+                active_recording_id = self.active.as_ref().map(|active| active.id).unwrap_or(0),
+                active_shortcut_id = self.active_shortcut_id().unwrap_or("unknown"),
+                started_recording_id = recording_id,
                 started_shortcut_id = shortcut_id,
                 "Audio capture started for inactive shortcut"
             );
@@ -78,54 +95,54 @@ impl RecordingService {
         self.phase
     }
 
-    pub fn start_failed(&mut self, shortcut_id: &str) -> RecordingPhase {
-        if self.active_shortcut_id.as_deref() == Some(shortcut_id)
+    pub fn start_failed(&mut self, recording_id: u64, shortcut_id: &str) -> RecordingPhase {
+        if self.matches_active(recording_id, shortcut_id)
             && matches!(
                 self.phase,
                 RecordingPhase::Arming | RecordingPhase::Processing
             )
         {
             self.phase = RecordingPhase::Idle;
-            self.active_shortcut_id = None;
+            self.active = None;
         }
 
         self.phase
     }
 
-    pub fn stop_recording(&mut self, shortcut_id: &str) -> (RecordingPhase, bool) {
+    pub fn stop_recording(&mut self, shortcut_id: &str) -> (RecordingPhase, Option<u64>) {
         match self.phase {
             RecordingPhase::Idle => {
                 info!(shortcut_id, "Stop recording requested while not recording");
-                (self.phase, false)
+                (self.phase, None)
             }
             RecordingPhase::Arming => {
-                if self.active_shortcut_id.as_deref() == Some(shortcut_id) {
+                if self.active_shortcut_id() == Some(shortcut_id) {
+                    let recording_id = self.active.as_ref().map(|active| active.id);
                     stop_recording(shortcut_id);
                     self.phase = RecordingPhase::Processing;
-                    (self.phase, true)
+                    (self.phase, recording_id)
                 } else {
                     info!(
-                        active_shortcut_id =
-                            self.active_shortcut_id.as_deref().unwrap_or("unknown"),
+                        active_shortcut_id = self.active_shortcut_id().unwrap_or("unknown"),
                         requested_shortcut_id = shortcut_id,
                         "Stop recording ignored while inactive shortcut is arming"
                     );
-                    (self.phase, false)
+                    (self.phase, None)
                 }
             }
             RecordingPhase::Recording => {
-                if self.active_shortcut_id.as_deref() == Some(shortcut_id) {
+                if self.active_shortcut_id() == Some(shortcut_id) {
+                    let recording_id = self.active.as_ref().map(|active| active.id);
                     stop_recording(shortcut_id);
                     self.phase = RecordingPhase::Processing;
-                    (self.phase, true)
+                    (self.phase, recording_id)
                 } else {
                     info!(
-                        active_shortcut_id =
-                            self.active_shortcut_id.as_deref().unwrap_or("unknown"),
+                        active_shortcut_id = self.active_shortcut_id().unwrap_or("unknown"),
                         requested_shortcut_id = shortcut_id,
                         "Stop recording ignored for inactive shortcut"
                     );
-                    (self.phase, false)
+                    (self.phase, None)
                 }
             }
             RecordingPhase::Processing => {
@@ -133,31 +150,38 @@ impl RecordingService {
                     shortcut_id,
                     "Stop recording requested while processing audio"
                 );
-                (self.phase, false)
+                (self.phase, None)
             }
         }
     }
 
+    pub fn is_processing(&self, recording_id: u64, shortcut_id: &str) -> bool {
+        self.phase == RecordingPhase::Processing && self.matches_active(recording_id, shortcut_id)
+    }
+
     pub fn finish_processing<T>(
         &mut self,
+        recording_id: u64,
         shortcut_id: &str,
         result: &Result<T, String>,
-    ) -> RecordingPhase {
+    ) -> (RecordingPhase, bool) {
         if self.phase != RecordingPhase::Processing {
             info!(
-                shortcut_id,
-                "Transcription finished while recording service was not processing"
+                recording_id,
+                shortcut_id, "Transcription finished while recording service was not processing"
             );
-            return self.phase;
+            return (self.phase, false);
         }
 
-        if self.active_shortcut_id.as_deref() != Some(shortcut_id) {
+        if !self.matches_active(recording_id, shortcut_id) {
             info!(
-                active_shortcut_id = self.active_shortcut_id.as_deref().unwrap_or("unknown"),
+                active_recording_id = self.active.as_ref().map(|active| active.id).unwrap_or(0),
+                active_shortcut_id = self.active_shortcut_id().unwrap_or("unknown"),
+                finished_recording_id = recording_id,
                 finished_shortcut_id = shortcut_id,
                 "Transcription finished for inactive shortcut"
             );
-            return self.phase;
+            return (self.phase, false);
         }
 
         if let Err(error) = result {
@@ -165,8 +189,14 @@ impl RecordingService {
         }
 
         self.phase = RecordingPhase::Idle;
-        self.active_shortcut_id = None;
-        self.phase
+        self.active = None;
+        (self.phase, true)
+    }
+
+    fn matches_active(&self, recording_id: u64, shortcut_id: &str) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(|active| active.id == recording_id && active.shortcut_id == shortcut_id)
     }
 }
 
@@ -187,27 +217,29 @@ mod tests {
         let mut service = RecordingService::default();
 
         assert_eq!(service.phase(), RecordingPhase::Idle);
-        assert_eq!(service.start_recording("default"), RecordingPhase::Arming);
         assert_eq!(
-            service.capture_started("default"),
+            service.start_recording(1, "default"),
+            RecordingPhase::Arming
+        );
+        assert_eq!(
+            service.capture_started(1, "default"),
             RecordingPhase::Recording
         );
         assert_eq!(
-            service.start_recording("default"),
+            service.start_recording(2, "default"),
             RecordingPhase::Recording
         );
 
-        let (phase, should_stop) = service.stop_recording("default");
+        let (phase, recording_id) = service.stop_recording("default");
         assert_eq!(phase, RecordingPhase::Processing);
-        assert!(should_stop);
+        assert_eq!(recording_id, Some(1));
         assert_eq!(
             service.stop_recording("default").0,
             RecordingPhase::Processing
         );
-        assert_eq!(
-            service.finish_processing("default", &Ok(())),
-            RecordingPhase::Idle
-        );
+        let (phase, accepted) = service.finish_processing(1, "default", &Ok(()));
+        assert_eq!(phase, RecordingPhase::Idle);
+        assert!(accepted);
         assert_eq!(service.stop_recording("default").0, RecordingPhase::Idle);
     }
 
@@ -215,53 +247,53 @@ mod tests {
     fn processing_finishes_only_for_active_shortcut() {
         let mut service = RecordingService::default();
 
+        let (phase, accepted) = service.finish_processing(1, "default", &Ok(()));
+        assert_eq!(phase, RecordingPhase::Idle);
+        assert!(!accepted);
         assert_eq!(
-            service.finish_processing("default", &Ok(())),
-            RecordingPhase::Idle
+            service.start_recording(1, "default"),
+            RecordingPhase::Arming
         );
-        assert_eq!(service.start_recording("default"), RecordingPhase::Arming);
         assert_eq!(
-            service.capture_started("default"),
+            service.capture_started(1, "default"),
             RecordingPhase::Recording
         );
         assert_eq!(
             service.stop_recording("default").0,
             RecordingPhase::Processing
         );
-        assert_eq!(
-            service.finish_processing("second", &Ok(())),
-            RecordingPhase::Processing
-        );
-        assert_eq!(
-            service.finish_processing("default", &Ok(())),
-            RecordingPhase::Idle
-        );
+        let (phase, accepted) = service.finish_processing(1, "second", &Ok(()));
+        assert_eq!(phase, RecordingPhase::Processing);
+        assert!(!accepted);
+        let (phase, accepted) = service.finish_processing(1, "default", &Ok(()));
+        assert_eq!(phase, RecordingPhase::Idle);
+        assert!(accepted);
     }
 
     #[test]
     fn ignores_stop_for_inactive_shortcut() {
         let mut service = RecordingService::default();
-        service.start_recording("default");
-        service.capture_started("default");
+        service.start_recording(1, "default");
+        service.capture_started(1, "default");
 
-        let (phase, should_stop) = service.stop_recording("second");
+        let (phase, recording_id) = service.stop_recording("second");
 
         assert_eq!(phase, RecordingPhase::Recording);
-        assert!(!should_stop);
+        assert_eq!(recording_id, None);
         assert_eq!(service.active_shortcut_id(), Some("default"));
     }
 
     #[test]
     fn stop_while_arming_moves_to_processing() {
         let mut service = RecordingService::default();
-        service.start_recording("default");
+        service.start_recording(1, "default");
 
-        let (phase, should_stop) = service.stop_recording("default");
+        let (phase, recording_id) = service.stop_recording("default");
 
         assert_eq!(phase, RecordingPhase::Processing);
-        assert!(should_stop);
+        assert_eq!(recording_id, Some(1));
         assert_eq!(
-            service.capture_started("default"),
+            service.capture_started(1, "default"),
             RecordingPhase::Processing
         );
     }
@@ -269,9 +301,24 @@ mod tests {
     #[test]
     fn start_failure_resets_arming_recording() {
         let mut service = RecordingService::default();
-        service.start_recording("default");
+        service.start_recording(1, "default");
 
-        assert_eq!(service.start_failed("default"), RecordingPhase::Idle);
+        assert_eq!(service.start_failed(1, "default"), RecordingPhase::Idle);
         assert_eq!(service.active_shortcut_id(), None);
+    }
+
+    #[test]
+    fn stale_transcription_result_is_rejected_by_recording_id() {
+        let mut service = RecordingService::default();
+        service.start_recording(1, "default");
+        service.capture_started(1, "default");
+        assert_eq!(service.stop_recording("default").1, Some(1));
+
+        let (phase, accepted) = service.finish_processing(2, "default", &Ok(()));
+
+        assert_eq!(phase, RecordingPhase::Processing);
+        assert!(!accepted);
+        assert_eq!(service.active_recording_id(), Some(1));
+        assert_eq!(service.active_shortcut_id(), Some("default"));
     }
 }

@@ -20,6 +20,7 @@ ksni.workspace = true
 libadwaita.workspace = true
 reqwest.workspace = true
 rtrb.workspace = true
+rubato.workspace = true
 serde.workspace = true
 shared = { path = "../shared" }
 sha1.workspace = true
@@ -31,7 +32,7 @@ x11rb.workspace = true
 zbus.workspace = true
 
 [features]
-default = ["audio-pulseaudio"]
+default = ["audio-pipewire", "audio-pulseaudio"]
 audio-pipewire = ["cpal/pipewire"]
 audio-pulseaudio = ["cpal/pulseaudio"]
 whisper-cuda = ["whisper-rs/cuda"]

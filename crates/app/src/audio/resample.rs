@@ -1,6 +1,11 @@
 use crate::audio::CapturedAudio;
 
+use anyhow::{Context, Result};
+use rubato::audioadapter_buffers::direct::InterleavedSlice;
+use rubato::{Fft, FixedSync, Resampler};
+
 pub const WHISPER_SAMPLE_RATE: u32 = 16_000;
+const RESAMPLE_CHUNK_SIZE: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedAudio {
@@ -20,15 +25,15 @@ impl PreparedAudio {
     }
 }
 
-pub fn prepare_whisper_audio(audio: &CapturedAudio) -> PreparedAudio {
+pub fn prepare_whisper_audio(audio: &CapturedAudio) -> Result<PreparedAudio> {
     let mono = mix_to_mono(&audio.samples, audio.channels);
-    let samples = resample_linear(&mono, audio.sample_rate, WHISPER_SAMPLE_RATE);
-    PreparedAudio {
+    let samples = resample_to_rate(&mono, audio.sample_rate, WHISPER_SAMPLE_RATE)?;
+    Ok(PreparedAudio {
         samples,
         source_sample_rate: audio.sample_rate,
         source_channels: audio.channels,
         sample_rate: WHISPER_SAMPLE_RATE,
-    }
+    })
 }
 
 fn mix_to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
@@ -45,29 +50,36 @@ fn mix_to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
     }
 }
 
-fn resample_linear(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
+fn resample_to_rate(samples: &[f32], source_rate: u32, target_rate: u32) -> Result<Vec<f32>> {
     if samples.is_empty() || source_rate == 0 || target_rate == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     if source_rate == target_rate {
-        return samples.to_vec();
+        return Ok(samples.to_vec());
     }
 
-    let ratio = source_rate as f64 / target_rate as f64;
-    let output_len = ((samples.len() as f64) / ratio).round().max(1.0) as usize;
-    let last_index = samples.len() - 1;
-    let mut output = Vec::with_capacity(output_len);
+    let input_frames = samples.len();
+    let input = InterleavedSlice::new(samples, 1, input_frames)
+        .context("failed to create rubato input adapter")?;
+    let mut resampler = Fft::<f32>::new(
+        source_rate as usize,
+        target_rate as usize,
+        RESAMPLE_CHUNK_SIZE,
+        2,
+        1,
+        FixedSync::Both,
+    )
+    .context("failed to create rubato resampler")?;
+    let output_len = resampler.process_all_needed_output_len(input_frames);
+    let mut output = vec![0.0; output_len];
+    let mut output_adapter = InterleavedSlice::new_mut(&mut output, 1, output_len)
+        .context("failed to create rubato output adapter")?;
+    let (_, output_frames) = resampler
+        .process_all_into_buffer(&input, &mut output_adapter, input_frames, None)
+        .context("failed to resample audio for whisper")?;
 
-    for index in 0..output_len {
-        let source_position = index as f64 * ratio;
-        let left = source_position.floor() as usize;
-        let right = (left + 1).min(last_index);
-        let fraction = (source_position - left as f64) as f32;
-        let sample = samples[left] * (1.0 - fraction) + samples[right] * fraction;
-        output.push(sample);
-    }
-
-    output
+    output.truncate(output_frames);
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -85,7 +97,7 @@ mod tests {
     fn preserves_audio_when_sample_rate_matches() {
         let input = vec![0.0, 0.25, -0.25];
 
-        assert_eq!(resample_linear(&input, 16_000, 16_000), input);
+        assert_eq!(resample_to_rate(&input, 16_000, 16_000).unwrap(), input);
     }
 
     #[test]
@@ -103,14 +115,25 @@ mod tests {
             audio_callback_count: 1,
             dropped_samples: 0,
             missed_chunks: 0,
+            stale_callback_count: 0,
+            stale_samples: 0,
         };
 
-        let prepared = prepare_whisper_audio(&audio);
+        let prepared = prepare_whisper_audio(&audio).unwrap();
 
         assert_eq!(prepared.sample_rate, WHISPER_SAMPLE_RATE);
         assert_eq!(prepared.source_sample_rate, 48_000);
         assert_eq!(prepared.source_channels, 2);
         assert_eq!(prepared.samples.len(), 16_000);
         assert_eq!(prepared.duration_ms(), 1_000);
+    }
+
+    #[test]
+    fn resamples_44100hz_mono_to_16khz_duration() {
+        let input = vec![0.1; 44_100];
+
+        let output = resample_to_rate(&input, 44_100, WHISPER_SAMPLE_RATE).unwrap();
+
+        assert!(output.len().abs_diff(16_000) <= 1);
     }
 }

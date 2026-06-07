@@ -63,7 +63,8 @@ impl WhisperEngine {
             anyhow::bail!("recorded audio is empty");
         }
 
-        let mut prepared = prepare_whisper_audio(&request.audio);
+        let mut prepared = prepare_whisper_audio(&request.audio)
+            .context("failed to prepare captured audio for whisper")?;
         if prepared.samples.is_empty() {
             anyhow::bail!("prepared whisper audio is empty");
         }
@@ -80,6 +81,8 @@ impl WhisperEngine {
                 startup_latency_ms = request.audio.startup_latency_ms,
                 first_callback_latency_ms = request.audio.first_callback_latency_ms,
                 audio_callback_count = request.audio.audio_callback_count,
+                stale_callback_count = request.audio.stale_callback_count,
+                stale_samples = request.audio.stale_samples,
                 source_sample_rate = request.audio.sample_rate,
                 source_channels = request.audio.channels,
                 source_frames = request.audio.frame_count(),
@@ -228,6 +231,17 @@ impl WhisperEngine {
                 "prepared whisper audio is very short; transcription may be empty"
             );
         }
+        if request.audio.audio_callback_count < 2 {
+            warn!(
+                shortcut_id = %request.shortcut_id,
+                input = %request.audio.input_label,
+                capture_duration_ms,
+                capture_wall_duration_ms,
+                audio_callback_count = request.audio.audio_callback_count,
+                source_frames = request.audio.frame_count(),
+                "audio capture delivered fewer than two callbacks"
+            );
+        }
         if capture_wall_duration_ms > 0
             && capture_duration_ms.saturating_mul(2) < capture_wall_duration_ms
         {
@@ -239,6 +253,8 @@ impl WhisperEngine {
                 startup_latency_ms = request.audio.startup_latency_ms,
                 first_callback_latency_ms = request.audio.first_callback_latency_ms,
                 audio_callback_count = request.audio.audio_callback_count,
+                stale_callback_count = request.audio.stale_callback_count,
+                stale_samples = request.audio.stale_samples,
                 "captured audio duration is much shorter than shortcut hold time"
             );
         }
@@ -257,6 +273,8 @@ impl WhisperEngine {
             source_frames = request.audio.frame_count(),
             dropped_samples = request.audio.dropped_samples,
             missed_audio_chunks = request.audio.missed_chunks,
+            stale_callback_count = request.audio.stale_callback_count,
+            stale_samples = request.audio.stale_samples,
             audio_rms = audio_stats.rms,
             audio_peak = audio_stats.peak,
             prepared_duration_ms,
@@ -285,6 +303,8 @@ impl WhisperEngine {
             source_frames = request.audio.frame_count(),
             dropped_samples = request.audio.dropped_samples,
             missed_audio_chunks = request.audio.missed_chunks,
+            stale_callback_count = request.audio.stale_callback_count,
+            stale_samples = request.audio.stale_samples,
             prepared_duration_ms,
             whisper_samples = prepared.samples.len(),
             "starting whisper transcription"
@@ -332,6 +352,8 @@ impl WhisperEngine {
         let audio_callback_count = request.audio.audio_callback_count;
         let dropped_samples = request.audio.dropped_samples;
         let missed_audio_chunks = request.audio.missed_chunks;
+        let stale_callback_count = request.audio.stale_callback_count;
+        let stale_samples = request.audio.stale_samples;
 
         let result = TranscriptionResult {
             status: TranscriptionStatus::Completed,
@@ -356,6 +378,8 @@ impl WhisperEngine {
                 source_frames,
                 dropped_samples,
                 missed_audio_chunks,
+                stale_callback_count,
+                stale_samples,
                 audio_rms: audio_stats.rms,
                 audio_peak: audio_stats.peak,
                 whisper_sample_rate: prepared.sample_rate,
@@ -484,6 +508,7 @@ mod tests {
         let now = Instant::now();
         let stopped_at = now + Duration::from_millis(millis_u64(prepared.duration_ms()));
         let request = TranscriptionRequest {
+            recording_id: 1,
             shortcut_id: "debug".to_string(),
             shortcut_name: "Debug".to_string(),
             model_id: "debug-model".to_string(),
@@ -503,6 +528,8 @@ mod tests {
                 audio_callback_count: 1,
                 dropped_samples: 0,
                 missed_chunks: 0,
+                stale_callback_count: 0,
+                stale_samples: 0,
             },
         };
         let model_path = model_path
@@ -600,6 +627,7 @@ mod tests {
         let stopped_at = now + Duration::from_millis(millis_u64(prepared.duration_ms()));
 
         TranscriptionRequest {
+            recording_id: 1,
             shortcut_id: shortcut_id.to_string(),
             shortcut_name: "Debug".to_string(),
             model_id: "debug-model".to_string(),
@@ -619,6 +647,8 @@ mod tests {
                 audio_callback_count,
                 dropped_samples: 0,
                 missed_chunks: 0,
+                stale_callback_count: 0,
+                stale_samples: 0,
             },
         }
     }

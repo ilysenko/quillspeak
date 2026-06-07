@@ -395,10 +395,12 @@ Current audio behavior:
 - Settings > General lists `System Default` first, then discovered input
   devices;
 - `System Default` resolves to the current host default at recording time;
-- the default app build enables CPAL's PulseAudio host, which follows
-  pipewire-pulse on modern Linux desktops;
-- optional Cargo feature `audio-pipewire` enables native CPAL PipeWire when
-  `libpipewire-0.3-dev` is installed;
+- the default app build enables CPAL's native PipeWire and PulseAudio hosts;
+- on modern Ubuntu desktops, prefer native PipeWire and fall back to PulseAudio
+  through pipewire-pulse when PipeWire is unavailable;
+- the default app build requires `libpipewire-0.3-dev`; use
+  `--no-default-features --features audio-pulseaudio` to build the PulseAudio
+  fallback without native PipeWire;
 - `--no-default-features` is the ALSA-only fallback for debugging;
 - audio capture runs on the `myapp-audio-capture` worker thread, not on the GTK
   main thread;
@@ -409,12 +411,14 @@ Current audio behavior:
 - app quit must explicitly shut down and join the capture worker;
 - the worker may reuse a constructed stream for the selected input, but it must
   not call `stream.play()` as an idle prewarm;
-- recording uses a lock-free ring buffer and reports startup / first-callback
-  latency back to the app.
+- recording uses a lock-free ring buffer, requests a bounded input buffer when
+  supported, rejects stale callbacks from the previous session by CPAL capture
+  timestamps, and reports startup / first accepted callback latency back to the
+  app.
 
 Current transcription behavior:
 
-- stop recording converts captured audio to 16 kHz mono `f32`;
+- stop recording converts captured audio to 16 kHz mono `f32` with `rubato`;
 - each shortcut resolves its own model, language, compute backend, and output
   snapshot before the worker starts;
 - only ready/downloaded models may be used;
@@ -424,11 +428,14 @@ Current transcription behavior:
 - recognized text is logged at `info`;
 - full request/result metadata is logged at `debug`;
 - capture diagnostics include input device, audio duration, wall-clock shortcut
-  hold duration, startup latency, first-callback latency, callback count,
-  frames, RMS, peak, dropped samples, and missed audio chunks;
+  hold duration, startup latency, first accepted callback latency, callback
+  count, frames, RMS, peak, dropped samples, missed audio chunks, discarded
+  stale callback count, and discarded stale sample count;
 - unusable short captures return `TranscriptionStatus::Skipped`, do not load
   Whisper, do not trigger output actions, and are distinct from completed
   transcriptions with empty recognized text;
+- very low callback count should warn with capture diagnostics, not skip
+  otherwise usable audio;
 - empty recognized text should warn with segment count and audio RMS/peak;
 - `MYAPP_DEBUG_SAVE_AUDIO=1` writes source WAV, the exact 16 kHz mono WAV sent
   to Whisper, and TOML metadata under `/tmp/myapp-audio-debug`; setting it to a
@@ -505,14 +512,15 @@ git diff --check
 System dependencies for the full app build on Debian/Ubuntu-style systems:
 
 ```sh
-sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libpulse-dev libgtk-4-dev libadwaita-1-dev
+sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libpulse-dev libpipewire-0.3-dev libgtk-4-dev libadwaita-1-dev
 ```
 
-Optional native CPAL hosts require extra dev packages and features:
+Default audio uses native PipeWire plus PulseAudio. The PulseAudio-only build is
+useful when native PipeWire development files are unavailable, and ALSA-only is
+the low-level debug fallback:
 
 ```sh
-sudo apt install libpipewire-0.3-dev
-cargo run -p app --bin myapp --features audio-pipewire
+cargo run -p app --bin myapp --no-default-features --features audio-pulseaudio
 cargo run -p app --no-default-features --bin myapp
 ```
 
@@ -520,19 +528,20 @@ Vulkan GPU builds are the intended packaged GPU path:
 
 ```sh
 sudo apt install libvulkan-dev glslc
-cargo check -p app --features whisper-vulkan,audio-pulseaudio
-cargo run -p app --features whisper-vulkan,audio-pulseaudio --bin myapp
+cargo check -p app --features whisper-vulkan
+cargo run -p app --features whisper-vulkan --bin myapp
+cargo run -p app --no-default-features --features whisper-vulkan,audio-pulseaudio --bin myapp
 ```
 
 Run commands:
 
 ```sh
 cargo run -p app --bin myapp
-cargo run -p app --bin myapp --features audio-pipewire
+cargo run -p app --bin myapp --no-default-features --features audio-pulseaudio
 cargo run -p app --no-default-features --bin myapp
 cargo run -p daemon --bin myapp-daemon
 MYAPP_DEV_LOG=1 cargo run -p app --bin myapp
-MYAPP_DEBUG_SAVE_AUDIO=1 MYAPP_DEV_LOG=1 cargo run -p app --features whisper-vulkan,audio-pulseaudio --bin myapp
+MYAPP_DEBUG_SAVE_AUDIO=1 MYAPP_DEV_LOG=1 cargo run -p app --features whisper-vulkan --bin myapp
 MYAPP_DEV_LOG=1 cargo run -p daemon --bin myapp-daemon
 cargo run -p daemon --bin myapp-daemon -- --hotkey-down
 cargo run -p daemon --bin myapp-daemon -- --hotkey-up

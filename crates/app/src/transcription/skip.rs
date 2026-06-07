@@ -5,7 +5,6 @@ use crate::transcription::types::{
 };
 
 const MIN_TRANSCRIBE_CAPTURE_MS: u128 = 1_000;
-const MIN_AUDIO_CALLBACK_COUNT: u64 = 2;
 
 pub(super) fn pad_short_whisper_audio(prepared: &mut PreparedAudio) {
     let minimum_samples = prepared.sample_rate as usize;
@@ -22,10 +21,6 @@ pub(super) fn skip_transcription_reason(
 ) -> Option<TranscriptionSkipReason> {
     if request.audio.duration_ms() < MIN_TRANSCRIBE_CAPTURE_MS {
         return Some(TranscriptionSkipReason::CaptureTooShort);
-    }
-
-    if request.audio.audio_callback_count < MIN_AUDIO_CALLBACK_COUNT {
-        return Some(TranscriptionSkipReason::TooFewAudioCallbacks);
     }
 
     if prepared.duration_ms() < MIN_TRANSCRIBE_CAPTURE_MS {
@@ -49,6 +44,8 @@ pub(super) fn skipped_transcription_result(
     let audio_callback_count = request.audio.audio_callback_count;
     let dropped_samples = request.audio.dropped_samples;
     let missed_audio_chunks = request.audio.missed_chunks;
+    let stale_callback_count = request.audio.stale_callback_count;
+    let stale_samples = request.audio.stale_samples;
     let output_label = request.output.label().to_string();
 
     TranscriptionResult {
@@ -74,6 +71,8 @@ pub(super) fn skipped_transcription_result(
             source_frames,
             dropped_samples,
             missed_audio_chunks,
+            stale_callback_count,
+            stale_samples,
             audio_rms: audio_stats.rms,
             audio_peak: audio_stats.peak,
             whisper_sample_rate: prepared.sample_rate,

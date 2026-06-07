@@ -66,12 +66,14 @@ fn transcription_worker_loop(
     for command in worker_rx {
         match command {
             TranscriptionWorkerCommand::Transcribe(request) => {
+                let recording_id = request.recording_id;
                 let shortcut_id = request.shortcut_id.clone();
                 let result = engine
                     .transcribe(*request)
                     .map(Box::new)
                     .map_err(|error| format!("{error:#}"));
                 let _ = command_tx.send(AppCommand::TranscriptionFinished {
+                    recording_id,
                     shortcut_id,
                     result,
                 });

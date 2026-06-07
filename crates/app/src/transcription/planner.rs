@@ -10,6 +10,7 @@ pub fn build_transcription_plan(
     config: &AppConfig,
     ready_model_ids: &HashSet<String>,
     model_path: impl FnOnce(ModelCatalogEntry) -> PathBuf,
+    recording_id: u64,
     shortcut_id: &str,
 ) -> Result<TranscriptionPlan> {
     let shortcut = config
@@ -31,6 +32,7 @@ pub fn build_transcription_plan(
     let output = resolved_output_action(config.resolved_output(shortcut));
 
     Ok(TranscriptionPlan {
+        recording_id,
         shortcut_id: shortcut.id.clone(),
         shortcut_name: shortcut.name.clone(),
         model_id,
@@ -70,6 +72,7 @@ mod tests {
             &config,
             &ready_model_ids,
             |entry| PathBuf::from(entry.filename),
+            1,
             DEFAULT_SHORTCUT_ID,
         );
 
@@ -87,10 +90,12 @@ mod tests {
             &config,
             &ready_model_ids,
             |_| model_path.clone(),
+            7,
             DEFAULT_SHORTCUT_ID,
         )
         .expect("ready model should build a plan");
 
+        assert_eq!(plan.recording_id, 7);
         assert_eq!(plan.shortcut_id, DEFAULT_SHORTCUT_ID);
         assert_eq!(plan.model_id, DEFAULT_MODEL_ID);
         assert_eq!(plan.model_path, model_path);

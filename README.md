@@ -20,22 +20,21 @@ On Debian/Ubuntu-style systems install the desktop, audio, and whisper.cpp build
 dependencies before building the main app:
 
 ```sh
-sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libpulse-dev libgtk-4-dev libadwaita-1-dev
+sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libpulse-dev libpipewire-0.3-dev libgtk-4-dev libadwaita-1-dev
 ```
 
-The default development build enables CPAL's PulseAudio backend, which follows
-the PipeWire Pulse compatibility server on modern Linux desktops. Native
-PipeWire can be enabled for local testing when the development package is
-installed:
+The default development build enables CPAL's native PipeWire and PulseAudio
+backends. On modern Ubuntu desktops the app prefers PipeWire, falls back to
+PulseAudio, and keeps ALSA as the explicit low-level debug fallback:
 
 ```sh
 cargo run -p app --bin myapp
-cargo run -p app --bin myapp --features audio-pipewire
+cargo run -p app --bin myapp --no-default-features --features audio-pulseaudio
 cargo run -p app --no-default-features --bin myapp
 ```
 
-The PipeWire feature requires `libpipewire-0.3-dev`. The `--no-default-features`
-command is an ALSA-only fallback for debugging.
+The PipeWire feature requires `libpipewire-0.3-dev`. The final
+`--no-default-features` command is an ALSA-only fallback for debugging.
 
 Vulkan is the intended packaged GPU backend because users should be able to
 install a future `.deb` without compiling CUDA locally. Builder machines need
@@ -43,8 +42,15 @@ Vulkan development dependencies:
 
 ```sh
 sudo apt install libvulkan-dev glslc
-cargo check -p app --features whisper-vulkan,audio-pulseaudio
-cargo run -p app --features whisper-vulkan,audio-pulseaudio --bin myapp
+cargo check -p app --features whisper-vulkan
+cargo run -p app --features whisper-vulkan --bin myapp
+```
+
+If native PipeWire development headers are not installed, Cargo default
+features must be disabled explicitly because feature flags are additive:
+
+```sh
+cargo run -p app --no-default-features --features whisper-vulkan,audio-pulseaudio --bin myapp
 ```
 
 The workspace currently pins `whisper-rs = "=0.13.2"` because that version's
@@ -89,7 +95,7 @@ Verbose development logs for transcription details:
 
 ```sh
 MYAPP_DEV_LOG=1 cargo run -p app --bin myapp
-MYAPP_DEBUG_SAVE_AUDIO=1 MYAPP_DEV_LOG=1 cargo run -p app --features whisper-vulkan,audio-pulseaudio --bin myapp
+MYAPP_DEBUG_SAVE_AUDIO=1 MYAPP_DEV_LOG=1 cargo run -p app --features whisper-vulkan --bin myapp
 MYAPP_DEV_LOG=1 cargo run -p daemon --bin myapp-daemon
 ```
 
@@ -133,27 +139,32 @@ Audio capture is independent of X11/Wayland.
 
 The app keeps the input stream stopped while idle. It starts the CPAL stream
 only while recording and pauses it again on stop, so idle logs stay quiet and
-the microphone is not held open unnecessarily.
+the microphone is not held open unnecessarily. Capture requests a bounded input
+buffer when the backend reports one, and falls back to the backend default if
+that fixed buffer cannot be opened.
 
-On stop, the app converts captured audio to 16 kHz mono `f32`, runs
-`whisper-rs`/whisper.cpp on the model selected by the active shortcut, and logs
-recognized text:
+On stop, the app converts captured audio to 16 kHz mono `f32` with `rubato`,
+runs `whisper-rs`/whisper.cpp on the model selected by the active shortcut, and
+logs recognized text:
 
 ```text
 recognized text shortcut_id=default model_id=tiny language=auto text="..."
 ```
 
-Captures that are too short or delivered too few audio callbacks are reported as
+Captures with too little usable source or prepared audio are reported as
 `Skipped` transcription results. They do not load Whisper, do not clear a good
-cached model because of an empty transcript, and do not run output actions.
+cached model because of an empty transcript, and do not run output actions. A
+very low callback count is logged as a capture diagnostic instead of dropping
+otherwise valid audio.
 
 `MYAPP_DEV_LOG=1` prints the full transcription debug structure: shortcut name,
 model path, compute backend, input device, capture duration, source sample
 rate, audio RMS/peak, Whisper sample count, inference time, and segments. Info
 logs also include the real audio duration, shortcut wall-clock duration, startup
-latency, first audio callback latency, and callback count. Empty recognized
-text also logs segment count and audio RMS/peak to help distinguish a wrong or
-silent microphone from a transcription problem.
+latency, first accepted audio callback latency, callback count, and discarded
+stale callback/sample counts. Empty recognized text also logs segment count and
+audio RMS/peak to help distinguish a wrong or silent microphone from a
+transcription problem.
 
 Set `MYAPP_DEBUG_SAVE_AUDIO=1` to write source WAV, the exact 16 kHz mono WAV
 sent to Whisper, and TOML metadata under `/tmp/myapp-audio-debug`. Set it to a

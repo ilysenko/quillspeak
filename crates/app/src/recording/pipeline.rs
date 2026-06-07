@@ -33,9 +33,12 @@ impl RecordingPipeline {
             .map_err(|_| anyhow!("audio capture worker is not running"))
     }
 
-    pub fn stop(&self, shortcut_id: &str) -> Result<()> {
+    pub fn stop(&self, recording_id: u64, shortcut_id: &str) -> Result<()> {
         self.worker_tx
-            .send(RecordingWorkerCommand::Stop(shortcut_id.to_string()))
+            .send(RecordingWorkerCommand::Stop {
+                recording_id,
+                shortcut_id: shortcut_id.to_string(),
+            })
             .map_err(|_| anyhow!("audio capture worker is not running"))
     }
 
@@ -58,7 +61,10 @@ impl RecordingPipeline {
 enum RecordingWorkerCommand {
     PrepareInput(AudioInputRef),
     Start(Box<TranscriptionPlan>),
-    Stop(String),
+    Stop {
+        recording_id: u64,
+        shortcut_id: String,
+    },
     Shutdown,
 }
 
@@ -71,7 +77,10 @@ fn recording_worker_loop(
         match command {
             RecordingWorkerCommand::PrepareInput(input) => worker.prepare_input(&input),
             RecordingWorkerCommand::Start(plan) => worker.start(*plan),
-            RecordingWorkerCommand::Stop(shortcut_id) => worker.stop(&shortcut_id),
+            RecordingWorkerCommand::Stop {
+                recording_id,
+                shortcut_id,
+            } => worker.stop(recording_id, &shortcut_id),
             RecordingWorkerCommand::Shutdown => {
                 worker.cancel();
                 break;
@@ -120,12 +129,14 @@ impl RecordingWorker {
 
     fn start(&mut self, plan: TranscriptionPlan) {
         let shortcut_id = plan.shortcut_id.clone();
+        let recording_id = plan.recording_id;
         if self.active_plan.is_some() {
             warn!(
-                shortcut_id,
-                "audio capture start ignored because another recording is active"
+                recording_id,
+                shortcut_id, "audio capture start ignored because another recording is active"
             );
             self.send(AppCommand::AudioCaptureStartFailed {
+                recording_id,
                 shortcut_id,
                 error: "audio capture is already active".to_string(),
             });
@@ -135,9 +146,13 @@ impl RecordingWorker {
         match self.start_inner(plan) {
             Ok(started) => self.send(started),
             Err(error) => {
-                warn!(?error, shortcut_id, "failed to start audio capture");
+                warn!(
+                    ?error,
+                    recording_id, shortcut_id, "failed to start audio capture"
+                );
                 self.active_plan = None;
                 self.send(AppCommand::AudioCaptureStartFailed {
+                    recording_id,
                     shortcut_id,
                     error: format!("{error:#}"),
                 });
@@ -147,10 +162,12 @@ impl RecordingWorker {
 
     fn start_inner(&mut self, plan: TranscriptionPlan) -> Result<AppCommand> {
         let shortcut_id = plan.shortcut_id.clone();
+        let recording_id = plan.recording_id;
         let capture = self.capture_for_input(&plan.input)?;
         let info = capture.start_session()?;
         self.active_plan = Some(plan);
         Ok(AppCommand::AudioCaptureStarted {
+            recording_id,
             shortcut_id,
             input_label: info.input_label,
             startup_latency_ms: info.startup_latency_ms,
@@ -180,24 +197,29 @@ impl RecordingWorker {
             .ok_or_else(|| anyhow!("audio capture stream was not initialized"))
     }
 
-    fn stop(&mut self, shortcut_id: &str) {
-        let Some(plan) = self.active_plan.take() else {
+    fn stop(&mut self, recording_id: u64, shortcut_id: &str) {
+        let Some(plan) = self.active_plan.as_ref() else {
             info!(
-                shortcut_id,
-                "audio capture stop ignored because no recording is active"
+                recording_id,
+                shortcut_id, "audio capture stop ignored because no recording is active"
             );
             return;
         };
 
-        if plan.shortcut_id != shortcut_id {
+        if plan.recording_id != recording_id || plan.shortcut_id != shortcut_id {
             warn!(
+                active_recording_id = plan.recording_id,
                 active_shortcut_id = %plan.shortcut_id,
+                requested_recording_id = recording_id,
                 requested_shortcut_id = shortcut_id,
                 "audio capture stop ignored for inactive shortcut"
             );
-            self.active_plan = Some(plan);
             return;
         }
+        let plan = self
+            .active_plan
+            .take()
+            .expect("active plan was checked before stop");
 
         let result = match self.capture.as_mut() {
             Some(capture) => {
@@ -221,6 +243,7 @@ impl RecordingWorker {
         .map_err(|error| format!("{error:#}"));
 
         self.send(AppCommand::AudioCaptureStopped {
+            recording_id,
             shortcut_id: shortcut_id.to_string(),
             result: result.map(Box::new),
         });

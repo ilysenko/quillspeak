@@ -13,20 +13,24 @@ pub enum AppCommand {
     StartRecording(String),
     StopRecording(String),
     AudioCaptureStarted {
+        recording_id: u64,
         shortcut_id: String,
         input_label: String,
         startup_latency_ms: u128,
         first_callback_latency_ms: Option<u128>,
     },
     AudioCaptureStartFailed {
+        recording_id: u64,
         shortcut_id: String,
         error: String,
     },
     AudioCaptureStopped {
+        recording_id: u64,
         shortcut_id: String,
         result: Result<Box<TranscriptionRequest>, String>,
     },
     TranscriptionFinished {
+        recording_id: u64,
         shortcut_id: String,
         result: Result<Box<TranscriptionResult>, String>,
     },

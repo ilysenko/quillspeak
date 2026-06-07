@@ -76,6 +76,7 @@ struct AppRuntime {
     daemon_status: Cell<DaemonStatus>,
     shortcut_runtime_config: Arc<Mutex<ShortcutRuntimeConfig>>,
     recording: RefCell<RecordingService>,
+    next_recording_id: Cell<u64>,
     settings_window: RefCell<Option<SettingsWindow>>,
     tray: RefCell<Option<Tray>>,
     hotkey_backend: RefCell<Option<HotkeyBackendHandle>>,
@@ -140,6 +141,7 @@ impl AppRuntime {
             daemon_status: Cell::new(daemon_status),
             shortcut_runtime_config,
             recording: RefCell::new(RecordingService::default()),
+            next_recording_id: Cell::new(1),
             settings_window: RefCell::new(None),
             tray: RefCell::new(tray),
             hotkey_backend: RefCell::new(hotkey_backend),
@@ -174,27 +176,33 @@ impl AppRuntime {
             AppCommand::StartRecording(shortcut_id) => self.start_recording(&shortcut_id),
             AppCommand::StopRecording(shortcut_id) => self.stop_recording(&shortcut_id),
             AppCommand::AudioCaptureStarted {
+                recording_id,
                 shortcut_id,
                 input_label,
                 startup_latency_ms,
                 first_callback_latency_ms,
             } => self.audio_capture_started(
+                recording_id,
                 &shortcut_id,
                 &input_label,
                 startup_latency_ms,
                 first_callback_latency_ms,
             ),
-            AppCommand::AudioCaptureStartFailed { shortcut_id, error } => {
-                self.audio_capture_start_failed(&shortcut_id, &error)
-            }
+            AppCommand::AudioCaptureStartFailed {
+                recording_id,
+                shortcut_id,
+                error,
+            } => self.audio_capture_start_failed(recording_id, &shortcut_id, &error),
             AppCommand::AudioCaptureStopped {
+                recording_id,
                 shortcut_id,
                 result,
-            } => self.audio_capture_stopped(&shortcut_id, result),
+            } => self.audio_capture_stopped(recording_id, &shortcut_id, result),
             AppCommand::TranscriptionFinished {
+                recording_id,
                 shortcut_id,
                 result,
-            } => self.finish_transcription(&shortcut_id, result),
+            } => self.finish_transcription(recording_id, &shortcut_id, result),
             AppCommand::AudioInputDevicesRefreshed(devices) => {
                 self.update_audio_input_devices(devices)
             }
@@ -240,15 +248,17 @@ impl AppRuntime {
 
     fn start_recording(&self, shortcut_id: &str) {
         if self.recording.borrow().phase() != RecordingPhase::Idle {
-            let phase = self.recording.borrow_mut().start_recording(shortcut_id);
+            let phase = self.recording.borrow_mut().start_recording(0, shortcut_id);
             self.set_recording_phase(phase);
             return;
         }
 
+        let recording_id = self.allocate_recording_id();
         let plan = match build_transcription_plan(
             &self.config.borrow(),
             &self.model_store.ready_model_ids(),
             |entry| self.model_store.model_path(entry),
+            recording_id,
             shortcut_id,
         ) {
             Ok(plan) => plan,
@@ -258,7 +268,10 @@ impl AppRuntime {
             }
         };
         let input_label = plan.input.display_label().to_string();
-        let phase = self.recording.borrow_mut().start_recording(shortcut_id);
+        let phase = self
+            .recording
+            .borrow_mut()
+            .start_recording(recording_id, shortcut_id);
         self.set_recording_phase(phase);
 
         let start_result = self
@@ -271,15 +284,20 @@ impl AppRuntime {
         if let Err(error) = start_result {
             warn!(
                 ?error,
+                recording_id,
                 shortcut_id,
                 input = input_label,
                 "failed to start audio capture"
             );
-            let phase = self.recording.borrow_mut().start_failed(shortcut_id);
+            let phase = self
+                .recording
+                .borrow_mut()
+                .start_failed(recording_id, shortcut_id);
             self.set_recording_phase(phase);
             return;
         }
         info!(
+            recording_id,
             shortcut_id,
             input = input_label,
             "audio capture start requested"
@@ -287,24 +305,30 @@ impl AppRuntime {
     }
 
     fn stop_recording(&self, shortcut_id: &str) {
-        let (phase, should_stop_capture) = self.recording.borrow_mut().stop_recording(shortcut_id);
+        let (phase, recording_id) = self.recording.borrow_mut().stop_recording(shortcut_id);
         self.set_recording_phase(phase);
 
-        let stop_result = if should_stop_capture {
+        let stop_result = if let Some(recording_id) = recording_id {
             self.recording_pipeline
                 .borrow()
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("audio capture pipeline is shut down"))
-                .and_then(|pipeline| pipeline.stop(shortcut_id))
+                .and_then(|pipeline| pipeline.stop(recording_id, shortcut_id))
         } else {
             Ok(())
         };
 
-        if should_stop_capture && let Err(error) = stop_result {
-            warn!(?error, shortcut_id, "failed to stop audio capture");
+        if let Some(recording_id) = recording_id
+            && let Err(error) = stop_result
+        {
+            warn!(
+                ?error,
+                recording_id, shortcut_id, "failed to stop audio capture"
+            );
             let _ = self
                 .command_sender()
                 .send(AppCommand::TranscriptionFinished {
+                    recording_id,
                     shortcut_id: shortcut_id.to_string(),
                     result: Err(format!("{error:#}")),
                 });
@@ -313,42 +337,70 @@ impl AppRuntime {
 
     fn audio_capture_started(
         &self,
+        recording_id: u64,
         shortcut_id: &str,
         input_label: &str,
         startup_latency_ms: u128,
         first_callback_latency_ms: Option<u128>,
     ) {
         info!(
+            recording_id,
             shortcut_id,
             input = input_label,
             startup_latency_ms,
             first_callback_latency_ms,
             "audio capture started"
         );
-        let phase = self.recording.borrow_mut().capture_started(shortcut_id);
+        let phase = self
+            .recording
+            .borrow_mut()
+            .capture_started(recording_id, shortcut_id);
         self.set_recording_phase(phase);
     }
 
-    fn audio_capture_start_failed(&self, shortcut_id: &str, error: &str) {
-        warn!(shortcut_id, error, "audio capture failed to start");
-        let phase = self.recording.borrow_mut().start_failed(shortcut_id);
+    fn audio_capture_start_failed(&self, recording_id: u64, shortcut_id: &str, error: &str) {
+        warn!(
+            recording_id,
+            shortcut_id, error, "audio capture failed to start"
+        );
+        let phase = self
+            .recording
+            .borrow_mut()
+            .start_failed(recording_id, shortcut_id);
         self.set_recording_phase(phase);
     }
 
     fn audio_capture_stopped(
         &self,
+        recording_id: u64,
         shortcut_id: &str,
         result: std::result::Result<Box<TranscriptionRequest>, String>,
     ) {
+        if !self
+            .recording
+            .borrow()
+            .is_processing(recording_id, shortcut_id)
+        {
+            info!(
+                recording_id,
+                shortcut_id, "ignoring stale audio capture result"
+            );
+            return;
+        }
+
         let result = result
             .map_err(anyhow::Error::msg)
             .and_then(|request| self.transcription_service.submit(request));
 
         if let Err(error) = result {
-            warn!(?error, shortcut_id, "failed to submit transcription job");
+            warn!(
+                ?error,
+                recording_id, shortcut_id, "failed to submit transcription job"
+            );
             let _ = self
                 .command_sender()
                 .send(AppCommand::TranscriptionFinished {
+                    recording_id,
                     shortcut_id: shortcut_id.to_string(),
                     result: Err(format!("{error:#}")),
                 });
@@ -357,16 +409,22 @@ impl AppRuntime {
 
     fn finish_transcription(
         &self,
+        recording_id: u64,
         shortcut_id: &str,
         result: std::result::Result<Box<TranscriptionResult>, String>,
     ) {
-        if let Ok(result) = &result {
+        let (phase, accepted) =
+            self.recording
+                .borrow_mut()
+                .finish_processing(recording_id, shortcut_id, &result);
+        if accepted && let Ok(result) = &result {
             self.apply_transcription_output(shortcut_id, result);
+        } else if !accepted {
+            info!(
+                recording_id,
+                shortcut_id, "ignoring stale transcription result"
+            );
         }
-        let phase = self
-            .recording
-            .borrow_mut()
-            .finish_processing(shortcut_id, &result);
         self.set_recording_phase(phase);
     }
 
@@ -730,6 +788,13 @@ impl AppRuntime {
 
     fn command_sender(&self) -> mpsc::Sender<AppCommand> {
         self.command_tx.clone()
+    }
+
+    fn allocate_recording_id(&self) -> u64 {
+        let recording_id = self.next_recording_id.get();
+        self.next_recording_id
+            .set(recording_id.checked_add(1).unwrap_or(1));
+        recording_id
     }
 }
 
