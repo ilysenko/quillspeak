@@ -27,7 +27,8 @@ use crate::output::OutputService;
 use crate::recording::{RecordingPhase, RecordingPipeline, RecordingService};
 use crate::settings::SettingsWindow;
 use crate::transcription::{
-    CompiledWhisperBackends, TranscriptionResult, TranscriptionService, build_transcription_plan,
+    CompiledWhisperBackends, TranscriptionRequest, TranscriptionResult, TranscriptionService,
+    build_transcription_plan,
 };
 use crate::tray::Tray;
 
@@ -68,7 +69,7 @@ struct AppRuntime {
     model_store: ModelStore,
     download_manager: RefCell<ModelDownloadManager>,
     audio_input_devices: RefCell<Vec<AudioInputDevice>>,
-    recording_pipeline: RefCell<RecordingPipeline>,
+    recording_pipeline: RefCell<Option<RecordingPipeline>>,
     transcription_service: TranscriptionService,
     config: RefCell<AppConfig>,
     daemon_client: DaemonClient,
@@ -104,6 +105,7 @@ impl AppRuntime {
             AppDbusHandle::spawn(command_tx.clone(), Arc::clone(&shortcut_runtime_config));
         let transcription_service =
             TranscriptionService::spawn(command_tx.clone(), config.general.keep_model_loaded)?;
+        let recording_pipeline = RecordingPipeline::spawn(command_tx.clone())?;
 
         let daemon_status = daemon_client.status();
         let hotkey_backend = configure_hotkey_backend(command_tx.clone(), &config);
@@ -131,7 +133,7 @@ impl AppRuntime {
             model_store,
             download_manager: RefCell::new(ModelDownloadManager::default()),
             audio_input_devices: RefCell::new(audio_input_devices),
-            recording_pipeline: RefCell::new(RecordingPipeline::default()),
+            recording_pipeline: RefCell::new(Some(recording_pipeline)),
             transcription_service,
             config: RefCell::new(config),
             daemon_client,
@@ -146,6 +148,7 @@ impl AppRuntime {
         });
 
         Self::attach_command_pump(&runtime, command_rx);
+        runtime.prepare_audio_capture();
         runtime.log_startup_state();
         Ok(runtime)
     }
@@ -170,6 +173,24 @@ impl AppRuntime {
             AppCommand::ToggleRecording => self.toggle_recording(),
             AppCommand::StartRecording(shortcut_id) => self.start_recording(&shortcut_id),
             AppCommand::StopRecording(shortcut_id) => self.stop_recording(&shortcut_id),
+            AppCommand::AudioCaptureStarted {
+                shortcut_id,
+                input_label,
+                startup_latency_ms,
+                first_callback_latency_ms,
+            } => self.audio_capture_started(
+                &shortcut_id,
+                &input_label,
+                startup_latency_ms,
+                first_callback_latency_ms,
+            ),
+            AppCommand::AudioCaptureStartFailed { shortcut_id, error } => {
+                self.audio_capture_start_failed(&shortcut_id, &error)
+            }
+            AppCommand::AudioCaptureStopped {
+                shortcut_id,
+                result,
+            } => self.audio_capture_stopped(&shortcut_id, result),
             AppCommand::TranscriptionFinished {
                 shortcut_id,
                 result,
@@ -209,6 +230,7 @@ impl AppRuntime {
         let phase = self.recording.borrow().phase();
         match phase {
             RecordingPhase::Idle => self.start_recording(DEFAULT_SHORTCUT_ID),
+            RecordingPhase::Arming => self.stop_recording(DEFAULT_SHORTCUT_ID),
             RecordingPhase::Recording => self.stop_recording(DEFAULT_SHORTCUT_ID),
             RecordingPhase::Processing => {
                 info!("Recording toggle ignored while processing audio");
@@ -236,49 +258,107 @@ impl AppRuntime {
             }
         };
         let input_label = plan.input.display_label().to_string();
-        if let Err(error) = self.recording_pipeline.borrow_mut().start(plan) {
+        let phase = self.recording.borrow_mut().start_recording(shortcut_id);
+        self.set_recording_phase(phase);
+
+        let start_result = self
+            .recording_pipeline
+            .borrow()
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("audio capture pipeline is shut down"))
+            .and_then(|pipeline| pipeline.start(plan));
+
+        if let Err(error) = start_result {
             warn!(
                 ?error,
                 shortcut_id,
                 input = input_label,
                 "failed to start audio capture"
             );
+            let phase = self.recording.borrow_mut().start_failed(shortcut_id);
+            self.set_recording_phase(phase);
             return;
         }
-        info!(shortcut_id, input = input_label, "audio capture started");
-
-        let phase = self.recording.borrow_mut().start_recording(shortcut_id);
-        self.set_recording_phase(phase);
+        info!(
+            shortcut_id,
+            input = input_label,
+            "audio capture start requested"
+        );
     }
 
     fn stop_recording(&self, shortcut_id: &str) {
-        let (phase, job) = self.recording.borrow_mut().stop_recording(shortcut_id);
+        let (phase, should_stop_capture) = self.recording.borrow_mut().stop_recording(shortcut_id);
         self.set_recording_phase(phase);
 
-        if let Some(job) = job {
-            let shortcut_id = job.shortcut_id;
-            let result = self
-                .recording_pipeline
-                .borrow_mut()
-                .stop()
-                .and_then(|request| self.transcription_service.submit(request));
+        let stop_result = if should_stop_capture {
+            self.recording_pipeline
+                .borrow()
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("audio capture pipeline is shut down"))
+                .and_then(|pipeline| pipeline.stop(shortcut_id))
+        } else {
+            Ok(())
+        };
 
-            if let Err(error) = result {
-                warn!(?error, shortcut_id, "failed to submit transcription job");
-                let _ = self
-                    .command_sender()
-                    .send(AppCommand::TranscriptionFinished {
-                        shortcut_id,
-                        result: Err(format!("{error:#}")),
-                    });
-            }
+        if should_stop_capture && let Err(error) = stop_result {
+            warn!(?error, shortcut_id, "failed to stop audio capture");
+            let _ = self
+                .command_sender()
+                .send(AppCommand::TranscriptionFinished {
+                    shortcut_id: shortcut_id.to_string(),
+                    result: Err(format!("{error:#}")),
+                });
+        }
+    }
+
+    fn audio_capture_started(
+        &self,
+        shortcut_id: &str,
+        input_label: &str,
+        startup_latency_ms: u128,
+        first_callback_latency_ms: Option<u128>,
+    ) {
+        info!(
+            shortcut_id,
+            input = input_label,
+            startup_latency_ms,
+            first_callback_latency_ms,
+            "audio capture started"
+        );
+        let phase = self.recording.borrow_mut().capture_started(shortcut_id);
+        self.set_recording_phase(phase);
+    }
+
+    fn audio_capture_start_failed(&self, shortcut_id: &str, error: &str) {
+        warn!(shortcut_id, error, "audio capture failed to start");
+        let phase = self.recording.borrow_mut().start_failed(shortcut_id);
+        self.set_recording_phase(phase);
+    }
+
+    fn audio_capture_stopped(
+        &self,
+        shortcut_id: &str,
+        result: std::result::Result<Box<TranscriptionRequest>, String>,
+    ) {
+        let result = result
+            .map_err(anyhow::Error::msg)
+            .and_then(|request| self.transcription_service.submit(request));
+
+        if let Err(error) = result {
+            warn!(?error, shortcut_id, "failed to submit transcription job");
+            let _ = self
+                .command_sender()
+                .send(AppCommand::TranscriptionFinished {
+                    shortcut_id: shortcut_id.to_string(),
+                    result: Err(format!("{error:#}")),
+                });
         }
     }
 
     fn finish_transcription(
         &self,
         shortcut_id: &str,
-        result: std::result::Result<TranscriptionResult, String>,
+        result: std::result::Result<Box<TranscriptionResult>, String>,
     ) {
         if let Ok(result) = &result {
             self.apply_transcription_output(shortcut_id, result);
@@ -354,8 +434,18 @@ impl AppRuntime {
         {
             warn!(?error, "failed to update whisper model cache policy");
         }
+        if let Err(error) = self
+            .transcription_service
+            .clear_cached_context("settings config changed")
+        {
+            warn!(
+                ?error,
+                "failed to clear whisper model cache after settings change"
+            );
+        }
 
         self.config.replace(config.clone());
+        self.prepare_audio_capture();
         if let Some(window) = self.settings_window.borrow().as_ref() {
             window.update_config(&config);
             window.update_model_states(self.model_row_states(), self.model_store.ready_model_ids());
@@ -543,6 +633,24 @@ impl AppRuntime {
         }
     }
 
+    fn prepare_audio_capture(&self) {
+        let input = self.config.borrow().general.default_input.clone();
+        let prepare_result = self
+            .recording_pipeline
+            .borrow()
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("audio capture pipeline is shut down"))
+            .and_then(|pipeline| pipeline.prepare_input(input.clone()));
+
+        if let Err(error) = prepare_result {
+            warn!(
+                ?error,
+                input = %input.display_label(),
+                "failed to request audio capture prepare"
+            );
+        }
+    }
+
     fn update_audio_input_devices(&self, devices: Vec<AudioInputDevice>) {
         self.audio_input_devices.replace(devices.clone());
         if let Some(window) = self.settings_window.borrow().as_ref() {
@@ -585,7 +693,9 @@ impl AppRuntime {
 
     fn quit(&self) {
         info!("Quitting MyApp");
-        self.recording_pipeline.borrow_mut().cancel();
+        if let Some(pipeline) = self.recording_pipeline.borrow_mut().take() {
+            pipeline.shutdown();
+        }
         self.hotkey_backend.borrow_mut().take();
         self.daemon_monitor.borrow_mut().take();
         self.dbus_handle.borrow_mut().take();

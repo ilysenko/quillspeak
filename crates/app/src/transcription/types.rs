@@ -4,7 +4,7 @@ use shared::{AudioInputRef, ComputeBackend, OutputAction};
 
 use crate::audio::CapturedAudio;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptionPlan {
     pub shortcut_id: String,
     pub shortcut_name: String,
@@ -31,7 +31,7 @@ impl TranscriptionPlan {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptionRequest {
     pub shortcut_id: String,
     pub shortcut_name: String,
@@ -50,6 +50,33 @@ pub struct TranscriptionSegment {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptionSkipReason {
+    CaptureTooShort,
+    TooFewAudioCallbacks,
+    PreparedAudioTooShort,
+}
+
+impl TranscriptionSkipReason {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CaptureTooShort => {
+                "captured audio is shorter than the minimum transcription duration"
+            }
+            Self::TooFewAudioCallbacks => "audio capture delivered fewer than two callbacks",
+            Self::PreparedAudioTooShort => {
+                "prepared whisper audio is shorter than the minimum transcription duration"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TranscriptionStatus {
+    Completed,
+    Skipped { reason: TranscriptionSkipReason },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptionDebugInfo {
     pub shortcut_name: String,
@@ -60,6 +87,10 @@ pub struct TranscriptionDebugInfo {
     pub output_label: String,
     pub input_label: String,
     pub capture_duration_ms: u128,
+    pub capture_wall_duration_ms: u128,
+    pub startup_latency_ms: u128,
+    pub first_callback_latency_ms: Option<u128>,
+    pub audio_callback_count: u64,
     pub source_sample_rate: u32,
     pub source_channels: u16,
     pub source_frames: usize,
@@ -69,11 +100,13 @@ pub struct TranscriptionDebugInfo {
     pub audio_peak: f32,
     pub whisper_sample_rate: u32,
     pub whisper_samples: usize,
+    pub prepared_duration_ms: u128,
     pub inference_duration_ms: u128,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TranscriptionResult {
+    pub status: TranscriptionStatus,
     pub text: String,
     pub segments: Vec<TranscriptionSegment>,
     pub output: OutputAction,

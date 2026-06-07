@@ -15,9 +15,11 @@ cpal.workspace = true
 ctrlc.workspace = true
 directories.workspace = true
 gtk4.workspace = true
+hound.workspace = true
 ksni.workspace = true
 libadwaita.workspace = true
 reqwest.workspace = true
+rtrb.workspace = true
 serde.workspace = true
 shared = { path = "../shared" }
 sha1.workspace = true

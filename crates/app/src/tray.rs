@@ -60,6 +60,7 @@ impl ksni::Tray for MyAppTray {
     fn title(&self) -> String {
         match self.recording_phase {
             RecordingPhase::Idle => "MyApp".to_string(),
+            RecordingPhase::Arming => "MyApp - Recording".to_string(),
             RecordingPhase::Recording => "MyApp - Recording".to_string(),
             RecordingPhase::Processing => "MyApp - Processing".to_string(),
         }
@@ -105,6 +106,7 @@ impl ksni::Tray for MyAppTray {
 fn recording_menu_item(phase: RecordingPhase) -> ksni::menu::StandardItem<MyAppTray> {
     let (label, icon_name, enabled) = match phase {
         RecordingPhase::Idle => ("Start Recording", "media-record", true),
+        RecordingPhase::Arming => ("Stop Recording", "media-playback-stop", true),
         RecordingPhase::Recording => ("Stop Recording", "media-playback-stop", true),
         RecordingPhase::Processing => ("Processing...", "media-playback-pause", false),
     };
@@ -121,6 +123,7 @@ fn recording_menu_item(phase: RecordingPhase) -> ksni::menu::StandardItem<MyAppT
 fn icon_color(phase: RecordingPhase) -> [u8; 4] {
     match phase {
         RecordingPhase::Idle => TRAY_IDLE_COLOR,
+        RecordingPhase::Arming => TRAY_RECORDING_COLOR,
         RecordingPhase::Recording => TRAY_RECORDING_COLOR,
         RecordingPhase::Processing => TRAY_PROCESSING_COLOR,
     }
@@ -174,6 +177,7 @@ mod tests {
     #[test]
     fn tray_icon_color_tracks_recording_phase() {
         assert_eq!(icon_color(RecordingPhase::Idle), TRAY_IDLE_COLOR);
+        assert_eq!(icon_color(RecordingPhase::Arming), TRAY_RECORDING_COLOR);
         assert_eq!(icon_color(RecordingPhase::Recording), TRAY_RECORDING_COLOR);
         assert_eq!(
             icon_color(RecordingPhase::Processing),

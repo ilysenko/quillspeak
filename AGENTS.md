@@ -128,9 +128,21 @@ cargo run -p daemon --bin myapp-daemon -- --hotkey-down --shortcut-id default
   labels, and generated color icon.
 - `crates/app/src/recording.rs`: recording state machine and start/stop
   logging.
-- `crates/app/src/transcription/mod.rs`: background Whisper worker, last-used
-  model context cache, transcription request/result types, language handling,
-  and debug logs.
+- `crates/app/src/recording/pipeline.rs`: background CPAL capture worker,
+  explicit shutdown, capture start/stop commands, and stream recreation after
+  pause failures.
+- `crates/app/src/transcription/service.rs`: background Whisper worker thread
+  and request/result command bridge.
+- `crates/app/src/transcription/engine.rs`: high-level Whisper transcription
+  flow and segment extraction.
+- `crates/app/src/transcription/cache.rs`: last-used model context cache.
+- `crates/app/src/transcription/params.rs`: Whisper context parameters,
+  auto GPU selection, and CPU fallback.
+- `crates/app/src/transcription/skip.rs`: short-capture skip policy, padding,
+  and skipped result construction.
+- `crates/app/src/transcription/debug_audio.rs`: debug WAV/TOML writing.
+- `crates/app/src/transcription/types.rs`: transcription plan/request/result
+  types and debug metadata.
 - `crates/daemon/src/main.rs`: daemon CLI, D-Bus service, startup flow, app
   config request, status notification, and Ctrl-C handling.
 - `crates/daemon/src/cache.rs`: daemon last-known shortcut runtime config cache.
@@ -177,19 +189,21 @@ The tray menu contains `Show Settings`, one recording action, and `Quit`.
 Recording action labels are stateful:
 
 - idle: `Start Recording`,
+- arming: `Stop Recording`,
 - recording: `Stop Recording`,
 - processing: disabled `Processing...`.
 
 Manual tray recording uses `AppCommand::ToggleRecording`. Hotkey backends must
 not use the toggle because push-to-talk requires explicit key down/up semantics.
-Hotkey down starts CPAL audio capture for a shortcut id. Hotkey up stops that
-same shortcut, snapshots the shortcut model/language/output settings, and sends
-a transcription job to the Whisper worker.
+Hotkey down snapshots the shortcut model/language/output/input settings and
+requests CPAL audio capture for a shortcut id. Hotkey up stops that same
+shortcut and sends the captured audio to the Whisper worker.
 
 `RecordingService` owns only the state machine. `AppRuntime` owns the active
-CPAL capture stream, and `TranscriptionService` owns background Whisper
-inference. Clipboard and script output are still placeholders that log what
-would happen with recognized text.
+command orchestration. `RecordingPipeline` owns the background CPAL capture
+worker. `TranscriptionService` owns background Whisper inference. Clipboard and
+script output are still placeholders that log what would happen with recognized
+text.
 
 ## D-Bus Contract
 
@@ -385,7 +399,18 @@ Current audio behavior:
   pipewire-pulse on modern Linux desktops;
 - optional Cargo feature `audio-pipewire` enables native CPAL PipeWire when
   `libpipewire-0.3-dev` is installed;
-- `--no-default-features` is the ALSA-only fallback for debugging.
+- `--no-default-features` is the ALSA-only fallback for debugging;
+- audio capture runs on the `myapp-audio-capture` worker thread, not on the GTK
+  main thread;
+- the input stream must be stopped while idle; start the CPAL stream only while
+  recording and pause it again on stop/cancel;
+- if pausing a stream fails, preserve the captured audio but drop the stream so
+  the next recording recreates it;
+- app quit must explicitly shut down and join the capture worker;
+- the worker may reuse a constructed stream for the selected input, but it must
+  not call `stream.play()` as an idle prewarm;
+- recording uses a lock-free ring buffer and reports startup / first-callback
+  latency back to the app.
 
 Current transcription behavior:
 
@@ -398,19 +423,35 @@ Current transcription behavior:
   model path and compute backend when `keep_model_loaded = true`;
 - recognized text is logged at `info`;
 - full request/result metadata is logged at `debug`;
-- capture diagnostics include input device, duration, frames, RMS, peak,
-  dropped samples, and missed audio chunks;
-- empty recognized text should warn with segment count and audio RMS/peak.
+- capture diagnostics include input device, audio duration, wall-clock shortcut
+  hold duration, startup latency, first-callback latency, callback count,
+  frames, RMS, peak, dropped samples, and missed audio chunks;
+- unusable short captures return `TranscriptionStatus::Skipped`, do not load
+  Whisper, do not trigger output actions, and are distinct from completed
+  transcriptions with empty recognized text;
+- empty recognized text should warn with segment count and audio RMS/peak;
+- `MYAPP_DEBUG_SAVE_AUDIO=1` writes source WAV, the exact 16 kHz mono WAV sent
+  to Whisper, and TOML metadata under `/tmp/myapp-audio-debug`; setting it to a
+  directory path writes there instead. Skipped captures may write debug audio
+  for diagnosis, but that audio is not sent to Whisper.
+
+Auto language mode should allow whisper.cpp to auto-detect while continuing to
+transcribe. Do not set `detect_language=true` for normal transcription because
+that whisper.cpp flag exits after language detection and returns no transcript
+segments.
 
 Compute backend is selected from config. `auto` enables whisper.cpp GPU usage
-when the binary is built with a GPU backend and otherwise falls back to CPU
-behavior. Explicit Vulkan/CUDA/ROCm selections should fail clearly if the app
-was not compiled with the matching Cargo feature. OpenVINO is a future setting
-placeholder and is not implemented by the current `whisper-rs` integration.
-Vulkan is the intended packaged GPU backend so end users can install a future
-`.deb` without compiling CUDA locally; builder machines need Vulkan development
-packages and a working `whisper-vulkan` feature build before it can become a
-release default.
+when the binary is built with a GPU backend, retries CPU if `auto` GPU
+initialization fails at runtime, and otherwise uses CPU behavior. Explicit
+Vulkan/CUDA/ROCm selections should fail clearly if the app was not compiled
+with the matching Cargo feature or if that runtime backend cannot initialize.
+OpenVINO is a future setting placeholder and is not implemented by the current
+`whisper-rs` integration. Vulkan is the intended packaged GPU backend so end
+users can install a future `.deb` without compiling CUDA locally. The workspace
+currently pins `whisper-rs = "=0.13.2"` because that version's Vulkan feature
+builds here; retest before upgrading because `0.14.4`, `0.15.1`, and `0.16.0`
+currently fail to compile their Vulkan wrapper against generated
+`whisper-rs-sys` bindings.
 
 Do not block the GTK main thread with audio capture, model loading, inference,
 downloads, hashing, or output execution. Keep those paths worker based and send
@@ -475,8 +516,7 @@ cargo run -p app --bin myapp --features audio-pipewire
 cargo run -p app --no-default-features --bin myapp
 ```
 
-Vulkan GPU builds are the intended packaged GPU path, but must pass explicitly
-before becoming a default:
+Vulkan GPU builds are the intended packaged GPU path:
 
 ```sh
 sudo apt install libvulkan-dev glslc
@@ -491,12 +531,17 @@ cargo run -p app --bin myapp
 cargo run -p app --bin myapp --features audio-pipewire
 cargo run -p app --no-default-features --bin myapp
 cargo run -p daemon --bin myapp-daemon
-RUST_LOG=debug cargo run -p app --bin myapp
-RUST_LOG=debug MYAPP_DEV_LOG=1 cargo run -p daemon --bin myapp-daemon
+MYAPP_DEV_LOG=1 cargo run -p app --bin myapp
+MYAPP_DEBUG_SAVE_AUDIO=1 MYAPP_DEV_LOG=1 cargo run -p app --features whisper-vulkan,audio-pulseaudio --bin myapp
+MYAPP_DEV_LOG=1 cargo run -p daemon --bin myapp-daemon
 cargo run -p daemon --bin myapp-daemon -- --hotkey-down
 cargo run -p daemon --bin myapp-daemon -- --hotkey-up
 cargo run -p daemon --bin myapp-daemon -- --hotkey-down --shortcut-id default
 ```
+
+`MYAPP_DEV_LOG=1` enables debug logs for MyApp crates while keeping dependency
+crates at info level. A global `RUST_LOG=debug` is intentionally noisy and may
+include PulseAudio/zbus internals.
 
 The app crate requires GTK4/libadwaita system development packages. If a build
 fails because `gtk4.pc`, `libadwaita-1.pc`, or related pkg-config files are

@@ -1,3 +1,4 @@
+use std::env;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +17,8 @@ mod hotkey;
 
 use cache::DaemonCacheStore;
 use evdev_backend::EvdevHotkeyHandle;
+
+const DAEMON_DEV_LOG_FILTER: &str = "myapp_daemon=debug,shared=debug,info";
 
 #[derive(Debug, Parser)]
 #[command(name = "myapp-daemon")]
@@ -47,11 +50,29 @@ fn main() -> Result<()> {
 
 fn init_logging() {
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+        .with_env_filter(log_filter())
         .try_init();
+}
+
+fn log_filter() -> tracing_subscriber::EnvFilter {
+    if let Ok(filter) = tracing_subscriber::EnvFilter::try_from_default_env() {
+        return filter;
+    }
+
+    if env_flag("MYAPP_DEV_LOG") {
+        tracing_subscriber::EnvFilter::new(DAEMON_DEV_LOG_FILTER)
+    } else {
+        tracing_subscriber::EnvFilter::new("info")
+    }
+}
+
+fn env_flag(name: &str) -> bool {
+    env::var(name)
+        .map(|value| {
+            let value = value.trim().to_ascii_lowercase();
+            !matches!(value.as_str(), "" | "0" | "false" | "off" | "no")
+        })
+        .unwrap_or(false)
 }
 
 pub(crate) fn send_hotkey_method(method_name: &'static str, shortcut_id: &str) -> Result<()> {
@@ -323,5 +344,5 @@ fn log_shortcut_runtime_config(context: &'static str, config: &ShortcutRuntimeCo
 }
 
 fn is_dev_logging_enabled() -> bool {
-    std::env::var_os("MYAPP_DEV_LOG").is_some()
+    env_flag("MYAPP_DEV_LOG")
 }

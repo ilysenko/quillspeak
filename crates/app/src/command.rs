@@ -1,19 +1,34 @@
 use shared::AppConfig;
 use shared::DaemonStatus;
 
+use crate::transcription::TranscriptionRequest;
 use crate::transcription::TranscriptionResult;
 
 pub type DownloadId = u64;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub enum AppCommand {
     ShowSettings,
     ToggleRecording,
     StartRecording(String),
     StopRecording(String),
+    AudioCaptureStarted {
+        shortcut_id: String,
+        input_label: String,
+        startup_latency_ms: u128,
+        first_callback_latency_ms: Option<u128>,
+    },
+    AudioCaptureStartFailed {
+        shortcut_id: String,
+        error: String,
+    },
+    AudioCaptureStopped {
+        shortcut_id: String,
+        result: Result<Box<TranscriptionRequest>, String>,
+    },
     TranscriptionFinished {
         shortcut_id: String,
-        result: Result<TranscriptionResult, String>,
+        result: Result<Box<TranscriptionResult>, String>,
     },
     AudioInputDevicesRefreshed(Vec<crate::audio::AudioInputDevice>),
     SaveConfig(AppConfig),

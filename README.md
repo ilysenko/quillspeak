@@ -47,8 +47,10 @@ cargo check -p app --features whisper-vulkan,audio-pulseaudio
 cargo run -p app --features whisper-vulkan,audio-pulseaudio --bin myapp
 ```
 
-Do not enable `whisper-vulkan` by default until the feature builds consistently
-in the development/build environment.
+The workspace currently pins `whisper-rs = "=0.13.2"` because that version's
+Vulkan feature builds here. Newer `whisper-rs` releases should be retested
+before upgrading; `0.14.4`, `0.15.1`, and `0.16.0` currently fail to compile
+their Vulkan wrapper against their generated `whisper-rs-sys` bindings.
 
 The daemon and shared crate do not require GTK. Real Wayland hotkey capture uses
 Linux evdev devices under `/dev/input/event*`; normal runtime should not use
@@ -86,9 +88,14 @@ precise key down/up events.
 Verbose development logs for transcription details:
 
 ```sh
-RUST_LOG=debug cargo run -p app --bin myapp
-RUST_LOG=debug MYAPP_DEV_LOG=1 cargo run -p daemon --bin myapp-daemon
+MYAPP_DEV_LOG=1 cargo run -p app --bin myapp
+MYAPP_DEBUG_SAVE_AUDIO=1 MYAPP_DEV_LOG=1 cargo run -p app --features whisper-vulkan,audio-pulseaudio --bin myapp
+MYAPP_DEV_LOG=1 cargo run -p daemon --bin myapp-daemon
 ```
+
+`MYAPP_DEV_LOG=1` enables debug logs for MyApp crates while keeping dependency
+crates at info level. A global `RUST_LOG=debug` is intentionally noisy and will
+include low-level PulseAudio/zbus internals.
 
 Simulate daemon hotkey events while `myapp` is running:
 
@@ -124,6 +131,10 @@ input device at recording time. The settings dropdown also lists discovered
 input devices with stable CPAL device IDs when the host backend provides them.
 Audio capture is independent of X11/Wayland.
 
+The app keeps the input stream stopped while idle. It starts the CPAL stream
+only while recording and pauses it again on stop, so idle logs stay quiet and
+the microphone is not held open unnecessarily.
+
 On stop, the app converts captured audio to 16 kHz mono `f32`, runs
 `whisper-rs`/whisper.cpp on the model selected by the active shortcut, and logs
 recognized text:
@@ -132,11 +143,45 @@ recognized text:
 recognized text shortcut_id=default model_id=tiny language=auto text="..."
 ```
 
-`RUST_LOG=debug` prints the full transcription debug structure: shortcut name,
-model path, compute backend, input device, capture duration, source sample rate,
-audio RMS/peak, Whisper sample count, inference time, and segments. Empty
-recognized text also logs segment count and audio RMS/peak to help distinguish a
-wrong or silent microphone from a transcription problem.
+Captures that are too short or delivered too few audio callbacks are reported as
+`Skipped` transcription results. They do not load Whisper, do not clear a good
+cached model because of an empty transcript, and do not run output actions.
+
+`MYAPP_DEV_LOG=1` prints the full transcription debug structure: shortcut name,
+model path, compute backend, input device, capture duration, source sample
+rate, audio RMS/peak, Whisper sample count, inference time, and segments. Info
+logs also include the real audio duration, shortcut wall-clock duration, startup
+latency, first audio callback latency, and callback count. Empty recognized
+text also logs segment count and audio RMS/peak to help distinguish a wrong or
+silent microphone from a transcription problem.
+
+Set `MYAPP_DEBUG_SAVE_AUDIO=1` to write source WAV, the exact 16 kHz mono WAV
+sent to Whisper, and TOML metadata under `/tmp/myapp-audio-debug`. Set it to a
+directory path to choose a different output directory. Skipped captures also
+write debug audio when this flag is set, but that audio is diagnostic only and
+is not sent to Whisper.
+
+To test the Whisper invocation without GTK, D-Bus, or microphone capture, run
+the ignored debug WAV test against a saved 16 kHz mono debug file:
+
+```sh
+MYAPP_TEST_WHISPER_MODEL=/path/to/ggml-model.bin \
+MYAPP_TEST_WHISPER_WAV=/tmp/myapp-audio-debug/default-...-whisper-16k-mono.wav \
+cargo test -p app debug_whisper_wav_transcribes_with_app_params -- --ignored --nocapture
+```
+
+There is also an ignored cache regression for repeated transcription after a
+short skipped capture:
+
+```sh
+MYAPP_TEST_WHISPER_MODEL=/path/to/ggml-model.bin \
+MYAPP_TEST_WHISPER_WAV=/tmp/myapp-audio-debug/default-...-whisper-16k-mono.wav \
+cargo test -p app debug_whisper_cached_repeated_transcription_survives_short_skip -- --ignored --nocapture
+```
+
+Auto language mode is used for normal transcription, but the app does not set
+whisper.cpp's `detect_language` flag because that mode exits after language
+detection instead of producing transcript segments.
 
 Models must be downloaded in Settings > Models before they can be used. If a
 shortcut points to a model that is not ready, recording stops with a clear log
@@ -184,7 +229,8 @@ daemon-effective: shortcuts are enabled only when the resolved backend is
 `daemon`; for `disabled` or `x11`, the app sends disabled bindings so the daemon
 clears any active watcher. `keep_model_loaded = true` keeps only the last used
 Whisper model context in memory to speed up repeated transcription; `false`
-loads and drops the model for every transcription. The daemon stores an accepted last-known cache at
+loads and drops the model for every transcription. The daemon stores an accepted
+last-known cache at
 `~/.config/myapp-input-daemon/shortcut-cache.toml` so it can start before the app
 and still know the last configured shortcuts. During development only schema v4
 is supported; invalid old configs/caches are errors or ignored with a warning,

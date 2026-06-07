@@ -21,9 +21,9 @@ impl TranscriptionService {
         Ok(Self { worker_tx })
     }
 
-    pub fn submit(&self, request: TranscriptionRequest) -> Result<()> {
+    pub fn submit(&self, request: Box<TranscriptionRequest>) -> Result<()> {
         self.worker_tx
-            .send(TranscriptionWorkerCommand::Transcribe(Box::new(request)))
+            .send(TranscriptionWorkerCommand::Transcribe(request))
             .map_err(|_| anyhow!("transcription worker is not running"))
     }
 
@@ -40,12 +40,21 @@ impl TranscriptionService {
             .send(TranscriptionWorkerCommand::ClearCachedModelPath(path))
             .map_err(|_| anyhow!("transcription worker is not running"))
     }
+
+    pub fn clear_cached_context(&self, reason: impl Into<String>) -> Result<()> {
+        self.worker_tx
+            .send(TranscriptionWorkerCommand::ClearCachedContext(
+                reason.into(),
+            ))
+            .map_err(|_| anyhow!("transcription worker is not running"))
+    }
 }
 
 enum TranscriptionWorkerCommand {
     Transcribe(Box<TranscriptionRequest>),
     SetKeepModelLoaded(bool),
     ClearCachedModelPath(std::path::PathBuf),
+    ClearCachedContext(String),
 }
 
 fn transcription_worker_loop(
@@ -60,6 +69,7 @@ fn transcription_worker_loop(
                 let shortcut_id = request.shortcut_id.clone();
                 let result = engine
                     .transcribe(*request)
+                    .map(Box::new)
                     .map_err(|error| format!("{error:#}"));
                 let _ = command_tx.send(AppCommand::TranscriptionFinished {
                     shortcut_id,
@@ -71,6 +81,9 @@ fn transcription_worker_loop(
             }
             TranscriptionWorkerCommand::ClearCachedModelPath(path) => {
                 engine.clear_cached_model_path(&path);
+            }
+            TranscriptionWorkerCommand::ClearCachedContext(reason) => {
+                engine.clear_cached_context_for_config_change(&reason);
             }
         }
     }

@@ -10,6 +10,16 @@ pub struct PreparedAudio {
     pub sample_rate: u32,
 }
 
+impl PreparedAudio {
+    pub fn duration_ms(&self) -> u128 {
+        if self.sample_rate == 0 {
+            0
+        } else {
+            (self.samples.len() as u128).saturating_mul(1000) / u128::from(self.sample_rate)
+        }
+    }
+}
+
 pub fn prepare_whisper_audio(audio: &CapturedAudio) -> PreparedAudio {
     let mono = mix_to_mono(&audio.samples, audio.channels);
     let samples = resample_linear(&mono, audio.sample_rate, WHISPER_SAMPLE_RATE);
@@ -88,6 +98,9 @@ mod tests {
             input_label: "test".to_string(),
             started_at: now,
             stopped_at: now,
+            startup_latency_ms: 0,
+            first_callback_latency_ms: Some(0),
+            audio_callback_count: 1,
             dropped_samples: 0,
             missed_chunks: 0,
         };
@@ -98,5 +111,6 @@ mod tests {
         assert_eq!(prepared.source_sample_rate, 48_000);
         assert_eq!(prepared.source_channels, 2);
         assert_eq!(prepared.samples.len(), 16_000);
+        assert_eq!(prepared.duration_ms(), 1_000);
     }
 }

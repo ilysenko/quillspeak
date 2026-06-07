@@ -41,29 +41,20 @@ impl CompiledWhisperBackends {
 pub fn context_params(
     compute_backend: ComputeBackend,
 ) -> Result<WhisperContextParameters<'static>> {
-    let mut params = WhisperContextParameters::new();
     let compiled_backends = CompiledWhisperBackends::current();
     match compute_backend {
         ComputeBackend::Auto => {
             if compiled_backends.has_gpu() {
-                params.use_gpu(true).flash_attn(true);
+                Ok(gpu_context_params())
             } else {
                 info!("whisper auto compute is CPU-only because no GPU backend is compiled");
-                params.use_gpu(false);
+                Ok(cpu_context_params())
             }
         }
-        ComputeBackend::Cpu => {
-            params.use_gpu(false);
-        }
-        ComputeBackend::Vulkan if cfg!(feature = "whisper-vulkan") => {
-            params.use_gpu(true).flash_attn(true);
-        }
-        ComputeBackend::Cuda if cfg!(feature = "whisper-cuda") => {
-            params.use_gpu(true).flash_attn(true);
-        }
-        ComputeBackend::Rocm if cfg!(feature = "whisper-rocm") => {
-            params.use_gpu(true).flash_attn(true);
-        }
+        ComputeBackend::Cpu => Ok(cpu_context_params()),
+        ComputeBackend::Vulkan if cfg!(feature = "whisper-vulkan") => Ok(gpu_context_params()),
+        ComputeBackend::Cuda if cfg!(feature = "whisper-cuda") => Ok(gpu_context_params()),
+        ComputeBackend::Rocm if cfg!(feature = "whisper-rocm") => Ok(gpu_context_params()),
         ComputeBackend::Vulkan | ComputeBackend::Cuda | ComputeBackend::Rocm => {
             warn!(
                 compute_backend = %compute_backend.as_str(),
@@ -78,7 +69,18 @@ pub fn context_params(
             anyhow::bail!("OpenVINO is not supported by the current whisper-rs integration");
         }
     }
-    Ok(params)
+}
+
+pub fn cpu_context_params() -> WhisperContextParameters<'static> {
+    let mut params = WhisperContextParameters::new();
+    params.use_gpu(false);
+    params
+}
+
+fn gpu_context_params() -> WhisperContextParameters<'static> {
+    let mut params = WhisperContextParameters::new();
+    params.use_gpu(true).flash_attn(false);
+    params
 }
 
 pub fn whisper_language(language: &str) -> Option<&str> {
