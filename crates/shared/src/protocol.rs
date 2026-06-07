@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use zvariant::Type;
 
-use crate::config::{AppConfig, ShortcutAction};
+use crate::config::{AppConfig, HotkeyBackend, ShortcutAction};
 
 pub const APP_ID: &str = "org.example.MyApp";
 pub const APP_BUS_NAME: &str = "org.example.MyApp.App";
@@ -78,6 +78,23 @@ impl ShortcutRuntimeConfig {
             .iter()
             .any(|shortcut| shortcut.enabled && !shortcut.accelerator.trim().is_empty())
     }
+
+    pub fn for_daemon(config: &AppConfig, effective_backend: HotkeyBackend) -> Self {
+        let daemon_enabled = matches!(effective_backend, HotkeyBackend::Daemon);
+        Self {
+            schema_version: config.schema_version,
+            shortcuts: config
+                .shortcuts
+                .iter()
+                .into_iter()
+                .map(|(action, binding)| ShortcutRuntimeBinding {
+                    action: action.as_str().to_string(),
+                    accelerator: binding.accelerator.clone(),
+                    enabled: daemon_enabled && binding.enabled,
+                })
+                .collect(),
+        }
+    }
 }
 
 impl From<&AppConfig> for ShortcutRuntimeConfig {
@@ -140,5 +157,20 @@ mod tests {
         assert_eq!(wire.shortcuts[0].action, "push_to_talk");
         assert_eq!(wire.shortcuts[0].accelerator, "Ctrl+Space");
         assert!(wire.shortcuts[0].enabled);
+    }
+
+    #[test]
+    fn daemon_runtime_config_only_enables_daemon_backend() {
+        let config = AppConfig::default();
+        let daemon_wire = ShortcutRuntimeConfig::for_daemon(&config, HotkeyBackend::Daemon);
+        let x11_wire = ShortcutRuntimeConfig::for_daemon(&config, HotkeyBackend::X11);
+        let disabled_wire = ShortcutRuntimeConfig::for_daemon(&config, HotkeyBackend::Disabled);
+
+        assert!(daemon_wire.is_configured());
+        assert!(daemon_wire.shortcuts[0].enabled);
+        assert!(!x11_wire.is_configured());
+        assert!(!x11_wire.shortcuts[0].enabled);
+        assert!(!disabled_wire.is_configured());
+        assert!(!disabled_wire.shortcuts[0].enabled);
     }
 }

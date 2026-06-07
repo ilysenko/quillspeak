@@ -7,7 +7,7 @@ use gtk::gdk;
 use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use shared::{AppConfig, DaemonStatus, normalize_accelerator};
+use shared::{AppConfig, DaemonStatus, HotkeyBackend, normalize_accelerator};
 
 use crate::command::AppCommand;
 
@@ -17,6 +17,7 @@ pub struct SettingsWindow {
     shortcut_entry: adw::EntryRow,
     mode_row: adw::ActionRow,
     backend_row: adw::ActionRow,
+    backend_dropdown: gtk::DropDown,
     advanced_hotkey_row: adw::ActionRow,
     save_status_row: adw::ActionRow,
     draft_config: Rc<RefCell<AppConfig>>,
@@ -65,6 +66,11 @@ impl SettingsWindow {
         shortcut_entry.add_suffix(&record_button);
         let mode_row = property_row("Mode", config.mode.as_str());
         let backend_row = property_row("Hotkey backend", config.hotkey_backend.as_str());
+        let backend_dropdown = gtk::DropDown::from_strings(&["Auto", "Disabled", "X11", "Daemon"]);
+        backend_dropdown.set_selected(backend_index(config.hotkey_backend));
+        backend_dropdown.set_valign(gtk::Align::Center);
+        backend_row.add_suffix(&backend_dropdown);
+        backend_row.set_activatable_widget(Some(&backend_dropdown));
         let save_status_row = property_row("Settings", "No changes saved in this session");
 
         status_group.add(&daemon_row);
@@ -95,6 +101,7 @@ impl SettingsWindow {
         connect_save_button(
             &save_button,
             &shortcut_entry,
+            &backend_dropdown,
             &save_status_row,
             Rc::clone(&draft_config),
             command_tx,
@@ -106,6 +113,7 @@ impl SettingsWindow {
             shortcut_entry,
             mode_row,
             backend_row,
+            backend_dropdown,
             advanced_hotkey_row,
             save_status_row,
             draft_config,
@@ -123,6 +131,8 @@ impl SettingsWindow {
         self.mode_row.set_subtitle(config.mode.as_str());
         self.backend_row
             .set_subtitle(config.hotkey_backend.as_str());
+        self.backend_dropdown
+            .set_selected(backend_index(config.hotkey_backend));
         self.save_status_row.set_subtitle("Saved");
     }
 
@@ -140,17 +150,20 @@ impl SettingsWindow {
 fn connect_save_button(
     save_button: &gtk::Button,
     shortcut_entry: &adw::EntryRow,
+    backend_dropdown: &gtk::DropDown,
     save_status_row: &adw::ActionRow,
     draft_config: Rc<RefCell<AppConfig>>,
     command_tx: mpsc::Sender<AppCommand>,
 ) {
     let shortcut_entry = shortcut_entry.clone();
+    let backend_dropdown = backend_dropdown.clone();
     let save_status_row = save_status_row.clone();
     save_button.connect_clicked(move |_| {
         let mut config = draft_config.borrow().clone();
         let accelerator = shortcut_entry.text().to_string();
         config.shortcuts.push_to_talk.enabled = !accelerator.trim().is_empty();
         config.shortcuts.push_to_talk.accelerator = accelerator;
+        config.hotkey_backend = backend_from_index(backend_dropdown.selected());
         match config.normalized() {
             Ok(config) => {
                 save_status_row.set_subtitle("Saving...");
@@ -163,6 +176,25 @@ fn connect_save_button(
             }
         }
     });
+}
+
+fn backend_index(backend: HotkeyBackend) -> u32 {
+    match backend {
+        HotkeyBackend::Auto => 0,
+        HotkeyBackend::Disabled => 1,
+        HotkeyBackend::X11 => 2,
+        HotkeyBackend::Daemon => 3,
+        HotkeyBackend::Portal => 0,
+    }
+}
+
+fn backend_from_index(index: u32) -> HotkeyBackend {
+    match index {
+        1 => HotkeyBackend::Disabled,
+        2 => HotkeyBackend::X11,
+        3 => HotkeyBackend::Daemon,
+        _ => HotkeyBackend::Auto,
+    }
 }
 
 fn connect_record_button(
@@ -361,14 +393,17 @@ fn property_row(title: &str, value: &str) -> adw::ActionRow {
 }
 
 fn advanced_hotkey_status(daemon_status: DaemonStatus) -> &'static str {
-    if daemon_status.is_running() {
-        return "Daemon backend available";
+    match daemon_status {
+        DaemonStatus::RunningConfigured => return "Daemon backend available",
+        DaemonStatus::RunningUnconfigured => return "Daemon running, shortcut unavailable",
+        DaemonStatus::PermissionError => return "Daemon permission error",
+        DaemonStatus::NotInstalled | DaemonStatus::InstalledButNotRunning => {}
     }
 
     if env::var_os("WAYLAND_DISPLAY").is_some() {
         "Unavailable on Wayland without daemon"
     } else if env::var_os("DISPLAY").is_some() {
-        "Future X11 backend can run in-process"
+        "X11 backend available in app"
     } else {
         "Disabled"
     }

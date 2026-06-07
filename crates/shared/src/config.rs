@@ -49,6 +49,7 @@ impl TryFrom<&str> for HotkeyMode {
 #[serde(rename_all = "snake_case")]
 pub enum HotkeyBackend {
     #[default]
+    Auto,
     Disabled,
     Daemon,
     X11,
@@ -58,6 +59,7 @@ pub enum HotkeyBackend {
 impl HotkeyBackend {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Auto => "auto",
             Self::Disabled => "disabled",
             Self::Daemon => "daemon",
             Self::X11 => "x11",
@@ -71,6 +73,7 @@ impl TryFrom<&str> for HotkeyBackend {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
+            "auto" => Ok(Self::Auto),
             "disabled" => Ok(Self::Disabled),
             "daemon" => Ok(Self::Daemon),
             "x11" => Ok(Self::X11),
@@ -198,7 +201,7 @@ impl Default for AppConfig {
         Self {
             schema_version: default_schema_version(),
             mode: HotkeyMode::PushToTalk,
-            hotkey_backend: HotkeyBackend::Disabled,
+            hotkey_backend: HotkeyBackend::Auto,
             shortcuts: ShortcutSettings::default(),
             legacy_hotkey: None,
         }
@@ -215,14 +218,18 @@ pub fn normalize_accelerator(input: &str) -> Result<String, ConfigError> {
         return Err(ConfigError::EmptyShortcut);
     }
 
-    let normalized_separator = trimmed.replace('-', "+");
     let mut ctrl = false;
     let mut alt = false;
     let mut shift = false;
     let mut super_key = false;
     let mut key = None;
+    let parts: Vec<&str> = if trimmed.contains('+') {
+        trimmed.split('+').collect()
+    } else {
+        trimmed.split('-').collect()
+    };
 
-    for raw_part in normalized_separator.split('+') {
+    for raw_part in parts {
         let part = raw_part.trim();
         if part.is_empty() {
             continue;
@@ -271,6 +278,17 @@ fn normalize_key(input: &str) -> Result<String, ConfigError> {
         "end" => "End".to_string(),
         "pageup" | "page_up" => "PageUp".to_string(),
         "pagedown" | "page_down" => "PageDown".to_string(),
+        "-" | "minus" => "Minus".to_string(),
+        "=" | "equal" | "equals" => "Equal".to_string(),
+        "," | "comma" => "Comma".to_string(),
+        "." | "dot" | "period" => "Dot".to_string(),
+        "/" | "slash" => "Slash".to_string(),
+        ";" | "semicolon" => "Semicolon".to_string(),
+        "'" | "apostrophe" | "quote" => "Apostrophe".to_string(),
+        "`" | "grave" | "backtick" => "Grave".to_string(),
+        "[" | "leftbracket" | "left_bracket" => "LeftBracket".to_string(),
+        "]" | "rightbracket" | "right_bracket" => "RightBracket".to_string(),
+        "\\" | "backslash" => "Backslash".to_string(),
         value if is_function_key(value) => value.to_ascii_uppercase(),
         value if value.chars().count() == 1 => value.to_ascii_uppercase(),
         _ => return Err(ConfigError::UnsupportedShortcutKey(input.to_string())),
@@ -289,6 +307,110 @@ fn is_function_key(value: &str) -> bool {
     (1..=24).contains(&number)
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ShortcutModifiers {
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub super_key: bool,
+}
+
+impl ShortcutModifiers {
+    pub const fn is_empty(self) -> bool {
+        !self.ctrl && !self.alt && !self.shift && !self.super_key
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShortcutKey {
+    Character(char),
+    Space,
+    Escape,
+    Enter,
+    Tab,
+    Backspace,
+    Delete,
+    Insert,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Function(u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ShortcutChord {
+    pub modifiers: ShortcutModifiers,
+    pub key: ShortcutKey,
+}
+
+impl ShortcutChord {
+    pub fn parse(accelerator: &str) -> Result<Self, ConfigError> {
+        let normalized = normalize_accelerator(accelerator)?;
+        let mut modifiers = ShortcutModifiers::default();
+        let mut key = None;
+
+        for part in normalized.split('+') {
+            match part {
+                "Ctrl" => modifiers.ctrl = true,
+                "Alt" => modifiers.alt = true,
+                "Shift" => modifiers.shift = true,
+                "Super" => modifiers.super_key = true,
+                key_name if key.is_none() => key = Some(parse_shortcut_key(key_name)?),
+                other => return Err(ConfigError::UnsupportedShortcutKey(other.to_string())),
+            }
+        }
+
+        Ok(Self {
+            modifiers,
+            key: key.ok_or(ConfigError::MissingShortcutKey)?,
+        })
+    }
+}
+
+fn parse_shortcut_key(input: &str) -> Result<ShortcutKey, ConfigError> {
+    let key = match input {
+        "Space" => ShortcutKey::Space,
+        "Escape" => ShortcutKey::Escape,
+        "Enter" => ShortcutKey::Enter,
+        "Tab" => ShortcutKey::Tab,
+        "Backspace" => ShortcutKey::Backspace,
+        "Delete" => ShortcutKey::Delete,
+        "Insert" => ShortcutKey::Insert,
+        "Home" => ShortcutKey::Home,
+        "End" => ShortcutKey::End,
+        "PageUp" => ShortcutKey::PageUp,
+        "PageDown" => ShortcutKey::PageDown,
+        "Minus" => ShortcutKey::Character('-'),
+        "Equal" => ShortcutKey::Character('='),
+        "Comma" => ShortcutKey::Character(','),
+        "Dot" => ShortcutKey::Character('.'),
+        "Slash" => ShortcutKey::Character('/'),
+        "Semicolon" => ShortcutKey::Character(';'),
+        "Apostrophe" => ShortcutKey::Character('\''),
+        "Grave" => ShortcutKey::Character('`'),
+        "LeftBracket" => ShortcutKey::Character('['),
+        "RightBracket" => ShortcutKey::Character(']'),
+        "Backslash" => ShortcutKey::Character('\\'),
+        value if is_function_key(&value.to_ascii_lowercase()) => {
+            let number = value[1..]
+                .parse::<u8>()
+                .map_err(|_| ConfigError::UnsupportedShortcutKey(input.to_string()))?;
+            ShortcutKey::Function(number)
+        }
+        value if value.chars().count() == 1 => {
+            let character = value
+                .chars()
+                .next()
+                .expect("single-character shortcut key should have one char");
+            ShortcutKey::Character(character)
+        }
+        _ => return Err(ConfigError::UnsupportedShortcutKey(input.to_string())),
+    };
+
+    Ok(key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,7 +421,7 @@ mod tests {
 
         assert_eq!(config.shortcuts.push_to_talk.accelerator, "Ctrl+Space");
         assert_eq!(config.mode, HotkeyMode::PushToTalk);
-        assert_eq!(config.hotkey_backend, HotkeyBackend::Disabled);
+        assert_eq!(config.hotkey_backend, HotkeyBackend::Auto);
     }
 
     #[test]
@@ -314,7 +436,7 @@ mod tests {
         assert_eq!(decoded, config);
         assert!(encoded.contains("[shortcuts.push_to_talk]"));
         assert!(encoded.contains("accelerator = \"Ctrl+Space\""));
-        assert!(encoded.contains("hotkey_backend = \"disabled\""));
+        assert!(encoded.contains("hotkey_backend = \"auto\""));
     }
 
     #[test]
@@ -347,6 +469,14 @@ hotkey = "Ctrl-Alt-F"
             normalize_accelerator("Super+F12"),
             Ok("Super+F12".to_string())
         );
+        assert_eq!(
+            normalize_accelerator("Ctrl+-"),
+            Ok("Ctrl+Minus".to_string())
+        );
+        assert_eq!(
+            normalize_accelerator("Ctrl-Minus"),
+            Ok("Ctrl+Minus".to_string())
+        );
     }
 
     #[test]
@@ -369,5 +499,22 @@ hotkey = "Ctrl-Alt-F"
 
         assert!(!normalized.shortcuts.push_to_talk.enabled);
         assert_eq!(normalized.shortcuts.push_to_talk.accelerator, "");
+    }
+
+    #[test]
+    fn parses_shortcut_chords_for_runtime_backends() {
+        let chord = ShortcutChord::parse("Ctrl+Alt+F").expect("valid shortcut");
+        assert!(chord.modifiers.ctrl);
+        assert!(chord.modifiers.alt);
+        assert!(!chord.modifiers.shift);
+        assert_eq!(chord.key, ShortcutKey::Character('F'));
+
+        let chord = ShortcutChord::parse("Super+F12").expect("valid shortcut");
+        assert!(chord.modifiers.super_key);
+        assert_eq!(chord.key, ShortcutKey::Function(12));
+
+        let chord = ShortcutChord::parse("Ctrl+Minus").expect("valid shortcut");
+        assert!(chord.modifiers.ctrl);
+        assert_eq!(chord.key, ShortcutKey::Character('-'));
     }
 }

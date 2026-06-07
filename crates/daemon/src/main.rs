@@ -13,6 +13,11 @@ use shared::{
 use tracing::{debug, info, warn};
 use zbus::{blocking::Proxy, blocking::connection, interface};
 
+mod evdev_backend;
+mod hotkey;
+
+use evdev_backend::EvdevHotkeyHandle;
+
 #[derive(Debug, Parser)]
 #[command(name = "myapp-daemon")]
 #[command(about = "Optional MyApp input daemon prototype")]
@@ -47,7 +52,7 @@ fn init_logging() {
         .try_init();
 }
 
-fn send_hotkey_method(method_name: &'static str) -> Result<()> {
+pub(crate) fn send_hotkey_method(method_name: &'static str) -> Result<()> {
     info!(
         method = method_name,
         bus_name = APP_BUS_NAME,
@@ -68,9 +73,11 @@ fn send_hotkey_method(method_name: &'static str) -> Result<()> {
 
 fn run_daemon() -> Result<()> {
     let cache_store = DaemonCacheStore::new()?;
+    let hotkey_backend = EvdevHotkeyHandle::spawn();
     let state = Arc::new(Mutex::new(DaemonState {
         shortcut_config: None,
         cache_store: cache_store.clone(),
+        hotkey_backend,
     }));
     let daemon = InputDaemon::new(Arc::clone(&state));
     let _connection = connection::Builder::session()
@@ -86,7 +93,7 @@ fn run_daemon() -> Result<()> {
         bus_name = DAEMON_BUS_NAME,
         object_path = DAEMON_OBJECT_PATH,
         interface = DAEMON_INTERFACE,
-        "myapp input daemon stub is running"
+        "myapp input daemon is running"
     );
 
     if let Err(error) = initialize_shortcut_config(&state, &cache_store) {
@@ -101,7 +108,7 @@ fn run_daemon() -> Result<()> {
     .context("failed to install Ctrl-C handler")?;
 
     let _ = shutdown_rx.recv();
-    info!("myapp input daemon stub is shutting down");
+    info!("myapp input daemon is shutting down");
     Ok(())
 }
 
@@ -152,7 +159,6 @@ fn initialize_shortcut_config(
 ) -> Result<()> {
     let shortcut_config = match request_shortcut_config_from_app() {
         Ok(config) => {
-            cache_store.save(&config)?;
             info!("loaded fresh shortcut config from app");
             Some(config)
         }
@@ -170,7 +176,13 @@ fn initialize_shortcut_config(
         let mut state = state
             .lock()
             .expect("daemon state mutex should not be poisoned during startup");
+        let status = state.hotkey_backend.update_config(&config)?;
+        state.cache_store.save(&config)?;
         state.shortcut_config = Some(config);
+        info!(
+            daemon_status = %status.display_label(),
+            "daemon applied initial shortcut config to evdev backend"
+        );
     } else {
         info!("daemon started without shortcut config");
     }
@@ -200,6 +212,7 @@ impl InputDaemon {
 struct DaemonState {
     shortcut_config: Option<ShortcutRuntimeConfig>,
     cache_store: DaemonCacheStore,
+    hotkey_backend: EvdevHotkeyHandle,
 }
 
 #[interface(name = "org.example.MyApp.InputDaemon1")]
@@ -255,9 +268,9 @@ impl InputDaemon {
             .state
             .lock()
             .map_err(|error| anyhow::anyhow!("daemon state mutex poisoned: {error}"))?;
+        let status = state.hotkey_backend.update_config(&config)?;
         state.cache_store.save(&config)?;
         state.shortcut_config = Some(config);
-        let status = state.status();
         info!(
             daemon_status = %status.display_label(),
             "updated daemon shortcut runtime config"
@@ -268,10 +281,8 @@ impl InputDaemon {
 
 impl DaemonState {
     fn status(&self) -> DaemonStatus {
-        match &self.shortcut_config {
-            Some(config) if config.is_configured() => DaemonStatus::RunningConfigured,
-            _ => DaemonStatus::RunningUnconfigured,
-        }
+        self.hotkey_backend
+            .current_status_for_config(self.shortcut_config.as_ref())
     }
 }
 

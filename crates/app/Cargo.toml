@@ -20,5 +20,5 @@ shared = { path = "../shared" }
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+x11rb.workspace = true
 zbus.workspace = true
-

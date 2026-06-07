@@ -18,16 +18,16 @@ The current goal is architecture and desktop behavior only:
 - zbus-based D-Bus between the main app and the optional daemon,
 - placeholder recording/transcription functions that only log messages.
 
-Do not implement real audio recording, Whisper, evdev/libinput input reading,
-X11 hotkey capture, Wayland portal shortcuts, Flatpak packaging, or `.deb`
-packaging unless explicitly requested.
+Do not implement real audio recording, Whisper, Wayland portal shortcuts,
+Flatpak packaging, or `.deb` packaging unless explicitly requested. Real X11
+hotkey capture and Wayland evdev daemon capture are now part of the prototype.
 
 ## Current Architecture
 
 The workspace has three crates:
 
 - `crates/app`: builds `myapp`, the main GTK4/libadwaita desktop app.
-- `crates/daemon`: builds `myapp-daemon`, the optional input daemon stub.
+- `crates/daemon`: builds `myapp-daemon`, the optional Wayland input daemon.
 - `crates/shared`: shared config structs, D-Bus constants, protocol DTOs, and
   common enums used by both binaries.
 
@@ -37,9 +37,9 @@ terminal, and stop it with Ctrl-C. Internally, it still behaves like a
 background desktop app: startup shows no window, the process stays alive through
 the application lifecycle hold, and the settings window is opened from the tray.
 
-The optional daemon is a separate process. In this prototype it does not read
-real keyboard events. It only exposes basic D-Bus methods and provides CLI
-simulation commands:
+The optional daemon is a separate process. It reads real keyboard events through
+Linux evdev for Wayland advanced hotkey mode and still provides CLI simulation
+commands:
 
 ```sh
 cargo run -p daemon --bin myapp-daemon -- --hotkey-down
@@ -78,7 +78,11 @@ all stay correct.
   appeared/vanished status changes.
 - `crates/app/src/hotkey/mod.rs`: pluggable hotkey backend boundary.
 - `crates/app/src/recording.rs`: placeholder recording/transcription functions.
-- `crates/daemon/src/main.rs`: optional daemon service stub and CLI simulation.
+- `crates/daemon/src/main.rs`: optional daemon service and CLI simulation.
+- `crates/daemon/src/hotkey.rs`: daemon hotkey state machine and runtime
+  shortcut extraction.
+- `crates/daemon/src/evdev_backend.rs`: Linux evdev keyboard device scanning
+  and watched-key event loop.
 - `packaging/systemd/user/myapp-input-daemon.service`: future/manual user
   service for the optional daemon only.
 - `README.md`: user-facing build and run instructions.
@@ -141,7 +145,7 @@ Current app config format:
 ```toml
 schema_version = 1
 mode = "push_to_talk"
-hotkey_backend = "disabled"
+hotkey_backend = "auto"
 
 [shortcuts.push_to_talk]
 accelerator = "Ctrl+Space"
@@ -160,9 +164,12 @@ shortcut config should be sent from the app to the daemon over D-Bus. The daemon
 may store a host-side last-known cache, but that cache is disposable and app
 config always wins.
 
+New default configs use `hotkey_backend = "auto"`. Existing configs may still
+contain `disabled`; do not migrate them silently to active capture.
+
 The settings UI can record a shortcut while the recorder dialog is focused, but
-this is only a settings convenience. It must not be treated as global hotkey
-capture. Saving settings remains explicit through the `Save` button.
+this is only a settings convenience. Global capture is performed by the selected
+runtime backend. Saving settings remains explicit through the `Save` button.
 
 ## UI Rules
 
@@ -190,20 +197,21 @@ The tray icon color is part of the user-facing state contract:
 
 ## Hotkey Architecture
 
-Keep shortcut/hotkey handling pluggable. Intended future backends:
+Keep shortcut/hotkey handling pluggable. Current backends:
 
 - `DisabledBackend`
-- `X11Backend`
-- `PortalBackend`
 - `DaemonBackend`
+- `X11Backend`
 
-Only `DisabledBackend`, a `DaemonBackend` client stub, and manual tray actions
-belong in the current prototype. Do not add real X11, portal, or evdev hotkey
-capture until explicitly requested.
+The `auto` backend resolves to daemon mode when `WAYLAND_DISPLAY` is present,
+to X11 mode when only `DISPLAY` is present, and to disabled mode when no desktop
+display is detectable. `PortalBackend` remains a future placeholder.
 
-Wayland advanced hotkey mode should be considered unavailable when the daemon
-is missing. X11 can later support in-process hotkeys, but this prototype should
-not implement real X11 capture.
+X11 hotkey capture lives in the app and uses passive X11 grabs. Wayland
+advanced hotkey capture lives in the optional daemon and uses evdev. The daemon
+must only process and log key codes required by the configured shortcut; it will
+still receive kernel events from opened evdev devices, but unrelated keys must
+be dropped immediately and `EVIOCGRAB` must not be used.
 
 ## Commands
 
@@ -255,10 +263,9 @@ GTK4/libadwaita.
 At the time this file was written:
 
 - `cargo fmt --all --check` passes.
-- `cargo check -p shared -p daemon` passes.
-- `cargo test -p shared -p daemon` passes.
-- `cargo check -p app` is blocked in the current container by missing GTK4 and
-  related pkg-config system libraries, not by the no-daemon architecture.
+- `cargo check --workspace` passes.
+- `cargo test --workspace` passes.
+- `cargo clippy --workspace --all-targets -- -D warnings` passes.
 
 ## Shortcut Config Sync
 
@@ -270,8 +277,14 @@ two-way and idempotent:
 - daemon starts after app: daemon calls app `GetShortcutConfig`;
 - Settings Save: app saves config, reloads it, applies it, and calls daemon
   `UpdateShortcutConfig`;
-- daemon stores the received runtime config as
+- daemon stores the accepted runtime config as
   `~/.config/myapp-input-daemon/shortcut-cache.toml`.
+
+The runtime config sent to the daemon is daemon-effective, not a verbatim app
+config copy. If the resolved backend is `daemon`, enabled shortcuts are sent as
+enabled. If the resolved backend is `disabled` or `x11`, the app sends the same
+shortcuts as disabled so the daemon clears any active watcher and does not keep
+listening behind the user's selected backend.
 
 The daemon must not read the app config file directly.
 
@@ -279,10 +292,8 @@ The daemon must not read the app config file directly.
 
 Possible later additions, only when requested:
 
-- real X11 in-process hotkey backend,
 - XDG GlobalShortcuts portal backend,
-- Wayland advanced daemon backend with precise key down/up detection,
-- evdev/libinput input reading inside the optional daemon,
+- libinput/logind integration and robust packaged evdev permissions,
 - microphone recording,
 - Whisper integration,
 - text insertion,

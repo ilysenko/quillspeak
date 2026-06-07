@@ -9,9 +9,7 @@ use gtk::gio;
 use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use shared::{
-    APP_ID, AppConfig, DaemonStatus, HotkeyBackend as HotkeyBackendKind, ShortcutRuntimeConfig,
-};
+use shared::{APP_ID, AppConfig, DaemonStatus, ShortcutRuntimeConfig};
 use tracing::{error, info, warn};
 
 use crate::command::AppCommand;
@@ -19,7 +17,9 @@ use crate::config_store::ConfigStore;
 use crate::daemon_client::DaemonClient;
 use crate::daemon_monitor::DaemonMonitorHandle;
 use crate::dbus::AppDbusHandle;
-use crate::hotkey::{DaemonBackend, DisabledBackend, HotkeyBackend, backend_name_for_config};
+use crate::hotkey::{
+    HotkeyBackendHandle, backend_name_for_config, configure_hotkey_backend, resolve_backend_kind,
+};
 use crate::recording::{RecordingController, RecordingPhase};
 use crate::settings::SettingsWindow;
 use crate::tray::Tray;
@@ -62,6 +62,7 @@ struct AppRuntime {
     recording: RefCell<RecordingController>,
     settings_window: RefCell<Option<SettingsWindow>>,
     tray: RefCell<Option<Tray>>,
+    hotkey_backend: RefCell<Option<HotkeyBackendHandle>>,
     dbus_handle: RefCell<Option<AppDbusHandle>>,
     daemon_monitor: RefCell<Option<DaemonMonitorHandle>>,
 }
@@ -80,13 +81,14 @@ impl AppRuntime {
         })?;
 
         let daemon_client = DaemonClient;
-        let shortcut_runtime_config = Arc::new(Mutex::new(ShortcutRuntimeConfig::from(&config)));
+        let daemon_runtime_config = daemon_runtime_config_for(&config);
+        let shortcut_runtime_config = Arc::new(Mutex::new(daemon_runtime_config.clone()));
         let dbus_handle =
             AppDbusHandle::spawn(command_tx.clone(), Arc::clone(&shortcut_runtime_config));
 
         let daemon_status = daemon_client.status();
-        configure_hotkey_backend(&daemon_client, &config);
-        sync_shortcut_config_to_daemon(&daemon_client, &config);
+        let hotkey_backend = configure_hotkey_backend(command_tx.clone(), &config);
+        sync_shortcut_config_to_daemon(&daemon_client, &daemon_runtime_config);
 
         let tray = match Tray::new(command_tx.clone()) {
             Ok(tray) => {
@@ -114,6 +116,7 @@ impl AppRuntime {
             recording: RefCell::new(RecordingController::default()),
             settings_window: RefCell::new(None),
             tray: RefCell::new(tray),
+            hotkey_backend: RefCell::new(hotkey_backend),
             dbus_handle: RefCell::new(Some(dbus_handle)),
             daemon_monitor: RefCell::new(Some(daemon_monitor)),
         });
@@ -215,11 +218,14 @@ impl AppRuntime {
     }
 
     fn apply_config(&self, config: AppConfig) {
-        configure_hotkey_backend(&self.daemon_client, &config);
-        sync_shortcut_config_to_daemon(&self.daemon_client, &config);
+        self.hotkey_backend.borrow_mut().take();
+        let hotkey_backend = configure_hotkey_backend(self.command_sender(), &config);
+        self.hotkey_backend.replace(hotkey_backend);
+        let daemon_runtime_config = daemon_runtime_config_for(&config);
         if let Ok(mut runtime_config) = self.shortcut_runtime_config.lock() {
-            *runtime_config = ShortcutRuntimeConfig::from(&config);
+            *runtime_config = daemon_runtime_config.clone();
         }
+        sync_shortcut_config_to_daemon(&self.daemon_client, &daemon_runtime_config);
 
         self.config.replace(config.clone());
         if let Some(window) = self.settings_window.borrow().as_ref() {
@@ -234,7 +240,11 @@ impl AppRuntime {
     }
 
     fn sync_current_shortcut_config_to_daemon(&self) {
-        sync_shortcut_config_to_daemon(&self.daemon_client, &self.config.borrow());
+        let daemon_runtime_config = daemon_runtime_config_for(&self.config.borrow());
+        if let Ok(mut runtime_config) = self.shortcut_runtime_config.lock() {
+            *runtime_config = daemon_runtime_config.clone();
+        }
+        sync_shortcut_config_to_daemon(&self.daemon_client, &daemon_runtime_config);
     }
 
     fn refresh_daemon_status(&self) {
@@ -251,6 +261,7 @@ impl AppRuntime {
 
     fn quit(&self) {
         info!("Quitting MyApp");
+        self.hotkey_backend.borrow_mut().take();
         self.daemon_monitor.borrow_mut().take();
         self.dbus_handle.borrow_mut().take();
         self.tray.borrow_mut().take();
@@ -279,34 +290,15 @@ impl AppRuntime {
     }
 }
 
-fn configure_hotkey_backend(daemon_client: &DaemonClient, config: &AppConfig) {
-    match config.hotkey_backend {
-        HotkeyBackendKind::Disabled => {
-            let backend = DisabledBackend;
-            info!(backend = backend.name(), "configuring hotkey backend");
-            if let Err(error) = backend.configure(config) {
-                warn!(?error, "failed to configure disabled hotkey backend");
-            }
-        }
-        HotkeyBackendKind::Daemon => {
-            let backend = DaemonBackend::new(daemon_client.clone());
-            info!(backend = backend.name(), "configuring hotkey backend");
-            if let Err(error) = backend.configure(config) {
-                warn!(?error, "daemon hotkey backend is not available yet");
-            }
-        }
-        HotkeyBackendKind::X11 => {
-            info!("X11 hotkey backend placeholder selected; using disabled backend for now");
-        }
-        HotkeyBackendKind::Portal => {
-            info!("Portal hotkey backend placeholder selected; using disabled backend for now");
-        }
-    }
+fn daemon_runtime_config_for(config: &AppConfig) -> ShortcutRuntimeConfig {
+    ShortcutRuntimeConfig::for_daemon(config, resolve_backend_kind(config.hotkey_backend))
 }
 
-fn sync_shortcut_config_to_daemon(daemon_client: &DaemonClient, config: &AppConfig) {
-    let runtime_config = ShortcutRuntimeConfig::from(config);
-    if let Err(error) = daemon_client.update_shortcut_config(&runtime_config) {
+fn sync_shortcut_config_to_daemon(
+    daemon_client: &DaemonClient,
+    runtime_config: &ShortcutRuntimeConfig,
+) {
+    if let Err(error) = daemon_client.update_shortcut_config(runtime_config) {
         warn!(?error, "daemon shortcut config sync is not available yet");
     }
 }
