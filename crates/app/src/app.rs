@@ -34,6 +34,7 @@ use crate::tray::Tray;
 
 const COMMAND_PUMP_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_COMMANDS_PER_PUMP: usize = 128;
+const TRAY_IDLE_RECONCILE_DELAY: Duration = Duration::from_millis(200);
 
 pub fn run() -> gtk::glib::ExitCode {
     let application = adw::Application::builder().application_id(APP_ID).build();
@@ -76,6 +77,7 @@ struct AppRuntime {
     daemon_status: Cell<DaemonStatus>,
     shortcut_runtime_config: Arc<Mutex<ShortcutRuntimeConfig>>,
     recording: RefCell<RecordingService>,
+    recording_phase: Cell<RecordingPhase>,
     next_recording_id: Cell<u64>,
     settings_window: RefCell<Option<SettingsWindow>>,
     tray: RefCell<Option<Tray>>,
@@ -140,6 +142,7 @@ impl AppRuntime {
             daemon_status: Cell::new(daemon_status),
             shortcut_runtime_config,
             recording: RefCell::new(RecordingService::default()),
+            recording_phase: Cell::new(RecordingPhase::Idle),
             next_recording_id: Cell::new(1),
             settings_window: RefCell::new(None),
             tray: RefCell::new(tray),
@@ -204,6 +207,7 @@ impl AppRuntime {
                 shortcut_id,
                 result,
             } => self.finish_transcription(recording_id, &shortcut_id, result),
+            AppCommand::RefreshTrayRecordingPhase => self.force_refresh_recording_phase(),
             AppCommand::AudioInputDevicesRefreshed(devices) => {
                 self.update_audio_input_devices(devices)
             }
@@ -418,15 +422,20 @@ impl AppRuntime {
             self.recording
                 .borrow_mut()
                 .finish_processing(recording_id, shortcut_id, &result);
-        if accepted && let Ok(result) = &result {
-            self.apply_transcription_output(shortcut_id, result);
-        } else if !accepted {
+        if !accepted {
             info!(
                 recording_id,
                 shortcut_id, "ignoring stale transcription result"
             );
+            self.set_recording_phase(phase);
+            return;
         }
+
         self.set_recording_phase(phase);
+
+        if let Ok(result) = &result {
+            self.apply_transcription_output(shortcut_id, result);
+        }
     }
 
     fn apply_transcription_output(&self, shortcut_id: &str, result: &TranscriptionResult) {
@@ -434,9 +443,51 @@ impl AppRuntime {
     }
 
     fn set_recording_phase(&self, phase: RecordingPhase) {
-        if let Some(tray) = self.tray.borrow().as_ref() {
-            tray.set_recording_phase(phase);
+        let previous = self.recording_phase.get();
+        if previous == phase {
+            return;
         }
+
+        self.recording_phase.set(phase);
+        debug!(?previous, ?phase, "recording phase changed");
+        self.update_tray_recording_phase(phase, false);
+
+        if previous == RecordingPhase::Processing && phase == RecordingPhase::Idle {
+            self.schedule_tray_idle_reconcile();
+        }
+    }
+
+    fn update_tray_recording_phase(&self, phase: RecordingPhase, forced: bool) {
+        if let Some(tray) = self.tray.borrow().as_ref() {
+            let updated = if forced {
+                tray.force_refresh_recording_phase(phase)
+            } else {
+                tray.set_recording_phase(phase)
+            };
+
+            if !updated {
+                warn!(
+                    ?phase,
+                    forced, "failed to update StatusNotifierItem recording phase"
+                );
+            }
+        } else {
+            debug!(?phase, forced, "recording phase changed without tray");
+        }
+    }
+
+    fn schedule_tray_idle_reconcile(&self) {
+        let command_tx = self.command_sender();
+        let _source_id = gtk::glib::timeout_add_local(TRAY_IDLE_RECONCILE_DELAY, move || {
+            let _ = command_tx.send(AppCommand::RefreshTrayRecordingPhase);
+            gtk::glib::ControlFlow::Break
+        });
+    }
+
+    fn force_refresh_recording_phase(&self) {
+        let phase = self.recording_phase.get();
+        debug!(?phase, "forcing StatusNotifierItem recording phase refresh");
+        self.update_tray_recording_phase(phase, true);
     }
 
     fn show_settings(&self) {

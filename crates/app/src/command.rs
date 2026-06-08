@@ -34,6 +34,7 @@ pub enum AppCommand {
         shortcut_id: String,
         result: Result<Box<TranscriptionResult>, String>,
     },
+    RefreshTrayRecordingPhase,
     AudioInputDevicesRefreshed(Vec<crate::audio::AudioInputDevice>),
     SaveConfig(AppConfig),
     DownloadModel(String),

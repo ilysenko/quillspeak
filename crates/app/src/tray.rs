@@ -19,15 +19,27 @@ impl Tray {
         let tray = MyAppTray {
             command_tx,
             recording_phase: RecordingPhase::Idle,
+            refresh_nonce: 0,
         };
         let handle = tray.spawn()?;
         Ok(Self { handle })
     }
 
-    pub fn set_recording_phase(&self, phase: RecordingPhase) {
-        let _ = self.handle.update(|tray| {
-            tray.recording_phase = phase;
-        });
+    pub fn set_recording_phase(&self, phase: RecordingPhase) -> bool {
+        self.handle
+            .update(|tray| {
+                tray.recording_phase = phase;
+            })
+            .is_some()
+    }
+
+    pub fn force_refresh_recording_phase(&self, phase: RecordingPhase) -> bool {
+        self.handle
+            .update(|tray| {
+                tray.recording_phase = phase;
+                tray.refresh_nonce = tray.refresh_nonce.wrapping_add(1);
+            })
+            .is_some()
     }
 }
 
@@ -40,6 +52,7 @@ impl Drop for Tray {
 struct MyAppTray {
     command_tx: mpsc::Sender<AppCommand>,
     recording_phase: RecordingPhase,
+    refresh_nonce: u8,
 }
 
 impl MyAppTray {
@@ -71,7 +84,10 @@ impl ksni::Tray for MyAppTray {
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        vec![tray_icon_pixmap(icon_color(self.recording_phase))]
+        vec![tray_icon_pixmap(
+            icon_color(self.recording_phase),
+            self.refresh_nonce,
+        )]
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
@@ -129,7 +145,7 @@ fn icon_color(phase: RecordingPhase) -> [u8; 4] {
     }
 }
 
-fn tray_icon_pixmap(color: [u8; 4]) -> ksni::Icon {
+fn tray_icon_pixmap(color: [u8; 4], refresh_nonce: u8) -> ksni::Icon {
     let mut data = vec![0; (TRAY_ICON_SIZE * TRAY_ICON_SIZE * 4) as usize];
 
     for y in 0..TRAY_ICON_SIZE {
@@ -139,6 +155,10 @@ fn tray_icon_pixmap(color: [u8; 4]) -> ksni::Icon {
             }
         }
     }
+
+    // Keep a transparent pixel changing so a forced refresh emits NewIcon even
+    // when the visible phase color did not change.
+    write_argb_pixel(&mut data, 0, 0, [refresh_nonce, 0, 0, 0]);
 
     ksni::Icon {
         width: TRAY_ICON_SIZE,
@@ -187,12 +207,32 @@ mod tests {
 
     #[test]
     fn tray_icon_pixmap_writes_argb_pixels() {
-        let icon = tray_icon_pixmap(TRAY_RECORDING_COLOR);
+        let icon = tray_icon_pixmap(TRAY_RECORDING_COLOR, 0);
         let offset = ((5 * TRAY_ICON_SIZE + 8) * 4) as usize;
 
         assert_eq!(icon.data[offset], TRAY_RECORDING_COLOR[3]);
         assert_eq!(icon.data[offset + 1], TRAY_RECORDING_COLOR[0]);
         assert_eq!(icon.data[offset + 2], TRAY_RECORDING_COLOR[1]);
         assert_eq!(icon.data[offset + 3], TRAY_RECORDING_COLOR[2]);
+    }
+
+    #[test]
+    fn tray_icon_force_refresh_nonce_changes_only_transparent_pixel() {
+        let first = tray_icon_pixmap(TRAY_IDLE_COLOR, 1);
+        let second = tray_icon_pixmap(TRAY_IDLE_COLOR, 2);
+        let transparent_offset = 0;
+        let visible_offset = ((5 * TRAY_ICON_SIZE + 8) * 4) as usize;
+
+        assert_ne!(first.data, second.data);
+        assert_eq!(first.data[transparent_offset], 0);
+        assert_eq!(second.data[transparent_offset], 0);
+        assert_ne!(
+            first.data[transparent_offset + 1],
+            second.data[transparent_offset + 1]
+        );
+        assert_eq!(
+            &first.data[visible_offset..visible_offset + 4],
+            &second.data[visible_offset..visible_offset + 4]
+        );
     }
 }

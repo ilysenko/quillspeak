@@ -321,4 +321,20 @@ mod tests {
         assert_eq!(service.active_recording_id(), Some(1));
         assert_eq!(service.active_shortcut_id(), Some("default"));
     }
+
+    #[test]
+    fn transcription_error_finishes_active_processing() {
+        let mut service = RecordingService::default();
+        service.start_recording(1, "default");
+        service.capture_started(1, "default");
+        assert_eq!(service.stop_recording("default").1, Some(1));
+
+        let (phase, accepted) =
+            service.finish_processing::<()>(1, "default", &Err("transcription failed".into()));
+
+        assert_eq!(phase, RecordingPhase::Idle);
+        assert!(accepted);
+        assert_eq!(service.active_recording_id(), None);
+        assert_eq!(service.active_shortcut_id(), None);
+    }
 }
