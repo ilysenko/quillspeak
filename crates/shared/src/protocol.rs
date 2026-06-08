@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use zvariant::Type;
 
-use crate::config::{AppConfig, CONFIG_SCHEMA_VERSION, ConfigError, HotkeyBackend};
+use crate::config::{
+    AppConfig, CONFIG_SCHEMA_VERSION, ConfigError, HotkeyBackend, ShortcutTrigger,
+};
 
 pub const APP_ID: &str = "org.example.MyApp";
 pub const APP_BUS_NAME: &str = "org.example.MyApp.App";
@@ -97,11 +99,16 @@ impl ShortcutRuntimeConfig {
             shortcuts: config
                 .shortcuts
                 .iter()
-                .map(|shortcut| ShortcutRuntimeBinding {
-                    id: shortcut.id.clone(),
-                    name: shortcut.name.clone(),
-                    accelerator: shortcut.accelerator.clone(),
-                    enabled: daemon_enabled && shortcut.enabled,
+                .filter_map(|shortcut| {
+                    let ShortcutTrigger::Keyboard { accelerator } = &shortcut.trigger else {
+                        return None;
+                    };
+                    Some(ShortcutRuntimeBinding {
+                        id: shortcut.id.clone(),
+                        name: shortcut.name.clone(),
+                        accelerator: accelerator.clone(),
+                        enabled: daemon_enabled && shortcut.enabled,
+                    })
                 })
                 .collect(),
         }
@@ -115,11 +122,16 @@ impl From<&AppConfig> for ShortcutRuntimeConfig {
             shortcuts: config
                 .shortcuts
                 .iter()
-                .map(|shortcut| ShortcutRuntimeBinding {
-                    id: shortcut.id.clone(),
-                    name: shortcut.name.clone(),
-                    accelerator: shortcut.accelerator.clone(),
-                    enabled: shortcut.enabled,
+                .filter_map(|shortcut| {
+                    let ShortcutTrigger::Keyboard { accelerator } = &shortcut.trigger else {
+                        return None;
+                    };
+                    Some(ShortcutRuntimeBinding {
+                        id: shortcut.id.clone(),
+                        name: shortcut.name.clone(),
+                        accelerator: accelerator.clone(),
+                        enabled: shortcut.enabled,
+                    })
                 })
                 .collect(),
         }
@@ -128,6 +140,8 @@ impl From<&AppConfig> for ShortcutRuntimeConfig {
 
 #[cfg(test)]
 mod tests {
+    use crate::config::ShortcutTrigger;
+
     use super::*;
 
     #[test]
@@ -178,6 +192,17 @@ mod tests {
         assert!(!x11_wire.shortcuts[0].enabled);
         assert!(!disabled_wire.is_configured());
         assert!(!disabled_wire.shortcuts[0].enabled);
+    }
+
+    #[test]
+    fn daemon_runtime_config_omits_linux_signal_triggers() {
+        let mut config = AppConfig::default();
+        config.shortcuts[0].trigger = ShortcutTrigger::default_linux_signal();
+
+        let daemon_wire = ShortcutRuntimeConfig::for_daemon(&config, HotkeyBackend::Daemon);
+
+        assert!(!daemon_wire.is_configured());
+        assert!(daemon_wire.shortcuts.is_empty());
     }
 
     #[test]

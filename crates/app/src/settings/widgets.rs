@@ -8,6 +8,7 @@ use shared::{
     ModelCatalogEntry, SUPPORTED_LANGUAGES, model_catalog_entry, supported_language_label,
 };
 
+#[derive(Clone)]
 pub struct DropDownRow {
     pub row: adw::ActionRow,
     pub dropdown: gtk::DropDown,

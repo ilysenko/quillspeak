@@ -1,6 +1,7 @@
+use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use shared::{OutputAction, ShortcutOutput};
+use shared::{OutputAction, ScriptOutput, ShortcutOutput};
 
 use crate::settings::SettingsDraft;
 use crate::settings::widgets::dropdown_row;
@@ -10,48 +11,54 @@ pub fn add_default_output_controls(
     output: &OutputAction,
     draft: SettingsDraft,
 ) {
-    let selected = match output {
-        OutputAction::Clipboard => 0,
-        OutputAction::Script { .. } => 1,
-    };
-    let output_row = dropdown_row("Action", &["Copy to clipboard", "Run script"], selected);
-    let script_row = adw::EntryRow::builder()
-        .title("Script path")
-        .text(match output {
-            OutputAction::Script { path } => path,
-            OutputAction::Clipboard => "",
-        })
-        .sensitive(matches!(output, OutputAction::Script { .. }))
-        .build();
+    let controls = OutputControls::new(output, true);
 
-    output_row.dropdown.connect_selected_notify({
+    controls.copy_switch.connect_active_notify({
         let draft = draft.clone();
-        let script_row = script_row.clone();
-        move |dropdown| {
-            let is_script = dropdown.selected() == 1;
-            script_row.set_sensitive(is_script);
+        move |switch| {
             draft.update(|config| {
-                config.general.default_output = if is_script {
-                    OutputAction::Script {
-                        path: script_row.text().to_string(),
-                    }
+                config.general.default_output.copy_to_clipboard = switch.is_active();
+            });
+        }
+    });
+
+    controls.run_script_switch.connect_active_notify({
+        let draft = draft.clone();
+        let controls = controls.clone();
+        move |switch| {
+            controls.set_script_sensitive(switch.is_active(), true);
+            draft.update(|config| {
+                config.general.default_output.script = if switch.is_active() {
+                    Some(controls.script_from_rows())
                 } else {
-                    OutputAction::Clipboard
+                    None
                 };
             });
         }
     });
-    script_row.connect_changed(move |row| {
-        draft.update(|config| {
-            if matches!(config.general.default_output, OutputAction::Script { .. }) {
-                config.general.default_output = OutputAction::Script {
-                    path: row.text().to_string(),
-                };
-            }
-        });
+
+    controls.script_row.connect_changed({
+        let draft = draft.clone();
+        move |row| {
+            draft.update(|config| {
+                if let Some(script) = &mut config.general.default_output.script {
+                    script.path = row.text().to_string();
+                }
+            });
+        }
     });
-    group.add(&output_row.row);
-    group.add(&script_row);
+
+    controls
+        .copy_stdout_switch
+        .connect_active_notify(move |switch| {
+            draft.update(|config| {
+                if let Some(script) = &mut config.general.default_output.script {
+                    script.copy_stdout_to_clipboard = switch.is_active();
+                }
+            });
+        });
+
+    controls.add_to_group(group);
 }
 
 pub fn add_shortcut_output_controls(
@@ -60,54 +67,198 @@ pub fn add_shortcut_output_controls(
     output: &ShortcutOutput,
     draft: SettingsDraft,
 ) {
-    let selected = match output {
-        ShortcutOutput::Default => 0,
-        ShortcutOutput::Clipboard => 1,
-        ShortcutOutput::Script { .. } => 2,
+    let (selected, action) = match output {
+        ShortcutOutput::Default => (0, OutputAction::default()),
+        ShortcutOutput::Custom { action } => (1, action.clone()),
     };
-    let output_row = dropdown_row(
-        "Output",
-        &["Default", "Copy to clipboard", "Run script"],
-        selected,
-    );
-    let script_row = adw::EntryRow::builder()
-        .title("Script path")
-        .text(match output {
-            ShortcutOutput::Script { path } => path,
-            ShortcutOutput::Default | ShortcutOutput::Clipboard => "",
-        })
-        .sensitive(matches!(output, ShortcutOutput::Script { .. }))
-        .build();
-
+    let output_row = dropdown_row("Output", &["Default", "Custom"], selected);
+    let controls = OutputControls::new(&action, selected == 1);
     let shortcut_id_for_dropdown = shortcut_id.to_string();
     output_row.dropdown.connect_selected_notify({
         let draft = draft.clone();
-        let script_row = script_row.clone();
+        let controls = controls.clone();
         move |dropdown| {
-            let is_script = dropdown.selected() == 2;
-            script_row.set_sensitive(is_script);
+            let is_custom = dropdown.selected() == 1;
+            controls.set_all_sensitive(is_custom);
             draft.update_shortcut(&shortcut_id_for_dropdown, |shortcut| {
-                shortcut.output = match dropdown.selected() {
-                    1 => ShortcutOutput::Clipboard,
-                    2 => ShortcutOutput::Script {
-                        path: script_row.text().to_string(),
-                    },
-                    _ => ShortcutOutput::Default,
+                shortcut.output = if is_custom {
+                    ShortcutOutput::custom(controls.action_from_rows())
+                } else {
+                    ShortcutOutput::Default
                 };
             });
         }
     });
 
-    let shortcut_id_for_entry = shortcut_id.to_string();
-    script_row.connect_changed(move |row| {
-        draft.update_shortcut(&shortcut_id_for_entry, |shortcut| {
-            if matches!(shortcut.output, ShortcutOutput::Script { .. }) {
-                shortcut.output = ShortcutOutput::Script {
-                    path: row.text().to_string(),
-                };
-            }
-        });
+    let shortcut_id_for_copy = shortcut_id.to_string();
+    controls.copy_switch.connect_active_notify({
+        let draft = draft.clone();
+        move |switch| {
+            draft.update_shortcut(&shortcut_id_for_copy, |shortcut| {
+                if let ShortcutOutput::Custom { action } = &mut shortcut.output {
+                    action.copy_to_clipboard = switch.is_active();
+                }
+            });
+        }
     });
+
+    let shortcut_id_for_run = shortcut_id.to_string();
+    controls.run_script_switch.connect_active_notify({
+        let draft = draft.clone();
+        let controls = controls.clone();
+        move |switch| {
+            controls.set_script_sensitive(switch.is_active(), controls.is_custom_sensitive());
+            draft.update_shortcut(&shortcut_id_for_run, |shortcut| {
+                if let ShortcutOutput::Custom { action } = &mut shortcut.output {
+                    action.script = if switch.is_active() {
+                        Some(controls.script_from_rows())
+                    } else {
+                        None
+                    };
+                }
+            });
+        }
+    });
+
+    let shortcut_id_for_path = shortcut_id.to_string();
+    controls.script_row.connect_changed({
+        let draft = draft.clone();
+        move |row| {
+            draft.update_shortcut(&shortcut_id_for_path, |shortcut| {
+                if let ShortcutOutput::Custom { action } = &mut shortcut.output
+                    && let Some(script) = &mut action.script
+                {
+                    script.path = row.text().to_string();
+                }
+            });
+        }
+    });
+
+    let shortcut_id_for_stdout = shortcut_id.to_string();
+    controls
+        .copy_stdout_switch
+        .connect_active_notify(move |switch| {
+            draft.update_shortcut(&shortcut_id_for_stdout, |shortcut| {
+                if let ShortcutOutput::Custom { action } = &mut shortcut.output
+                    && let Some(script) = &mut action.script
+                {
+                    script.copy_stdout_to_clipboard = switch.is_active();
+                }
+            });
+        });
+
     group.add(&output_row.row);
-    group.add(&script_row);
+    controls.add_to_group(group);
+}
+
+#[derive(Clone)]
+struct OutputControls {
+    copy_row: adw::ActionRow,
+    copy_switch: gtk::Switch,
+    run_script_row: adw::ActionRow,
+    run_script_switch: gtk::Switch,
+    script_row: adw::EntryRow,
+    copy_stdout_row: adw::ActionRow,
+    copy_stdout_switch: gtk::Switch,
+}
+
+impl OutputControls {
+    fn new(output: &OutputAction, custom_sensitive: bool) -> Self {
+        let copy_switch = gtk::Switch::builder()
+            .active(output.copy_to_clipboard)
+            .valign(gtk::Align::Center)
+            .sensitive(custom_sensitive)
+            .build();
+        let copy_row = adw::ActionRow::builder()
+            .title("Copy to clipboard")
+            .sensitive(custom_sensitive)
+            .build();
+        copy_row.add_suffix(&copy_switch);
+        copy_row.set_activatable_widget(Some(&copy_switch));
+
+        let script = output.script.as_ref();
+        let has_script = script.is_some();
+        let run_script_switch = gtk::Switch::builder()
+            .active(has_script)
+            .valign(gtk::Align::Center)
+            .sensitive(custom_sensitive)
+            .build();
+        let run_script_row = adw::ActionRow::builder()
+            .title("Run script")
+            .sensitive(custom_sensitive)
+            .build();
+        run_script_row.add_suffix(&run_script_switch);
+        run_script_row.set_activatable_widget(Some(&run_script_switch));
+
+        let script_row = adw::EntryRow::builder()
+            .title("Script path")
+            .text(script.map(|script| script.path.as_str()).unwrap_or(""))
+            .sensitive(custom_sensitive && has_script)
+            .build();
+
+        let copy_stdout_switch = gtk::Switch::builder()
+            .active(script.is_some_and(|script| script.copy_stdout_to_clipboard))
+            .valign(gtk::Align::Center)
+            .sensitive(custom_sensitive && has_script)
+            .build();
+        let copy_stdout_row = adw::ActionRow::builder()
+            .title("Copy script output to clipboard")
+            .sensitive(custom_sensitive && has_script)
+            .build();
+        copy_stdout_row.add_suffix(&copy_stdout_switch);
+        copy_stdout_row.set_activatable_widget(Some(&copy_stdout_switch));
+
+        Self {
+            copy_row,
+            copy_switch,
+            run_script_row,
+            run_script_switch,
+            script_row,
+            copy_stdout_row,
+            copy_stdout_switch,
+        }
+    }
+
+    fn add_to_group(&self, group: &adw::PreferencesGroup) {
+        group.add(&self.copy_row);
+        group.add(&self.run_script_row);
+        group.add(&self.script_row);
+        group.add(&self.copy_stdout_row);
+    }
+
+    fn action_from_rows(&self) -> OutputAction {
+        OutputAction {
+            copy_to_clipboard: self.copy_switch.is_active(),
+            script: self
+                .run_script_switch
+                .is_active()
+                .then(|| self.script_from_rows()),
+        }
+    }
+
+    fn script_from_rows(&self) -> ScriptOutput {
+        ScriptOutput {
+            path: self.script_row.text().to_string(),
+            copy_stdout_to_clipboard: self.copy_stdout_switch.is_active(),
+        }
+    }
+
+    fn set_all_sensitive(&self, sensitive: bool) {
+        self.copy_row.set_sensitive(sensitive);
+        self.copy_switch.set_sensitive(sensitive);
+        self.run_script_row.set_sensitive(sensitive);
+        self.run_script_switch.set_sensitive(sensitive);
+        self.set_script_sensitive(self.run_script_switch.is_active(), sensitive);
+    }
+
+    fn set_script_sensitive(&self, has_script: bool, parent_sensitive: bool) {
+        let sensitive = parent_sensitive && has_script;
+        self.script_row.set_sensitive(sensitive);
+        self.copy_stdout_row.set_sensitive(sensitive);
+        self.copy_stdout_switch.set_sensitive(sensitive);
+    }
+
+    fn is_custom_sensitive(&self) -> bool {
+        self.copy_row.is_sensitive()
+    }
 }

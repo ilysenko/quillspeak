@@ -14,13 +14,13 @@ pub use language::{
     AUTO_LANGUAGE_VALUE, SUPPORTED_LANGUAGES, SupportedLanguage, supported_language_label,
 };
 pub use model::{DEFAULT_MODEL_ID, MODEL_CATALOG, ModelCatalogEntry, model_catalog_entry};
-pub use output::{OutputAction, ResolvedOutput, ShortcutOutput};
+pub use output::{OutputAction, ResolvedOutput, ScriptOutput, ShortcutOutput};
 pub use shortcut::{
-    DEFAULT_SHORTCUT_ID, DEFAULT_SHORTCUT_NAME, ShortcutChord, ShortcutKey, ShortcutModifiers,
-    ShortcutProfile, next_shortcut_id, normalize_accelerator,
+    DEFAULT_SHORTCUT_ID, DEFAULT_SHORTCUT_NAME, LinuxSignalName, ShortcutChord, ShortcutKey,
+    ShortcutModifiers, ShortcutProfile, ShortcutTrigger, next_shortcut_id, normalize_accelerator,
 };
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 4;
+pub const CONFIG_SCHEMA_VERSION: u32 = 5;
 pub const INHERIT_VALUE: &str = "default";
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -37,6 +37,8 @@ pub enum ConfigError {
     UnsupportedShortcutKey(String),
     #[error("duplicate shortcut: {0}")]
     DuplicateShortcut(String),
+    #[error("duplicate linux signal trigger: {0}")]
+    DuplicateSignal(String),
     #[error("duplicate shortcut id: {0}")]
     DuplicateShortcutId(String),
     #[error("missing default shortcut profile")]
@@ -192,7 +194,7 @@ impl Default for GeneralConfig {
             default_language: AUTO_LANGUAGE_VALUE.to_string(),
             compute_backend: ComputeBackend::Auto,
             keep_model_loaded: true,
-            default_output: OutputAction::Clipboard,
+            default_output: OutputAction::default(),
         }
     }
 }
@@ -212,7 +214,8 @@ impl AppConfig {
         }
 
         let mut ids = HashSet::new();
-        let mut accelerators = HashSet::new();
+        let mut keyboard_accelerators = HashSet::new();
+        let mut linux_signals = HashSet::new();
         let mut default_count = 0;
         for shortcut in &self.shortcuts {
             if shortcut.id == DEFAULT_SHORTCUT_ID {
@@ -222,9 +225,25 @@ impl AppConfig {
                 return Err(ConfigError::DuplicateShortcutId(shortcut.id.clone()));
             }
             if shortcut.enabled {
-                let normalized = normalize_accelerator(&shortcut.accelerator)?;
-                if !accelerators.insert(normalized.clone()) {
-                    return Err(ConfigError::DuplicateShortcut(normalized));
+                match &shortcut.trigger {
+                    ShortcutTrigger::Keyboard { accelerator } => {
+                        let normalized = normalize_accelerator(accelerator)?;
+                        if !keyboard_accelerators.insert(normalized.clone()) {
+                            return Err(ConfigError::DuplicateShortcut(normalized));
+                        }
+                    }
+                    ShortcutTrigger::LinuxSignal {
+                        start_signal,
+                        stop_signal,
+                    } => {
+                        for signal in unique_shortcut_signals(*start_signal, *stop_signal) {
+                            if !linux_signals.insert(signal) {
+                                return Err(ConfigError::DuplicateSignal(
+                                    signal.as_str().to_string(),
+                                ));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -266,7 +285,17 @@ impl AppConfig {
     pub fn enabled_shortcuts(&self) -> impl Iterator<Item = &ShortcutProfile> {
         self.shortcuts
             .iter()
-            .filter(|shortcut| shortcut.enabled && !shortcut.accelerator.trim().is_empty())
+            .filter(|shortcut| shortcut.enabled && shortcut.trigger.is_configured())
+    }
+
+    pub fn enabled_keyboard_shortcuts(&self) -> impl Iterator<Item = &ShortcutProfile> {
+        self.shortcuts.iter().filter(|shortcut| {
+            shortcut.enabled
+                && shortcut
+                    .trigger
+                    .keyboard_accelerator()
+                    .is_some_and(|accelerator| !accelerator.trim().is_empty())
+        })
     }
 
     pub fn resolved_model_id<'a>(&'a self, shortcut: &'a ShortcutProfile) -> &'a str {
@@ -288,9 +317,19 @@ impl AppConfig {
     pub fn resolved_output<'a>(&'a self, shortcut: &'a ShortcutProfile) -> ResolvedOutput<'a> {
         match &shortcut.output {
             ShortcutOutput::Default => ResolvedOutput::General(&self.general.default_output),
-            ShortcutOutput::Clipboard => ResolvedOutput::Clipboard,
-            ShortcutOutput::Script { path } => ResolvedOutput::Script(path),
+            ShortcutOutput::Custom { action } => ResolvedOutput::Custom(action),
         }
+    }
+}
+
+fn unique_shortcut_signals(
+    start_signal: LinuxSignalName,
+    stop_signal: LinuxSignalName,
+) -> Vec<LinuxSignalName> {
+    if start_signal == stop_signal {
+        vec![start_signal]
+    } else {
+        vec![start_signal, stop_signal]
     }
 }
 
@@ -401,7 +440,7 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_schema_without_default_input() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 4
+schema_version = 5
 
 [general]
 mode = "push_to_talk"
@@ -410,13 +449,13 @@ default_model_id = "large-v3-turbo-q5_0"
 default_language = "auto"
 compute_backend = "auto"
 keep_model_loaded = true
-default_output = { type = "clipboard" }
+default_output = { copy_to_clipboard = true }
 
 [[shortcuts]]
 id = "default"
 name = "Default"
 enabled = true
-accelerator = "Ctrl+Alt+Space"
+trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
 model_id = "default"
 language = "default"
 output = { type = "default" }
@@ -430,7 +469,7 @@ output = { type = "default" }
     fn rejects_schema_without_keep_model_loaded() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 4
+schema_version = 5
 
 [general]
 mode = "push_to_talk"
@@ -439,13 +478,13 @@ default_input = { type = "system_default" }
 default_model_id = "large-v3-turbo-q5_0"
 default_language = "auto"
 compute_backend = "auto"
-default_output = { type = "clipboard" }
+default_output = { copy_to_clipboard = true }
 
 [[shortcuts]]
 id = "default"
 name = "Default"
 enabled = true
-accelerator = "Ctrl+Alt+Space"
+trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
 model_id = "default"
 language = "default"
 output = { type = "default" }
@@ -506,7 +545,9 @@ output = { type = "default" }
     #[test]
     fn disabled_shortcut_can_have_empty_accelerator() {
         let mut config = AppConfig::default();
-        config.shortcuts[0].accelerator.clear();
+        config.shortcuts[0].trigger = ShortcutTrigger::Keyboard {
+            accelerator: String::new(),
+        };
         config.shortcuts[0].enabled = false;
 
         let normalized = config
@@ -514,7 +555,10 @@ output = { type = "default" }
             .expect("disabled empty shortcut is valid");
 
         assert!(!normalized.default_shortcut().enabled);
-        assert_eq!(normalized.default_shortcut().accelerator, "");
+        assert_eq!(
+            normalized.default_shortcut().trigger.keyboard_accelerator(),
+            Some("")
+        );
     }
 
     #[test]
@@ -524,7 +568,7 @@ output = { type = "default" }
             id: "second".to_string(),
             name: "Second".to_string(),
             enabled: true,
-            accelerator: config.default_shortcut().accelerator.clone(),
+            trigger: config.default_shortcut().trigger.clone(),
             model_id: INHERIT_VALUE.to_string(),
             language: INHERIT_VALUE.to_string(),
             output: ShortcutOutput::Default,
@@ -552,11 +596,67 @@ output = { type = "default" }
     #[test]
     fn rejects_empty_script_path() {
         let mut config = AppConfig::default();
-        config.shortcuts[0].output = ShortcutOutput::Script {
-            path: String::new(),
-        };
+        config.shortcuts[0].output = ShortcutOutput::custom(OutputAction::script(String::new()));
 
         assert_eq!(config.normalized(), Err(ConfigError::EmptyScriptPath));
+    }
+
+    #[test]
+    fn normalizes_linux_signal_aliases() {
+        let trigger = toml::from_str::<ShortcutTrigger>(
+            r#"
+type = "linux_signal"
+start_signal = "usr1"
+stop_signal = "SIGUSR2"
+"#,
+        )
+        .expect("signal trigger should decode");
+
+        assert_eq!(
+            trigger,
+            ShortcutTrigger::LinuxSignal {
+                start_signal: LinuxSignalName::SigUsr1,
+                stop_signal: LinuxSignalName::SigUsr2,
+            }
+        );
+    }
+
+    #[test]
+    fn duplicate_linux_signals_across_shortcuts_are_rejected() {
+        let mut config = AppConfig::default();
+        config.shortcuts[0].trigger = ShortcutTrigger::default_linux_signal();
+        config.shortcuts.push(ShortcutProfile {
+            id: "second".to_string(),
+            name: "Second".to_string(),
+            enabled: true,
+            trigger: ShortcutTrigger::default_linux_signal(),
+            model_id: INHERIT_VALUE.to_string(),
+            language: INHERIT_VALUE.to_string(),
+            output: ShortcutOutput::Default,
+        });
+
+        assert_eq!(
+            config.normalized(),
+            Err(ConfigError::DuplicateSignal("SIGUSR2".to_string()))
+        );
+    }
+
+    #[test]
+    fn same_start_stop_signal_inside_one_shortcut_is_valid_toggle() {
+        let mut config = AppConfig::default();
+        config.shortcuts[0].trigger = ShortcutTrigger::default_linux_signal();
+
+        let normalized = config
+            .normalized()
+            .expect("same signal on one shortcut should be a valid toggle");
+
+        assert!(matches!(
+            normalized.default_shortcut().trigger,
+            ShortcutTrigger::LinuxSignal {
+                start_signal: LinuxSignalName::SigUsr2,
+                stop_signal: LinuxSignalName::SigUsr2,
+            }
+        ));
     }
 
     #[test]

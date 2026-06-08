@@ -4,13 +4,16 @@ use std::rc::Rc;
 use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use shared::{DEFAULT_SHORTCUT_ID, MODEL_CATALOG, ShortcutProfile, model_catalog_entry};
+use shared::{
+    DEFAULT_SHORTCUT_ID, LinuxSignalName, MODEL_CATALOG, ShortcutProfile, ShortcutTrigger,
+    model_catalog_entry,
+};
 
 use crate::settings::SettingsDraft;
 use crate::settings::pages::output_controls::add_shortcut_output_controls;
 use crate::settings::shortcut_recorder::connect_record_button;
 use crate::settings::widgets::{
-    language_dropdown_row, preferences_page, shortcut_model_dropdown_row,
+    dropdown_row, language_dropdown_row, preferences_page, shortcut_model_dropdown_row,
 };
 
 pub fn build(
@@ -39,17 +42,28 @@ pub fn build(
     });
     group.add(&name_row);
 
+    let trigger_is_keyboard = matches!(shortcut.trigger, ShortcutTrigger::Keyboard { .. });
+    let trigger = dropdown_row(
+        "Trigger",
+        &["Keyboard shortcut", "Linux signal"],
+        if trigger_is_keyboard { 0 } else { 1 },
+    );
+    group.add(&trigger.row);
+
     let shortcut_entry = adw::EntryRow::builder()
         .title("Shortcut")
-        .text(&shortcut.accelerator)
+        .text(shortcut_keyboard_accelerator(shortcut))
+        .visible(trigger_is_keyboard)
         .build();
     shortcut_entry.connect_changed({
         let draft = draft.clone();
         let shortcut_id = shortcut_id.clone();
         move |row| {
             draft.update_shortcut(&shortcut_id, |shortcut| {
-                shortcut.accelerator = row.text().to_string();
-                shortcut.enabled = !shortcut.accelerator.trim().is_empty();
+                shortcut.trigger = ShortcutTrigger::Keyboard {
+                    accelerator: row.text().to_string(),
+                };
+                shortcut.enabled = !row.text().trim().is_empty();
             });
         }
     });
@@ -61,6 +75,73 @@ pub fn build(
     shortcut_entry.add_suffix(&record_button);
     connect_record_button(&record_button, &shortcut_entry);
     group.add(&shortcut_entry);
+
+    let (start_signal, stop_signal) = shortcut_signal_pair(shortcut);
+    let start_signal_row = signal_dropdown_row("Start signal", start_signal, !trigger_is_keyboard);
+    let stop_signal_row = signal_dropdown_row("Stop signal", stop_signal, !trigger_is_keyboard);
+    start_signal_row.dropdown.connect_selected_notify({
+        let draft = draft.clone();
+        let shortcut_id = shortcut_id.clone();
+        let stop_signal_row = stop_signal_row.clone();
+        move |dropdown| {
+            draft.update_shortcut(&shortcut_id, |shortcut| {
+                shortcut.trigger = ShortcutTrigger::LinuxSignal {
+                    start_signal: signal_from_index(dropdown.selected()),
+                    stop_signal: signal_from_index(stop_signal_row.dropdown.selected()),
+                };
+                shortcut.enabled = true;
+            });
+        }
+    });
+    stop_signal_row.dropdown.connect_selected_notify({
+        let draft = draft.clone();
+        let shortcut_id = shortcut_id.clone();
+        let start_signal_row = start_signal_row.clone();
+        move |dropdown| {
+            draft.update_shortcut(&shortcut_id, |shortcut| {
+                shortcut.trigger = ShortcutTrigger::LinuxSignal {
+                    start_signal: signal_from_index(start_signal_row.dropdown.selected()),
+                    stop_signal: signal_from_index(dropdown.selected()),
+                };
+                shortcut.enabled = true;
+            });
+        }
+    });
+    group.add(&start_signal_row.row);
+    group.add(&stop_signal_row.row);
+
+    trigger.dropdown.connect_selected_notify({
+        let draft = draft.clone();
+        let shortcut_id = shortcut_id.clone();
+        let shortcut_entry = shortcut_entry.clone();
+        let start_signal_row = start_signal_row.clone();
+        let stop_signal_row = stop_signal_row.clone();
+        move |dropdown| {
+            let is_keyboard = dropdown.selected() == 0;
+            shortcut_entry.set_visible(is_keyboard);
+            start_signal_row.row.set_visible(!is_keyboard);
+            stop_signal_row.row.set_visible(!is_keyboard);
+            if !is_keyboard {
+                start_signal_row
+                    .dropdown
+                    .set_selected(signal_index(LinuxSignalName::SigUsr2));
+                stop_signal_row
+                    .dropdown
+                    .set_selected(signal_index(LinuxSignalName::SigUsr2));
+            }
+            draft.update_shortcut(&shortcut_id, |shortcut| {
+                shortcut.trigger = if is_keyboard {
+                    ShortcutTrigger::Keyboard {
+                        accelerator: shortcut_entry.text().to_string(),
+                    }
+                } else {
+                    ShortcutTrigger::default_linux_signal()
+                };
+                shortcut.enabled =
+                    !is_keyboard || !shortcut_entry.text().to_string().trim().is_empty();
+            });
+        }
+    });
 
     let ready_entries = MODEL_CATALOG
         .iter()
@@ -123,4 +204,49 @@ pub fn build(
 
     page.add(&group);
     page
+}
+
+fn shortcut_keyboard_accelerator(shortcut: &ShortcutProfile) -> &str {
+    shortcut
+        .trigger
+        .keyboard_accelerator()
+        .unwrap_or(if shortcut.id == DEFAULT_SHORTCUT_ID {
+            "Ctrl+Alt+Space"
+        } else {
+            ""
+        })
+}
+
+fn shortcut_signal_pair(shortcut: &ShortcutProfile) -> (LinuxSignalName, LinuxSignalName) {
+    match &shortcut.trigger {
+        ShortcutTrigger::LinuxSignal {
+            start_signal,
+            stop_signal,
+        } => (*start_signal, *stop_signal),
+        ShortcutTrigger::Keyboard { .. } => (LinuxSignalName::SigUsr2, LinuxSignalName::SigUsr2),
+    }
+}
+
+fn signal_dropdown_row(
+    title: &str,
+    selected: LinuxSignalName,
+    visible: bool,
+) -> crate::settings::widgets::DropDownRow {
+    let row = dropdown_row(title, &["SIGUSR1", "SIGUSR2"], signal_index(selected));
+    row.row.set_visible(visible);
+    row
+}
+
+fn signal_index(signal: LinuxSignalName) -> u32 {
+    match signal {
+        LinuxSignalName::SigUsr1 => 0,
+        LinuxSignalName::SigUsr2 => 1,
+    }
+}
+
+fn signal_from_index(index: u32) -> LinuxSignalName {
+    match index {
+        0 => LinuxSignalName::SigUsr1,
+        _ => LinuxSignalName::SigUsr2,
+    }
 }

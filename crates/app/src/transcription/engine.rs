@@ -389,12 +389,12 @@ impl WhisperEngine {
             },
         };
 
-        info!(
+        debug!(
             shortcut_id = %request.shortcut_id,
             model_id = %result.debug.model_id,
             language = %result.debug.language,
             text = %result.text,
-            "recognized text"
+            "recognized text from whisper engine"
         );
         if result.text.is_empty() {
             warn!(
@@ -515,7 +515,7 @@ mod tests {
             model_path: model_path.clone(),
             language: "auto".to_string(),
             compute_backend: ComputeBackend::Auto,
-            output: OutputAction::Clipboard,
+            output: OutputAction::default(),
             audio: CapturedAudio {
                 samples: prepared.samples.clone(),
                 sample_rate: prepared.sample_rate,
@@ -634,7 +634,7 @@ mod tests {
             model_path,
             language: "auto".to_string(),
             compute_backend: ComputeBackend::Auto,
-            output: OutputAction::Clipboard,
+            output: OutputAction::default(),
             audio: CapturedAudio {
                 samples: prepared.samples,
                 sample_rate: prepared.sample_rate,

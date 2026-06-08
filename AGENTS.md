@@ -23,12 +23,12 @@ The current prototype includes:
 - whisper.cpp model catalog and download management,
 - CPAL microphone capture from the configured default input,
 - whisper-rs/whisper.cpp transcription on downloaded ggml models,
-- placeholder output actions that only log clipboard/script behavior.
+- real GTK/GDK clipboard output and script output actions.
 
 Do not add Electron or Tauri. Do not require the daemon for main app startup.
-Do not require sudo for the main app. Do not implement clipboard insertion,
-script execution, text insertion, XDG portal shortcuts, Flatpak packaging, or
-`.deb` packaging unless explicitly requested.
+Do not require sudo for the main app. Do not implement text insertion, XDG
+portal shortcuts, Flatpak packaging, or `.deb` packaging unless explicitly
+requested.
 
 ## Workspace
 
@@ -572,8 +572,8 @@ testing only. The main app must not depend on it.
 - Do not block the GTK main thread with network, hashing, filesystem-heavy
   work, model loading, audio capture, or Whisper inference.
 - Use XDG/directories helpers instead of hardcoded user paths.
-- Keep incomplete output integrations honest: log what clipboard/script/text
-  insertion would do, but do not pretend those integrations are complete.
+- Keep incomplete output integrations honest: clipboard and script output are
+  real, but text insertion is still not implemented.
 - Treat existing user changes as intentional. Do not revert unrelated work.
 - During this development phase, do not preserve legacy config compatibility
   unless the user explicitly asks for it.
@@ -600,8 +600,6 @@ Possible later additions, only when requested:
 - robust packaged evdev permissions through udev/logind/service integration,
 - production-grade audio buffering/resampling,
 - streaming/VAD transcription,
-- clipboard insertion,
-- script execution with recognized text,
 - text insertion into the focused app,
 - Flatpak packaging for the main app,
 - `.deb` packaging for the daemon.

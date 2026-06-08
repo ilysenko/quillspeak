@@ -47,10 +47,7 @@ pub fn build_transcription_plan(
 fn resolved_output_action(output: ResolvedOutput<'_>) -> OutputAction {
     match output {
         ResolvedOutput::General(action) => action.clone(),
-        ResolvedOutput::Clipboard => OutputAction::Clipboard,
-        ResolvedOutput::Script(path) => OutputAction::Script {
-            path: path.to_string(),
-        },
+        ResolvedOutput::Custom(action) => action.clone(),
     }
 }
 

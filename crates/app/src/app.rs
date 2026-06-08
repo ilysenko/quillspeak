@@ -10,7 +10,10 @@ use gtk::gio;
 use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use shared::{APP_ID, AppConfig, DEFAULT_SHORTCUT_ID, DaemonStatus, ShortcutRuntimeConfig};
+use shared::{
+    APP_ID, AppConfig, DEFAULT_SHORTCUT_ID, DaemonStatus, LinuxSignalName, ShortcutRuntimeConfig,
+    ShortcutTrigger,
+};
 use tracing::{debug, error, info, warn};
 
 use crate::audio::{AudioInputDevice, list_input_devices};
@@ -23,12 +26,15 @@ use crate::hotkey::{
     HotkeyBackendHandle, backend_name_for_config, configure_hotkey_backend, resolve_backend_kind,
 };
 use crate::models::{FinishEffect, ModelDownloadManager, ModelRowState, ModelStore};
-use crate::output::OutputService;
+use crate::output::{
+    ClipboardCopySource, OutputScriptResult, OutputService, copy_text_to_clipboard,
+};
 use crate::recording::{RecordingPhase, RecordingPipeline, RecordingService};
 use crate::settings::SettingsWindow;
+use crate::signal_trigger::SignalTriggerService;
 use crate::transcription::{
     CompiledWhisperBackends, TranscriptionRequest, TranscriptionResult, TranscriptionService,
-    build_transcription_plan,
+    TranscriptionStatus, build_transcription_plan,
 };
 use crate::tray::Tray;
 
@@ -72,6 +78,7 @@ struct AppRuntime {
     audio_input_devices: RefCell<Vec<AudioInputDevice>>,
     recording_pipeline: RefCell<Option<RecordingPipeline>>,
     transcription_service: TranscriptionService,
+    output_service: RefCell<Option<OutputService>>,
     config: RefCell<AppConfig>,
     daemon_client_worker: RefCell<Option<DaemonClientWorker>>,
     daemon_status: Cell<DaemonStatus>,
@@ -82,8 +89,16 @@ struct AppRuntime {
     settings_window: RefCell<Option<SettingsWindow>>,
     tray: RefCell<Option<Tray>>,
     hotkey_backend: RefCell<Option<HotkeyBackendHandle>>,
+    signal_trigger_service: RefCell<Option<SignalTriggerService>>,
     dbus_handle: RefCell<Option<AppDbusHandle>>,
     daemon_monitor: RefCell<Option<DaemonMonitorHandle>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LinuxSignalAction {
+    Toggle(String),
+    Start(String),
+    Stop(String),
 }
 
 impl AppRuntime {
@@ -109,6 +124,7 @@ impl AppRuntime {
         let transcription_service =
             TranscriptionService::spawn(command_tx.clone(), config.general.keep_model_loaded)?;
         let recording_pipeline = RecordingPipeline::spawn(command_tx.clone())?;
+        let output_service = OutputService::spawn(command_tx.clone())?;
 
         let daemon_status = DaemonStatus::NotInstalled;
         let hotkey_backend = configure_hotkey_backend(command_tx.clone(), &config);
@@ -125,6 +141,7 @@ impl AppRuntime {
         };
 
         let daemon_monitor = DaemonMonitorHandle::spawn(command_tx.clone(), DaemonClient);
+        let signal_trigger_service = SignalTriggerService::spawn(command_tx.clone())?;
         install_ctrl_c_handler(command_tx.clone());
 
         let runtime = Rc::new(Self {
@@ -137,6 +154,7 @@ impl AppRuntime {
             audio_input_devices: RefCell::new(audio_input_devices),
             recording_pipeline: RefCell::new(Some(recording_pipeline)),
             transcription_service,
+            output_service: RefCell::new(Some(output_service)),
             config: RefCell::new(config),
             daemon_client_worker: RefCell::new(Some(daemon_client_worker)),
             daemon_status: Cell::new(daemon_status),
@@ -147,6 +165,7 @@ impl AppRuntime {
             settings_window: RefCell::new(None),
             tray: RefCell::new(tray),
             hotkey_backend: RefCell::new(hotkey_backend),
+            signal_trigger_service: RefCell::new(Some(signal_trigger_service)),
             dbus_handle: RefCell::new(Some(dbus_handle)),
             daemon_monitor: RefCell::new(Some(daemon_monitor)),
         });
@@ -177,6 +196,7 @@ impl AppRuntime {
         match command {
             AppCommand::ShowSettings => self.show_settings(),
             AppCommand::ToggleRecording => self.toggle_recording(),
+            AppCommand::LinuxSignalReceived(signal) => self.handle_linux_signal(signal),
             AppCommand::StartRecording(shortcut_id) => self.start_recording(&shortcut_id),
             AppCommand::StopRecording(shortcut_id) => self.stop_recording(&shortcut_id),
             AppCommand::AudioCaptureStarted {
@@ -208,6 +228,10 @@ impl AppRuntime {
                 result,
             } => self.finish_transcription(recording_id, &shortcut_id, result),
             AppCommand::RefreshTrayRecordingPhase => self.force_refresh_recording_phase(),
+            AppCommand::OutputScriptFinished {
+                shortcut_id,
+                result,
+            } => self.finish_output_script(&shortcut_id, result),
             AppCommand::AudioInputDevicesRefreshed(devices) => {
                 self.update_audio_input_devices(devices)
             }
@@ -240,15 +264,53 @@ impl AppRuntime {
     }
 
     fn toggle_recording(&self) {
+        self.toggle_recording_for(DEFAULT_SHORTCUT_ID);
+    }
+
+    fn toggle_recording_for(&self, shortcut_id: &str) {
         let phase = self.recording.borrow().phase();
         match phase {
-            RecordingPhase::Idle => self.start_recording(DEFAULT_SHORTCUT_ID),
-            RecordingPhase::Arming => self.stop_recording(DEFAULT_SHORTCUT_ID),
-            RecordingPhase::Recording => self.stop_recording(DEFAULT_SHORTCUT_ID),
+            RecordingPhase::Idle => self.start_recording(shortcut_id),
+            RecordingPhase::Arming | RecordingPhase::Recording
+                if self.recording.borrow().active_shortcut_id() == Some(shortcut_id) =>
+            {
+                self.stop_recording(shortcut_id);
+            }
+            RecordingPhase::Arming | RecordingPhase::Recording => {
+                info!(
+                    requested_shortcut_id = shortcut_id,
+                    active_shortcut_id = self
+                        .recording
+                        .borrow()
+                        .active_shortcut_id()
+                        .unwrap_or("unknown"),
+                    "Recording toggle ignored for inactive shortcut"
+                );
+            }
             RecordingPhase::Processing => {
                 info!("Recording toggle ignored while processing audio");
             }
         }
+    }
+
+    fn handle_linux_signal(&self, signal: LinuxSignalName) {
+        let Some(action) = self.linux_signal_action(signal) else {
+            debug!(
+                signal = signal.as_str(),
+                "Linux signal trigger did not match any enabled shortcut"
+            );
+            return;
+        };
+
+        match action {
+            LinuxSignalAction::Toggle(shortcut_id) => self.toggle_recording_for(&shortcut_id),
+            LinuxSignalAction::Start(shortcut_id) => self.start_recording(&shortcut_id),
+            LinuxSignalAction::Stop(shortcut_id) => self.stop_recording(&shortcut_id),
+        }
+    }
+
+    fn linux_signal_action(&self, signal: LinuxSignalName) -> Option<LinuxSignalAction> {
+        linux_signal_action_for_config(&self.config.borrow(), signal)
     }
 
     fn start_recording(&self, shortcut_id: &str) {
@@ -434,12 +496,49 @@ impl AppRuntime {
         self.set_recording_phase(phase);
 
         if let Ok(result) = &result {
+            log_recognized_text(shortcut_id, result);
             self.apply_transcription_output(shortcut_id, result);
         }
     }
 
     fn apply_transcription_output(&self, shortcut_id: &str, result: &TranscriptionResult) {
-        OutputService::apply(shortcut_id, result);
+        if let Some(output_service) = self.output_service.borrow().as_ref() {
+            output_service.apply(shortcut_id, result);
+        }
+    }
+
+    fn finish_output_script(
+        &self,
+        shortcut_id: &str,
+        result: std::result::Result<OutputScriptResult, String>,
+    ) {
+        match result {
+            Ok(result) => {
+                info!(
+                    shortcut_id,
+                    script = %result.script_path,
+                    copy_stdout_to_clipboard = result.clipboard_text.is_some(),
+                    "output script finished"
+                );
+                if let Some(text) = result.clipboard_text
+                    && let Err(error) = copy_text_to_clipboard(
+                        &text,
+                        ClipboardCopySource::ScriptStdout {
+                            shortcut_id: shortcut_id.to_string(),
+                            script_path: result.script_path.clone(),
+                        },
+                    )
+                {
+                    warn!(
+                        ?error,
+                        shortcut_id,
+                        script = %result.script_path,
+                        "failed to queue output script stdout clipboard copy"
+                    );
+                }
+            }
+            Err(error) => warn!(shortcut_id, error, "output script failed"),
+        }
     }
 
     fn set_recording_phase(&self, phase: RecordingPhase) {
@@ -823,6 +922,12 @@ impl AppRuntime {
         if let Some(pipeline) = self.recording_pipeline.borrow_mut().take() {
             pipeline.shutdown();
         }
+        if let Some(output_service) = self.output_service.borrow_mut().take() {
+            output_service.shutdown();
+        }
+        if let Some(signal_trigger_service) = self.signal_trigger_service.borrow_mut().take() {
+            signal_trigger_service.shutdown();
+        }
         self.hotkey_backend.borrow_mut().take();
         self.daemon_monitor.borrow_mut().take();
         if let Some(worker) = self.daemon_client_worker.borrow_mut().take() {
@@ -837,9 +942,10 @@ impl AppRuntime {
     fn log_startup_state(&self) {
         let config = self.config.borrow();
         let whisper_backends = CompiledWhisperBackends::current();
+        let default_trigger = trigger_summary(&config.default_shortcut().trigger);
         info!(
             config_path = %self.config_store.path().display(),
-            shortcut = %config.default_shortcut().accelerator,
+            shortcut_trigger = %default_trigger,
             shortcut_count = config.shortcuts.len(),
             mode = %config.general.mode.as_str(),
             backend = %backend_name_for_config(&config),
@@ -870,10 +976,120 @@ fn daemon_runtime_config_for(config: &AppConfig) -> ShortcutRuntimeConfig {
     ShortcutRuntimeConfig::for_daemon(config, resolve_backend_kind(config.general.hotkey_backend))
 }
 
+fn trigger_summary(trigger: &ShortcutTrigger) -> String {
+    match trigger {
+        ShortcutTrigger::Keyboard { accelerator } => format!("keyboard:{accelerator}"),
+        ShortcutTrigger::LinuxSignal {
+            start_signal,
+            stop_signal,
+        } if start_signal == stop_signal => format!("signal:{}:toggle", start_signal.as_str()),
+        ShortcutTrigger::LinuxSignal {
+            start_signal,
+            stop_signal,
+        } => format!("signal:{}->{}", start_signal.as_str(), stop_signal.as_str()),
+    }
+}
+
+fn linux_signal_action_for_config(
+    config: &AppConfig,
+    signal: LinuxSignalName,
+) -> Option<LinuxSignalAction> {
+    for shortcut in &config.shortcuts {
+        if !shortcut.enabled {
+            continue;
+        }
+
+        let ShortcutTrigger::LinuxSignal {
+            start_signal,
+            stop_signal,
+        } = &shortcut.trigger
+        else {
+            continue;
+        };
+
+        if start_signal == stop_signal && signal == *start_signal {
+            return Some(LinuxSignalAction::Toggle(shortcut.id.clone()));
+        }
+        if signal == *start_signal {
+            return Some(LinuxSignalAction::Start(shortcut.id.clone()));
+        }
+        if signal == *stop_signal {
+            return Some(LinuxSignalAction::Stop(shortcut.id.clone()));
+        }
+    }
+
+    None
+}
+
+fn log_recognized_text(shortcut_id: &str, result: &TranscriptionResult) {
+    if !matches!(result.status, TranscriptionStatus::Completed) {
+        return;
+    }
+
+    let text = result.text.trim();
+    if text.is_empty() {
+        return;
+    }
+
+    info!(
+        shortcut_id,
+        model_id = %result.debug.model_id,
+        language = %result.debug.language,
+        text,
+        "recognized text"
+    );
+}
+
 fn install_ctrl_c_handler(command_tx: mpsc::Sender<AppCommand>) {
     if let Err(error) = ctrlc::set_handler(move || {
         let _ = command_tx.send(AppCommand::Quit);
     }) {
         warn!(?error, "failed to install Ctrl-C handler");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use shared::{LinuxSignalName, ShortcutTrigger};
+
+    use super::*;
+
+    #[test]
+    fn same_start_stop_linux_signal_toggles_shortcut() {
+        let mut config = AppConfig::default();
+        config.shortcuts[0].trigger = ShortcutTrigger::default_linux_signal();
+
+        assert_eq!(
+            linux_signal_action_for_config(&config, LinuxSignalName::SigUsr2),
+            Some(LinuxSignalAction::Toggle(DEFAULT_SHORTCUT_ID.to_string()))
+        );
+    }
+
+    #[test]
+    fn distinct_linux_signals_start_and_stop_shortcut() {
+        let mut config = AppConfig::default();
+        config.shortcuts[0].trigger = ShortcutTrigger::LinuxSignal {
+            start_signal: LinuxSignalName::SigUsr1,
+            stop_signal: LinuxSignalName::SigUsr2,
+        };
+
+        assert_eq!(
+            linux_signal_action_for_config(&config, LinuxSignalName::SigUsr1),
+            Some(LinuxSignalAction::Start(DEFAULT_SHORTCUT_ID.to_string()))
+        );
+        assert_eq!(
+            linux_signal_action_for_config(&config, LinuxSignalName::SigUsr2),
+            Some(LinuxSignalAction::Stop(DEFAULT_SHORTCUT_ID.to_string()))
+        );
+    }
+
+    #[test]
+    fn keyboard_shortcuts_ignore_linux_signals() {
+        let config = AppConfig::default();
+
+        assert_eq!(
+            linux_signal_action_for_config(&config, LinuxSignalName::SigUsr2),
+            None
+        );
     }
 }

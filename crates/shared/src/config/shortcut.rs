@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::output::ShortcutOutput;
 use super::{ConfigError, inherit_value, normalize_language_ref, normalize_model_ref};
@@ -12,7 +12,7 @@ pub struct ShortcutProfile {
     pub id: String,
     pub name: String,
     pub enabled: bool,
-    pub accelerator: String,
+    pub trigger: ShortcutTrigger,
     pub model_id: String,
     pub language: String,
     pub output: ShortcutOutput,
@@ -24,7 +24,7 @@ impl ShortcutProfile {
             id: DEFAULT_SHORTCUT_ID.to_string(),
             name: DEFAULT_SHORTCUT_NAME.to_string(),
             enabled: true,
-            accelerator: "Ctrl+Alt+Space".to_string(),
+            trigger: ShortcutTrigger::default_keyboard(),
             model_id: inherit_value(),
             language: inherit_value(),
             output: ShortcutOutput::Default,
@@ -36,7 +36,9 @@ impl ShortcutProfile {
             id,
             name,
             enabled: true,
-            accelerator: String::new(),
+            trigger: ShortcutTrigger::Keyboard {
+                accelerator: String::new(),
+            },
             model_id: inherit_value(),
             language: inherit_value(),
             output: ShortcutOutput::Default,
@@ -52,15 +54,109 @@ impl ShortcutProfile {
         if self.name.is_empty() {
             self.name = self.id.clone();
         }
-        if !self.enabled && self.accelerator.trim().is_empty() {
-            self.accelerator.clear();
-        } else {
-            self.accelerator = normalize_accelerator(&self.accelerator)?;
-        }
+        self.trigger = self.trigger.normalized(self.enabled)?;
         self.model_id = normalize_model_ref(&self.model_id)?;
         self.language = normalize_language_ref(&self.language, true)?;
         self.output.validate()?;
         Ok(self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ShortcutTrigger {
+    Keyboard {
+        accelerator: String,
+    },
+    LinuxSignal {
+        start_signal: LinuxSignalName,
+        stop_signal: LinuxSignalName,
+    },
+}
+
+impl ShortcutTrigger {
+    pub fn default_keyboard() -> Self {
+        Self::Keyboard {
+            accelerator: "Ctrl+Alt+Space".to_string(),
+        }
+    }
+
+    pub const fn default_linux_signal() -> Self {
+        Self::LinuxSignal {
+            start_signal: LinuxSignalName::SigUsr2,
+            stop_signal: LinuxSignalName::SigUsr2,
+        }
+    }
+
+    pub fn keyboard_accelerator(&self) -> Option<&str> {
+        match self {
+            Self::Keyboard { accelerator } => Some(accelerator),
+            Self::LinuxSignal { .. } => None,
+        }
+    }
+
+    pub fn is_configured(&self) -> bool {
+        match self {
+            Self::Keyboard { accelerator } => !accelerator.trim().is_empty(),
+            Self::LinuxSignal { .. } => true,
+        }
+    }
+
+    fn normalized(mut self, enabled: bool) -> Result<Self, ConfigError> {
+        if let Self::Keyboard { accelerator } = &mut self {
+            if !enabled && accelerator.trim().is_empty() {
+                accelerator.clear();
+            } else {
+                *accelerator = normalize_accelerator(accelerator)?;
+            }
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LinuxSignalName {
+    SigUsr1,
+    SigUsr2,
+}
+
+impl LinuxSignalName {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SigUsr1 => "SIGUSR1",
+            Self::SigUsr2 => "SIGUSR2",
+        }
+    }
+}
+
+impl Serialize for LinuxSignalName {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for LinuxSignalName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        parse_linux_signal_name(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+fn parse_linux_signal_name(input: &str) -> Result<LinuxSignalName, String> {
+    let mut value = input.trim().to_ascii_uppercase();
+    if let Some(rest) = value.strip_prefix("SIG") {
+        value = rest.to_string();
+    }
+    match value.as_str() {
+        "USR1" => Ok(LinuxSignalName::SigUsr1),
+        "USR2" => Ok(LinuxSignalName::SigUsr2),
+        _ => Err(format!("unsupported Linux signal: {input}")),
     }
 }
 

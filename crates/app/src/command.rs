@@ -1,6 +1,8 @@
 use shared::AppConfig;
 use shared::DaemonStatus;
+use shared::LinuxSignalName;
 
+use crate::output::OutputScriptResult;
 use crate::transcription::TranscriptionRequest;
 use crate::transcription::TranscriptionResult;
 
@@ -10,6 +12,7 @@ pub type DownloadId = u64;
 pub enum AppCommand {
     ShowSettings,
     ToggleRecording,
+    LinuxSignalReceived(LinuxSignalName),
     StartRecording(String),
     StopRecording(String),
     AudioCaptureStarted {
@@ -35,6 +38,10 @@ pub enum AppCommand {
         result: Result<Box<TranscriptionResult>, String>,
     },
     RefreshTrayRecordingPhase,
+    OutputScriptFinished {
+        shortcut_id: String,
+        result: Result<OutputScriptResult, String>,
+    },
     AudioInputDevicesRefreshed(Vec<crate::audio::AudioInputDevice>),
     SaveConfig(AppConfig),
     DownloadModel(String),

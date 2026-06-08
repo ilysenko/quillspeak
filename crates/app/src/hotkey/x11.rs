@@ -28,15 +28,18 @@ pub fn spawn(
     command_tx: mpsc::Sender<AppCommand>,
 ) -> Result<Option<X11ThreadHandle>> {
     let shortcuts = config
-        .enabled_shortcuts()
+        .enabled_keyboard_shortcuts()
         .map(|shortcut| {
-            let chord = ShortcutChord::parse(&shortcut.accelerator).with_context(|| {
-                format!("failed to parse X11 shortcut {}", shortcut.accelerator)
-            })?;
+            let accelerator = shortcut
+                .trigger
+                .keyboard_accelerator()
+                .expect("enabled_keyboard_shortcuts yields keyboard triggers");
+            let chord = ShortcutChord::parse(accelerator)
+                .with_context(|| format!("failed to parse X11 shortcut {accelerator}"))?;
             Ok(X11ShortcutConfig {
                 id: shortcut.id.clone(),
                 name: shortcut.name.clone(),
-                accelerator: shortcut.accelerator.clone(),
+                accelerator: accelerator.to_string(),
                 chord,
             })
         })

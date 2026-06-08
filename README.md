@@ -208,8 +208,11 @@ Models must be downloaded in Settings > Models before they can be used. If a
 shortcut points to a model that is not ready, recording stops with a clear log
 error and no hidden download starts during the hotkey flow.
 
-The first implementation only logs output actions. `Copy to clipboard` and
-`Run script` are not executed yet.
+Output actions are executed after successful transcription. The app can copy
+recognized text to the GTK clipboard and can run a configured script on a
+background worker thread. Clipboard writes are verified by reading the GTK
+clipboard back before logging success; if copy fails, the app logs the failure
+instead of reporting a successful copy.
 
 ## Configuration
 
@@ -222,7 +225,7 @@ The main app owns user settings and writes TOML to:
 Default config:
 
 ```toml
-schema_version = 4
+schema_version = 5
 
 [general]
 mode = "push_to_talk"
@@ -232,13 +235,13 @@ default_language = "auto"
 compute_backend = "auto"
 keep_model_loaded = true
 default_input = { type = "system_default" }
-default_output = { type = "clipboard" }
+default_output = { copy_to_clipboard = true }
 
 [[shortcuts]]
 id = "default"
 name = "Default"
 enabled = true
-accelerator = "Ctrl+Alt+Space"
+trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
 model_id = "default"
 language = "default"
 output = { type = "default" }
@@ -256,12 +259,8 @@ last-known cache at
 and still know the last configured shortcuts. The daemon validates that runtime
 cache schema before applying it; stale or invalid cache files are ignored and
 the app config wins the next time the app is available. During development only
-schema v4 is supported; invalid old configs/caches are errors or ignored with a
-warning, not migrated.
-
-If a local development config is from an older schema, remove
-`~/.config/myapp/config.toml` and restart the app to generate the current
-default config.
+the current schema is supported. If the app sees an older local config schema,
+it replaces it with a fresh default config instead of migrating it.
 
 Settings has `General`, `Models`, `Default`, and `Add New` pages. `Models`
 manages downloaded whisper.cpp ggml models under `~/.local/share/myapp/models`.
@@ -269,10 +268,27 @@ Shortcut pages choose only ready models, or `Default` to inherit the general
 model. Model downloads use `*.part`, progress updates, SHA-1 verification, and
 atomic rename.
 
-Each shortcut profile has its own shortcut, model override, language override,
-and output action. Output actions are `Copy to clipboard` or `Run script`;
-clipboard writing and script execution are still placeholders that log what
-would happen with the recognized text.
+Each shortcut profile has its own trigger, model override, language override,
+and output pipeline. Triggers can be keyboard shortcuts or Linux signals.
+Linux signal triggers accept `SIGUSR1` and `SIGUSR2`; using the same signal for
+start and stop makes that signal a toggle. The Handy-compatible default when
+switching a shortcut to Linux signals is `SIGUSR2` for both start and stop.
+
+Signal examples:
+
+```sh
+pkill -USR2 -x myapp
+pkill -USR1 -x myapp
+```
+
+Output can copy the transcript to clipboard, run a script with the transcript
+as its first argument, and optionally copy successful script stdout to
+clipboard.
+
+If transcription logs recognized text but another application cannot paste it,
+check the MyApp logs for `Copied text to clipboard` or `clipboard copy
+verification` messages. On Wayland, `wl-paste` can be useful for manual checks
+when installed; on X11, use `xclip -selection clipboard -o`.
 
 Backend values:
 
@@ -338,6 +354,5 @@ The prototype intentionally leaves these unimplemented:
 - production-grade audio buffering/resampling,
 - streaming/VAD transcription,
 - text insertion,
-- clipboard/script output execution,
 - Flatpak packaging for the main app,
 - `.deb` packaging for the optional daemon.

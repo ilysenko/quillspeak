@@ -73,7 +73,7 @@ impl SettingsDraft {
 
 #[cfg(test)]
 mod tests {
-    use shared::ShortcutOutput;
+    use shared::{OutputAction, ShortcutOutput};
 
     use super::*;
 
@@ -85,14 +85,17 @@ mod tests {
 
         assert!(draft.remove_shortcut(&first.id));
         draft.update_shortcut(&second.id, |shortcut| {
-            shortcut.output = ShortcutOutput::Clipboard;
+            shortcut.output = ShortcutOutput::custom(OutputAction::default());
         });
 
         let config = draft.snapshot();
         assert_eq!(config.shortcuts.len(), 2);
         assert_eq!(config.shortcuts[0].id, DEFAULT_SHORTCUT_ID);
         assert_eq!(config.shortcuts[1].id, second.id);
-        assert_eq!(config.shortcuts[1].output, ShortcutOutput::Clipboard);
+        assert_eq!(
+            config.shortcuts[1].output,
+            ShortcutOutput::custom(OutputAction::default())
+        );
     }
 
     #[test]

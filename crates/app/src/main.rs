@@ -10,6 +10,7 @@ mod models;
 mod output;
 mod recording;
 mod settings;
+mod signal_trigger;
 mod transcription;
 mod tray;
 
