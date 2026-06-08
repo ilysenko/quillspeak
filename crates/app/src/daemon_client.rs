@@ -6,7 +6,8 @@ use std::thread::{self, JoinHandle};
 use anyhow::{Context, Result};
 use directories::BaseDirs;
 use shared::{
-    DAEMON_BUS_NAME, DAEMON_INTERFACE, DAEMON_OBJECT_PATH, DaemonStatus, ShortcutRuntimeConfig,
+    DAEMON_BUS_NAME, DAEMON_INTERFACE, DAEMON_OBJECT_PATH, DaemonStatus, PasteShortcut,
+    ShortcutRuntimeConfig,
 };
 use tracing::{debug, info, warn};
 use zbus::blocking::{Connection, Proxy};
@@ -73,6 +74,29 @@ impl DaemonClient {
         }
         Ok(())
     }
+
+    pub fn paste_clipboard(&self, shortcut: PasteShortcut) -> Result<()> {
+        info!(
+            paste_shortcut = shortcut.as_wire_str(),
+            method = "PasteClipboard",
+            "calling daemon D-Bus method"
+        );
+        let connection = Connection::session().context("failed to connect to session bus")?;
+        let proxy = daemon_proxy(&connection)?;
+        let pasted: bool = proxy
+            .call("PasteClipboard", &(shortcut.as_wire_str().to_string(),))
+            .context("failed to request daemon clipboard paste")?;
+        info!(
+            pasted,
+            paste_shortcut = shortcut.as_wire_str(),
+            method = "PasteClipboard",
+            "daemon D-Bus method returned"
+        );
+        if !pasted {
+            anyhow::bail!("daemon rejected clipboard paste request");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -106,6 +130,12 @@ impl DaemonClientWorker {
             .map_err(|_| anyhow::anyhow!("daemon client worker is not running"))
     }
 
+    pub fn paste_clipboard(&self, shortcut: PasteShortcut) -> Result<()> {
+        self.worker_tx
+            .send(DaemonClientCommand::PasteClipboard(shortcut))
+            .map_err(|_| anyhow::anyhow!("daemon client worker is not running"))
+    }
+
     pub fn shutdown(mut self) {
         let _ = self.worker_tx.send(DaemonClientCommand::Shutdown);
         if let Some(join_handle) = self.join_handle.take()
@@ -128,6 +158,7 @@ impl Drop for DaemonClientWorker {
 enum DaemonClientCommand {
     ProbeStatus,
     SyncShortcutConfig(Box<ShortcutRuntimeConfig>),
+    PasteClipboard(PasteShortcut),
     Shutdown,
 }
 
@@ -145,6 +176,15 @@ fn daemon_client_worker_loop(
             DaemonClientCommand::SyncShortcutConfig(config) => {
                 if let Err(error) = client.update_shortcut_config(&config) {
                     warn!(?error, "daemon shortcut config sync is not available yet");
+                }
+            }
+            DaemonClientCommand::PasteClipboard(shortcut) => {
+                if let Err(error) = client.paste_clipboard(shortcut) {
+                    warn!(
+                        ?error,
+                        paste_shortcut = shortcut.as_wire_str(),
+                        "daemon clipboard paste is not available"
+                    );
                 }
             }
             DaemonClientCommand::Shutdown => break,

@@ -23,12 +23,13 @@ The current prototype includes:
 - whisper.cpp model catalog and download management,
 - CPAL microphone capture from the configured default input,
 - whisper-rs/whisper.cpp transcription on downloaded ggml models,
-- real Linux clipboard output and script output actions.
+- real Linux clipboard output, daemon-side auto-paste, and script output
+  actions.
 
 Do not add Electron or Tauri. Do not require the daemon for main app startup.
-Do not require sudo for the main app. Do not implement text insertion, XDG
-portal shortcuts, Flatpak packaging, or `.deb` packaging unless explicitly
-requested.
+Do not require sudo for the main app. Do not implement direct text insertion
+without clipboard transport, XDG portal shortcuts, Flatpak packaging, or `.deb`
+packaging unless explicitly requested.
 
 ## Workspace
 
@@ -74,7 +75,7 @@ cargo run -p daemon --bin myapp-daemon -- --hotkey-down --shortcut-id default
 - `crates/shared/src/config/language.rs`: supported language list including
   `auto`, default inheritance, and Ukrainian.
 - `crates/shared/src/config/output.rs`: default and per-shortcut output action
-  types.
+  types, including clipboard, paste-after-copy, and script settings.
 - `crates/shared/src/protocol.rs`: app/daemon D-Bus names, paths, interfaces,
   daemon status values, and `ShortcutRuntimeConfig`.
 - `crates/app/src/main.rs`: app module wiring and tracing setup.
@@ -96,6 +97,8 @@ cargo run -p daemon --bin myapp-daemon -- --hotkey-down --shortcut-id default
 - `crates/app/src/hotkey/mod.rs`: pluggable app hotkey backend boundary and
   backend resolution.
 - `crates/app/src/hotkey/x11.rs`: app-side X11 passive grab backend.
+- `crates/app/src/output.rs`: output worker for external clipboard copy,
+  clipboard verification, script execution, and transcript paste requests.
 - `crates/app/src/models/store.rs`: model directory, in-memory ready model IDs,
   model row state composition, download start, and model deletion.
 - `crates/app/src/models/inventory.rs`: model readiness inventory cache and
@@ -150,6 +153,8 @@ cargo run -p daemon --bin myapp-daemon -- --hotkey-down --shortcut-id default
   shortcut extraction.
 - `crates/daemon/src/evdev_backend.rs`: daemon evdev device scanning, watched
   key filtering, shortcut key mapping, and app hotkey event dispatch.
+- `crates/daemon/src/paste.rs`: daemon uinput virtual keyboard worker for
+  clipboard paste shortcuts.
 - `packaging/systemd/user/myapp-input-daemon.service`: future/manual systemd
   user service for the optional daemon only.
 - `README.md`: user-facing build, run, config, daemon, and troubleshooting
@@ -201,9 +206,10 @@ shortcut and sends the captured audio to the Whisper worker.
 
 `RecordingService` owns only the state machine. `AppRuntime` owns the active
 command orchestration. `RecordingPipeline` owns the background CPAL capture
-worker. `TranscriptionService` owns background Whisper inference. Clipboard and
-script output are still placeholders that log what would happen with recognized
-text.
+worker. `TranscriptionService` owns background Whisper inference. Output
+actions run through workers: clipboard copy happens in the app output worker,
+auto-paste is requested from the daemon after a successful transcript copy, and
+scripts run in the app output worker.
 
 ## D-Bus Contract
 
@@ -228,6 +234,7 @@ Daemon-side methods:
 - `Ping() -> bool`
 - `GetDaemonStatus() -> String`
 - `UpdateShortcutConfig(config: ShortcutRuntimeConfig) -> bool`
+- `PasteClipboard(shortcut: String) -> bool`
 
 If this contract changes, update `shared`, app, daemon, README, and tests
 together.
@@ -259,7 +266,7 @@ Current app config path:
 Current schema:
 
 ```toml
-schema_version = 4
+schema_version = 6
 
 [general]
 mode = "push_to_talk"
@@ -269,22 +276,26 @@ default_model_id = "large-v3-turbo-q5_0"
 default_language = "auto"
 compute_backend = "auto"
 keep_model_loaded = true
-default_output = { type = "clipboard" }
+default_output = { copy_to_clipboard = true }
 
 [[shortcuts]]
 id = "default"
 name = "Default"
 enabled = true
-accelerator = "Ctrl+Alt+Space"
+trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
 model_id = "default"
 language = "default"
 output = { type = "default" }
 ```
 
-Only schema v4 is supported during development. Do not add old-config
+Only schema v6 is supported during development. Do not add old-config
 migration paths unless explicitly requested. If the schema changes during
 active development, update the current schema and tests directly instead of
 layering legacy compatibility.
+
+`OutputAction.paste` is optional and valid only when
+`copy_to_clipboard = true`. Supported paste shortcuts are `ctrl_v` and
+`ctrl_shift_v`; script stdout clipboard copies must not trigger paste.
 
 If a local development config is from an older schema, remove
 `~/.config/myapp/config.toml` and restart the app to generate the current
@@ -528,6 +539,10 @@ if a required tool is missing, log a clear `clipboard copy failed` message with
 the package hint. Future packaging may declare these as runtime dependencies or
 recommendations.
 
+Auto-paste uses the optional daemon and `/dev/uinput` to emit `Ctrl+V` or
+`Ctrl+Shift+V` after transcript clipboard copy succeeds. Missing uinput
+permissions must not block daemon startup; report them when paste is requested.
+
 Default audio uses native PipeWire plus PulseAudio. The PulseAudio-only build is
 useful when native PipeWire development files are unavailable, and ALSA-only is
 the low-level debug fallback:
@@ -594,12 +609,16 @@ testing only. The main app must not depend on it.
   prove only that the app can read its own provider, not that other clients can
   paste the text.
 - Copy-to-clipboard leaves the transcript in the clipboard. Do not restore the
-  previous clipboard value for the copy action; restoration is only relevant for
-  a future separate "paste into focused app" flow that temporarily uses the
-  clipboard as transport.
+  previous clipboard value for the copy action. Auto-paste uses that copied
+  transcript as the paste source.
+- Auto-paste must be enabled only when transcript clipboard copy is enabled.
+  Script stdout clipboard copies must not trigger auto-paste.
+- Daemon-side paste uses uinput key synthesis only; keep it worker based and
+  expose it through `PasteClipboard(shortcut: String) -> bool`.
 - Use XDG/directories helpers instead of hardcoded user paths.
 - Keep incomplete output integrations honest: clipboard and script output are
-  real, but text insertion is still not implemented.
+  real, and auto-paste is clipboard-based. Direct text insertion without
+  clipboard transport is still not implemented.
 - Treat existing user changes as intentional. Do not revert unrelated work.
 - During this development phase, do not preserve legacy config compatibility
   unless the user explicitly asks for it.
@@ -626,6 +645,6 @@ Possible later additions, only when requested:
 - robust packaged evdev permissions through udev/logind/service integration,
 - production-grade audio buffering/resampling,
 - streaming/VAD transcription,
-- text insertion into the focused app,
+- direct text insertion into the focused app without clipboard transport,
 - Flatpak packaging for the main app,
 - `.deb` packaging for the daemon.

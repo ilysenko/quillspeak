@@ -559,21 +559,56 @@ impl AppRuntime {
         let copy_source = source.kind();
         let script_path = source.script_path().unwrap_or("");
         match result {
-            Ok(result) => info!(
-                shortcut_id,
-                source = copy_source,
-                script = script_path,
-                clipboard_backend = result.backend.as_str(),
-                text_chars = result.text_chars,
-                text_bytes = result.text_bytes,
-                "Copied text to clipboard"
-            ),
+            Ok(result) => {
+                info!(
+                    shortcut_id,
+                    source = copy_source,
+                    script = script_path,
+                    clipboard_backend = result.backend.as_str(),
+                    text_chars = result.text_chars,
+                    text_bytes = result.text_bytes,
+                    "Copied text to clipboard"
+                );
+                self.paste_after_clipboard_copy(&source);
+            }
             Err(error) => warn!(
                 shortcut_id,
                 source = copy_source,
                 script = script_path,
                 error,
                 "clipboard copy failed"
+            ),
+        }
+    }
+
+    fn paste_after_clipboard_copy(&self, source: &ClipboardCopySource) {
+        let Some(paste) = source.paste() else {
+            return;
+        };
+
+        let shortcut_id = source.shortcut_id();
+        let paste_shortcut = paste.shortcut;
+        let daemon_client_worker = self.daemon_client_worker.borrow();
+        let Some(daemon_client_worker) = daemon_client_worker.as_ref() else {
+            warn!(
+                shortcut_id,
+                paste_shortcut = paste_shortcut.as_wire_str(),
+                "daemon client worker is not running; cannot auto-paste clipboard"
+            );
+            return;
+        };
+
+        match daemon_client_worker.paste_clipboard(paste_shortcut) {
+            Ok(()) => debug!(
+                shortcut_id,
+                paste_shortcut = paste_shortcut.as_wire_str(),
+                "queued daemon clipboard paste"
+            ),
+            Err(error) => warn!(
+                ?error,
+                shortcut_id,
+                paste_shortcut = paste_shortcut.as_wire_str(),
+                "failed to queue daemon clipboard paste"
             ),
         }
     }

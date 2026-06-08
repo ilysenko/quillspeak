@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use shared::{OutputAction, ScriptOutput};
+use shared::{OutputAction, PasteOutput, ScriptOutput};
 use tracing::{debug, info, warn};
 
 use crate::command::AppCommand;
@@ -114,6 +114,7 @@ impl OutputService {
         match self.copy_to_clipboard(
             ClipboardCopySource::Transcription {
                 shortcut_id: shortcut_id.to_string(),
+                paste: output.paste.clone(),
             },
             text.to_string(),
         ) {
@@ -135,6 +136,7 @@ fn clipboard_text_for_output<'a>(output: &OutputAction, text: &'a str) -> Option
 pub enum ClipboardCopySource {
     Transcription {
         shortcut_id: String,
+        paste: Option<PasteOutput>,
     },
     ScriptStdout {
         shortcut_id: String,
@@ -145,7 +147,7 @@ pub enum ClipboardCopySource {
 impl ClipboardCopySource {
     pub(crate) fn shortcut_id(&self) -> &str {
         match self {
-            Self::Transcription { shortcut_id } | Self::ScriptStdout { shortcut_id, .. } => {
+            Self::Transcription { shortcut_id, .. } | Self::ScriptStdout { shortcut_id, .. } => {
                 shortcut_id
             }
         }
@@ -162,6 +164,13 @@ impl ClipboardCopySource {
         match self {
             Self::Transcription { .. } => None,
             Self::ScriptStdout { script_path, .. } => Some(script_path),
+        }
+    }
+
+    pub(crate) fn paste(&self) -> Option<&PasteOutput> {
+        match self {
+            Self::Transcription { paste, .. } => paste.as_ref(),
+            Self::ScriptStdout { .. } => None,
         }
     }
 }
@@ -525,7 +534,7 @@ mod tests {
     use std::ffi::OsString;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use shared::{OutputAction, ScriptOutput};
+    use shared::{OutputAction, PasteOutput, PasteShortcut, ScriptOutput};
 
     use super::*;
 
@@ -533,6 +542,7 @@ mod tests {
     fn clipboard_disabled_when_output_does_not_request_it() {
         let output = OutputAction {
             copy_to_clipboard: false,
+            paste: None,
             script: None,
         };
 
@@ -553,6 +563,7 @@ mod tests {
     fn output_action_can_request_script_stdout_clipboard_copy() {
         let output = OutputAction {
             copy_to_clipboard: true,
+            paste: None,
             script: Some(ScriptOutput {
                 path: "/bin/echo".to_string(),
                 copy_stdout_to_clipboard: true,
@@ -589,6 +600,7 @@ mod tests {
     fn clipboard_text_for_output_skips_disabled_clipboard() {
         let output = OutputAction {
             copy_to_clipboard: false,
+            paste: None,
             script: None,
         };
 
@@ -599,11 +611,18 @@ mod tests {
     fn clipboard_copy_source_tracks_transcription_context() {
         let source = ClipboardCopySource::Transcription {
             shortcut_id: "default".to_string(),
+            paste: Some(PasteOutput {
+                shortcut: PasteShortcut::CtrlV,
+            }),
         };
 
         assert_eq!(source.shortcut_id(), "default");
         assert_eq!(source.kind(), "transcription");
         assert_eq!(source.script_path(), None);
+        assert_eq!(
+            source.paste().map(|paste| paste.shortcut),
+            Some(PasteShortcut::CtrlV)
+        );
     }
 
     #[test]
@@ -616,6 +635,7 @@ mod tests {
         assert_eq!(source.shortcut_id(), "default");
         assert_eq!(source.kind(), "script_stdout");
         assert_eq!(source.script_path(), Some("/tmp/script"));
+        assert_eq!(source.paste(), None);
     }
 
     #[test]

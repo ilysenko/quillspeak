@@ -221,19 +221,20 @@ shortcut points to a model that is not ready, recording stops with a clear log
 error and no hidden download starts during the hotkey flow.
 
 Output actions are executed after successful transcription. The app can copy
-recognized text to the system clipboard and can run a configured script on a
-background worker thread. Clipboard writes use external Linux tools so Wayland
-and X11 clients see the same selection: install `wl-clipboard` for Wayland or
-`xclip` for X11. The app verifies clipboard writes with `wl-paste` or
-`xclip -out` before logging success; if copy or verification fails, the app logs
-the failure instead of reporting a successful copy.
+recognized text to the system clipboard, optionally ask the daemon to paste it
+into the focused app, and run a configured script on a background worker thread.
+Clipboard writes use external Linux tools so Wayland and X11 clients see the
+same selection: install `wl-clipboard` for Wayland or `xclip` for X11. The app
+verifies clipboard writes with `wl-paste` or `xclip -out` before logging
+success; if copy or verification fails, the app logs the failure instead of
+reporting a successful copy.
 
-Copy-to-clipboard intentionally leaves the recognized text in the clipboard. The
-app does not restore the previous clipboard content after a successful copy.
-Tools that paste text into another app sometimes restore the clipboard because
-they use it only as a temporary paste transport; MyApp's current output action
-is a real copy action, so restoring the old value would erase the transcript the
-user asked to copy.
+Copy-to-clipboard intentionally leaves the recognized text in the clipboard, and
+auto-paste uses that copied transcript as the paste source. The app does not
+restore the previous clipboard content after a successful copy. Tools that paste
+text into another app sometimes restore the clipboard because they use it only
+as a temporary paste transport; MyApp's copy action is a real copy action, so
+restoring the old value would erase the transcript the user asked to copy.
 
 ## Configuration
 
@@ -246,7 +247,7 @@ The main app owns user settings and writes TOML to:
 Default config:
 
 ```toml
-schema_version = 5
+schema_version = 6
 
 [general]
 mode = "push_to_talk"
@@ -302,9 +303,18 @@ pkill -USR2 -x myapp
 pkill -USR1 -x myapp
 ```
 
-Output can copy the transcript to clipboard, run a script with the transcript
-as its first argument, and optionally copy successful script stdout to
-clipboard.
+Output can copy the transcript to clipboard, paste it into the focused app with
+`Ctrl+V` or `Ctrl+Shift+V`, run a script with the transcript as its first
+argument, and optionally copy successful script stdout to clipboard. Auto-paste
+is available only when transcript clipboard copy is enabled; script stdout copy
+does not auto-paste.
+
+TOML examples:
+
+```toml
+default_output = { copy_to_clipboard = true, paste = { shortcut = "ctrl_v" } }
+output = { type = "custom", copy_to_clipboard = true, paste = { shortcut = "ctrl_shift_v" } }
+```
 
 If transcription logs recognized text but another application cannot paste it,
 check the MyApp logs for `Copied text to clipboard` or `clipboard copy
@@ -312,6 +322,12 @@ failed` messages. On Wayland, check manually with `wl-paste --no-newline`; on
 X11, use `xclip -selection clipboard -out`. If the log says `wl-copy not found`
 or `wl-paste not found`, install `wl-clipboard`; if it says `xclip not found`,
 install `xclip`.
+
+If auto-paste is enabled but nothing is inserted, check that the daemon is
+running and can create a uinput virtual keyboard through `/dev/uinput`. The
+daemon logs `failed daemon clipboard paste` when uinput is unavailable or the
+user lacks permission. `Ctrl+V` is the standard GUI paste shortcut;
+`Ctrl+Shift+V` is the common paste shortcut for terminals.
 
 Backend values:
 
@@ -330,8 +346,10 @@ Session bus names and object paths are defined in `shared`:
 - daemon object: `/org/example/MyApp/InputDaemon`
 
 The app exposes `HotkeyDown(shortcut_id)`, `HotkeyUp(shortcut_id)`,
-`DaemonStatus`, and `GetShortcutConfig` methods for the daemon. The daemon exposes
-`Ping`, `GetDaemonStatus`, and `UpdateShortcutConfig`.
+`DaemonStatus`, and `GetShortcutConfig` methods for the daemon. The daemon
+exposes `Ping`, `GetDaemonStatus`, `UpdateShortcutConfig`, and
+`PasteClipboard(shortcut: String) -> bool`. `PasteClipboard` accepts
+`ctrl_v` and `ctrl_shift_v`.
 
 Daemon status is synchronized in both directions:
 
@@ -368,6 +386,11 @@ If Settings says the daemon is running but the shortcut is unavailable, the
 daemon is alive but did not find a usable evdev keyboard device for the
 configured shortcut.
 
+Auto-paste uses the same daemon process but a different Linux device interface:
+it creates a uinput virtual keyboard and emits `Ctrl+V` or `Ctrl+Shift+V`.
+Hotkey capture needs readable `/dev/input/event*`; auto-paste needs writable
+`/dev/uinput`.
+
 ## Future Work
 
 The prototype intentionally leaves these unimplemented:
@@ -376,6 +399,6 @@ The prototype intentionally leaves these unimplemented:
 - libinput/logind integration and robust packaged device permissions,
 - production-grade audio buffering/resampling,
 - streaming/VAD transcription,
-- text insertion,
+- direct text insertion without clipboard transport,
 - Flatpak packaging for the main app,
 - `.deb` packaging for the optional daemon.

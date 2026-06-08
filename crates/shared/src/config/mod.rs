@@ -14,13 +14,15 @@ pub use language::{
     AUTO_LANGUAGE_VALUE, SUPPORTED_LANGUAGES, SupportedLanguage, supported_language_label,
 };
 pub use model::{DEFAULT_MODEL_ID, MODEL_CATALOG, ModelCatalogEntry, model_catalog_entry};
-pub use output::{OutputAction, ResolvedOutput, ScriptOutput, ShortcutOutput};
+pub use output::{
+    OutputAction, PasteOutput, PasteShortcut, ResolvedOutput, ScriptOutput, ShortcutOutput,
+};
 pub use shortcut::{
     DEFAULT_SHORTCUT_ID, DEFAULT_SHORTCUT_NAME, LinuxSignalName, ShortcutChord, ShortcutKey,
     ShortcutModifiers, ShortcutProfile, ShortcutTrigger, next_shortcut_id, normalize_accelerator,
 };
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 5;
+pub const CONFIG_SCHEMA_VERSION: u32 = 6;
 pub const INHERIT_VALUE: &str = "default";
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -55,6 +57,8 @@ pub enum ConfigError {
     UnsupportedLanguage(String),
     #[error("script output path cannot be empty")]
     EmptyScriptPath,
+    #[error("paste output requires copy_to_clipboard = true")]
+    PasteRequiresClipboard,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -440,7 +444,7 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_schema_without_default_input() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 5
+schema_version = 6
 
 [general]
 mode = "push_to_talk"
@@ -469,7 +473,7 @@ output = { type = "default" }
     fn rejects_schema_without_keep_model_loaded() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 5
+schema_version = 6
 
 [general]
 mode = "push_to_talk"
@@ -503,6 +507,42 @@ output = { type = "default" }
             config.normalized(),
             Err(ConfigError::MissingDefaultShortcut)
         );
+    }
+
+    #[test]
+    fn rejects_paste_output_without_clipboard_copy() {
+        let mut config = AppConfig::default();
+        config.general.default_output = OutputAction {
+            copy_to_clipboard: false,
+            paste: Some(PasteOutput::default()),
+            script: None,
+        };
+
+        assert_eq!(
+            config.normalized(),
+            Err(ConfigError::PasteRequiresClipboard)
+        );
+    }
+
+    #[test]
+    fn config_round_trips_copy_and_paste_output() {
+        let mut config = AppConfig::default();
+        config.general.default_output = OutputAction {
+            copy_to_clipboard: true,
+            paste: Some(PasteOutput {
+                shortcut: PasteShortcut::CtrlShiftV,
+            }),
+            script: None,
+        };
+
+        let encoded = toml::to_string(&config).expect("config should encode");
+        let decoded: AppConfig = toml::from_str::<AppConfig>(&encoded)
+            .expect("config should decode")
+            .normalized()
+            .expect("config should normalize");
+
+        assert_eq!(decoded, config);
+        assert!(encoded.contains("shortcut = \"ctrl_shift_v\""));
     }
 
     #[test]
