@@ -76,7 +76,7 @@ through your distro's input group, logind ACLs, or a future udev/package rule.
 Run the main app in foreground development mode:
 
 ```sh
-RUST_LOG=info cargo run -p app --bin myapp
+cargo run -p app --bin myapp
 ```
 
 Expected behavior:
@@ -109,7 +109,9 @@ MYAPP_DEV_LOG=1 cargo run -p daemon --bin myapp-daemon
 
 `MYAPP_DEV_LOG=1` enables debug logs for MyApp crates while keeping dependency
 crates at info level. A global `RUST_LOG=debug` is intentionally noisy and will
-include low-level PulseAudio/zbus internals.
+include low-level PulseAudio/zbus internals. If you set `RUST_LOG` explicitly,
+use `RUST_LOG=info,pulseaudio::client::reactor=off` to keep the known
+PulseAudio reactor disconnect noise hidden.
 
 Simulate daemon hotkey events while `myapp` is running:
 

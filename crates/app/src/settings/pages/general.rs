@@ -12,18 +12,21 @@ use crate::settings::pages::output_controls::add_default_output_controls;
 use crate::settings::widgets::{
     advanced_hotkey_status, all_model_entries, backend_from_index, backend_index,
     compute_from_index, compute_index, dropdown_row, language_dropdown_row, model_dropdown_row,
-    preferences_page, property_row,
+    property_row,
 };
+
+const GENERAL_MAX_WIDTH: i32 = 740;
+const GENERAL_TIGHTENING_WIDTH: i32 = 600;
 
 #[derive(Clone)]
 pub struct GeneralPage {
-    page: adw::PreferencesPage,
+    page: adw::Clamp,
     daemon_status_row: adw::ActionRow,
     advanced_hotkey_row: adw::ActionRow,
 }
 
 impl GeneralPage {
-    pub fn widget(&self) -> &adw::PreferencesPage {
+    pub fn widget(&self) -> &adw::Clamp {
         &self.page
     }
 
@@ -42,7 +45,20 @@ pub fn build(
     daemon_status: DaemonStatus,
     draft: SettingsDraft,
 ) -> GeneralPage {
-    let page = preferences_page("General");
+    let content = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(24)
+        .margin_top(28)
+        .margin_bottom(28)
+        .build();
+    let page = adw::Clamp::builder()
+        .maximum_size(GENERAL_MAX_WIDTH)
+        .tightening_threshold(GENERAL_TIGHTENING_WIDTH)
+        .hexpand(true)
+        .vexpand(true)
+        .valign(gtk::Align::Start)
+        .child(&content)
+        .build();
     let status_group = adw::PreferencesGroup::builder().title("Status").build();
     let daemon_status_row = property_row("Daemon status", daemon_status.display_label());
     status_group.add(&daemon_status_row);
@@ -159,9 +175,9 @@ pub fn build(
         .build();
     add_default_output_controls(&output_group, &config.general.default_output, draft);
 
-    page.add(&status_group);
-    page.add(&general_group);
-    page.add(&output_group);
+    content.append(&status_group);
+    content.append(&general_group);
+    content.append(&output_group);
     GeneralPage {
         page,
         daemon_status_row,

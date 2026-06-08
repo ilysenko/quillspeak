@@ -94,7 +94,7 @@ impl SettingsWindow {
             .application(application)
             .title("MyApp Settings")
             .default_width(900)
-            .default_height(760)
+            .default_height(940)
             .content(&toast_overlay)
             .build();
 
