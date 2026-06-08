@@ -2,7 +2,7 @@ use shared::AppConfig;
 use shared::DaemonStatus;
 use shared::LinuxSignalName;
 
-use crate::output::OutputScriptResult;
+use crate::output::{ClipboardCopyOutcome, ClipboardCopySource, OutputScriptResult};
 use crate::transcription::TranscriptionRequest;
 use crate::transcription::TranscriptionResult;
 
@@ -41,6 +41,10 @@ pub enum AppCommand {
     OutputScriptFinished {
         shortcut_id: String,
         result: Result<OutputScriptResult, String>,
+    },
+    ClipboardCopyFinished {
+        source: ClipboardCopySource,
+        result: Result<ClipboardCopyOutcome, String>,
     },
     AudioInputDevicesRefreshed(Vec<crate::audio::AudioInputDevice>),
     SaveConfig(AppConfig),

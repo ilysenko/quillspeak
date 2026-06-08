@@ -26,9 +26,7 @@ use crate::hotkey::{
     HotkeyBackendHandle, backend_name_for_config, configure_hotkey_backend, resolve_backend_kind,
 };
 use crate::models::{FinishEffect, ModelDownloadManager, ModelRowState, ModelStore};
-use crate::output::{
-    ClipboardCopySource, OutputScriptResult, OutputService, copy_text_to_clipboard,
-};
+use crate::output::{ClipboardCopyOutcome, ClipboardCopySource, OutputScriptResult, OutputService};
 use crate::recording::{RecordingPhase, RecordingPipeline, RecordingService};
 use crate::settings::SettingsWindow;
 use crate::signal_trigger::SignalTriggerService;
@@ -232,6 +230,9 @@ impl AppRuntime {
                 shortcut_id,
                 result,
             } => self.finish_output_script(&shortcut_id, result),
+            AppCommand::ClipboardCopyFinished { source, result } => {
+                self.finish_clipboard_copy(source, result)
+            }
             AppCommand::AudioInputDevicesRefreshed(devices) => {
                 self.update_audio_input_devices(devices)
             }
@@ -520,24 +521,60 @@ impl AppRuntime {
                     copy_stdout_to_clipboard = result.clipboard_text.is_some(),
                     "output script finished"
                 );
-                if let Some(text) = result.clipboard_text
-                    && let Err(error) = copy_text_to_clipboard(
-                        &text,
-                        ClipboardCopySource::ScriptStdout {
-                            shortcut_id: shortcut_id.to_string(),
-                            script_path: result.script_path.clone(),
-                        },
-                    )
-                {
-                    warn!(
-                        ?error,
-                        shortcut_id,
-                        script = %result.script_path,
-                        "failed to queue output script stdout clipboard copy"
-                    );
+                if let Some(text) = result.clipboard_text {
+                    if let Some(output_service) = self.output_service.borrow().as_ref() {
+                        if let Err(error) = output_service.copy_to_clipboard(
+                            ClipboardCopySource::ScriptStdout {
+                                shortcut_id: shortcut_id.to_string(),
+                                script_path: result.script_path.clone(),
+                            },
+                            text,
+                        ) {
+                            warn!(
+                                ?error,
+                                shortcut_id,
+                                script = %result.script_path,
+                                "failed to queue output script stdout clipboard copy"
+                            );
+                        }
+                    } else {
+                        warn!(
+                            shortcut_id,
+                            script = %result.script_path,
+                            "output worker is not running"
+                        );
+                    }
                 }
             }
             Err(error) => warn!(shortcut_id, error, "output script failed"),
+        }
+    }
+
+    fn finish_clipboard_copy(
+        &self,
+        source: ClipboardCopySource,
+        result: std::result::Result<ClipboardCopyOutcome, String>,
+    ) {
+        let shortcut_id = source.shortcut_id();
+        let copy_source = source.kind();
+        let script_path = source.script_path().unwrap_or("");
+        match result {
+            Ok(result) => info!(
+                shortcut_id,
+                source = copy_source,
+                script = script_path,
+                clipboard_backend = result.backend.as_str(),
+                text_chars = result.text_chars,
+                text_bytes = result.text_bytes,
+                "Copied text to clipboard"
+            ),
+            Err(error) => warn!(
+                shortcut_id,
+                source = copy_source,
+                script = script_path,
+                error,
+                "clipboard copy failed"
+            ),
         }
     }
 

@@ -23,6 +23,18 @@ dependencies before building the main app:
 sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libpulse-dev libpipewire-0.3-dev libgtk-4-dev libadwaita-1-dev
 ```
 
+Clipboard output uses small external runtime tools. They are not guaranteed to
+be installed by the desktop environment itself:
+
+```sh
+sudo apt install wl-clipboard xclip
+```
+
+`wl-clipboard` provides `wl-copy` and `wl-paste` for Wayland. `xclip` is used
+for X11. The app does not install these tools automatically or run package
+managers itself; if a required tool is missing, it logs `clipboard copy failed`
+with the package hint.
+
 The default development build enables CPAL's native PipeWire and PulseAudio
 backends. On modern Ubuntu desktops the app prefers PipeWire, falls back to
 PulseAudio, and keeps ALSA as the explicit low-level debug fallback:
@@ -209,10 +221,19 @@ shortcut points to a model that is not ready, recording stops with a clear log
 error and no hidden download starts during the hotkey flow.
 
 Output actions are executed after successful transcription. The app can copy
-recognized text to the GTK clipboard and can run a configured script on a
-background worker thread. Clipboard writes are verified by reading the GTK
-clipboard back before logging success; if copy fails, the app logs the failure
-instead of reporting a successful copy.
+recognized text to the system clipboard and can run a configured script on a
+background worker thread. Clipboard writes use external Linux tools so Wayland
+and X11 clients see the same selection: install `wl-clipboard` for Wayland or
+`xclip` for X11. The app verifies clipboard writes with `wl-paste` or
+`xclip -out` before logging success; if copy or verification fails, the app logs
+the failure instead of reporting a successful copy.
+
+Copy-to-clipboard intentionally leaves the recognized text in the clipboard. The
+app does not restore the previous clipboard content after a successful copy.
+Tools that paste text into another app sometimes restore the clipboard because
+they use it only as a temporary paste transport; MyApp's current output action
+is a real copy action, so restoring the old value would erase the transcript the
+user asked to copy.
 
 ## Configuration
 
@@ -287,8 +308,10 @@ clipboard.
 
 If transcription logs recognized text but another application cannot paste it,
 check the MyApp logs for `Copied text to clipboard` or `clipboard copy
-verification` messages. On Wayland, `wl-paste` can be useful for manual checks
-when installed; on X11, use `xclip -selection clipboard -o`.
+failed` messages. On Wayland, check manually with `wl-paste --no-newline`; on
+X11, use `xclip -selection clipboard -out`. If the log says `wl-copy not found`
+or `wl-paste not found`, install `wl-clipboard`; if it says `xclip not found`,
+install `xclip`.
 
 Backend values:
 

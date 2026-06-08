@@ -23,7 +23,7 @@ The current prototype includes:
 - whisper.cpp model catalog and download management,
 - CPAL microphone capture from the configured default input,
 - whisper-rs/whisper.cpp transcription on downloaded ggml models,
-- real GTK/GDK clipboard output and script output actions.
+- real Linux clipboard output and script output actions.
 
 Do not add Electron or Tauri. Do not require the daemon for main app startup.
 Do not require sudo for the main app. Do not implement text insertion, XDG
@@ -515,6 +515,19 @@ System dependencies for the full app build on Debian/Ubuntu-style systems:
 sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libpulse-dev libpipewire-0.3-dev libgtk-4-dev libadwaita-1-dev
 ```
 
+Runtime clipboard output also needs external clipboard tools. They are not
+guaranteed to be installed by the desktop environment:
+
+```sh
+sudo apt install wl-clipboard xclip
+```
+
+`wl-clipboard` provides `wl-copy` and `wl-paste` for Wayland. `xclip` is used
+for X11. The app must not invoke package managers or auto-install these tools;
+if a required tool is missing, log a clear `clipboard copy failed` message with
+the package hint. Future packaging may declare these as runtime dependencies or
+recommendations.
+
 Default audio uses native PipeWire plus PulseAudio. The PulseAudio-only build is
 useful when native PipeWire development files are unavailable, and ALSA-only is
 the low-level debug fallback:
@@ -571,6 +584,19 @@ testing only. The main app must not depend on it.
 - Do not touch GTK from worker threads.
 - Do not block the GTK main thread with network, hashing, filesystem-heavy
   work, model loading, audio capture, or Whisper inference.
+- Clipboard output runs through the output worker. On Linux, use `wl-copy` /
+  `wl-paste` for Wayland and `xclip` for X11, and log success only after an
+  external readback verifies the expected text.
+- Wayland clipboard commands should explicitly offer/request a text MIME type
+  such as `text/plain;charset=utf-8`; do not rely on `wl-copy` MIME inference
+  for recognized text.
+- Do not use GTK/GDK clipboard self-readback as success proof on Wayland. It can
+  prove only that the app can read its own provider, not that other clients can
+  paste the text.
+- Copy-to-clipboard leaves the transcript in the clipboard. Do not restore the
+  previous clipboard value for the copy action; restoration is only relevant for
+  a future separate "paste into focused app" flow that temporarily uses the
+  clipboard as transport.
 - Use XDG/directories helpers instead of hardcoded user paths.
 - Keep incomplete output integrations honest: clipboard and script output are
   real, but text insertion is still not implemented.
