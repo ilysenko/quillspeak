@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use shared::{OutputAction, PasteOutput, ScriptOutput};
+use shared::{OutputAction, ScriptOutput};
 use tracing::{debug, info, warn};
 
 use crate::command::AppCommand;
@@ -26,7 +26,9 @@ pub struct OutputService {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputScriptResult {
     pub script_path: String,
-    pub clipboard_text: Option<String>,
+    pub output_text: Option<String>,
+    pub copy_to_clipboard: bool,
+    pub auto_paste: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,9 +74,17 @@ impl OutputService {
             return;
         }
 
-        self.apply_clipboard_if_enabled(shortcut_id, &result.output, text);
         if let Some(script) = &result.output.script {
-            self.run_script(shortcut_id, script, text);
+            self.run_script(shortcut_id, script, &result.output, text);
+        } else {
+            self.copy_final_text_if_requested(
+                ClipboardCopySource::Transcription {
+                    shortcut_id: shortcut_id.to_string(),
+                    auto_paste: result.output.auto_paste,
+                },
+                &result.output,
+                text,
+            );
         }
     }
 
@@ -87,12 +97,19 @@ impl OutputService {
         }
     }
 
-    fn run_script(&self, shortcut_id: &str, script: &ScriptOutput, text: &str) {
+    fn run_script(
+        &self,
+        shortcut_id: &str,
+        script: &ScriptOutput,
+        output: &OutputAction,
+        text: &str,
+    ) {
         let command = OutputWorkerCommand::RunScript {
             shortcut_id: shortcut_id.to_string(),
             script_path: script.path.clone(),
             text: text.to_string(),
-            copy_stdout_to_clipboard: script.copy_stdout_to_clipboard,
+            copy_to_clipboard: output.copy_to_clipboard,
+            auto_paste: output.auto_paste,
         };
         if self.worker_tx.send(command).is_err() {
             warn!(shortcut_id, script = %script.path, "output worker is not running");
@@ -106,26 +123,32 @@ impl OutputService {
             .map_err(|_| anyhow!("output worker is not running"))
     }
 
-    fn apply_clipboard_if_enabled(&self, shortcut_id: &str, output: &OutputAction, text: &str) {
+    pub fn copy_final_text_if_requested(
+        &self,
+        source: ClipboardCopySource,
+        output: &OutputAction,
+        text: &str,
+    ) {
         let Some(text) = clipboard_text_for_output(output, text) else {
             return;
         };
 
-        match self.copy_to_clipboard(
-            ClipboardCopySource::Transcription {
-                shortcut_id: shortcut_id.to_string(),
-                paste: output.paste.clone(),
-            },
-            text.to_string(),
-        ) {
-            Ok(()) => debug!(shortcut_id, "queued transcription clipboard copy"),
-            Err(error) => warn!(?error, shortcut_id, "failed to queue clipboard copy"),
+        let shortcut_id = source.shortcut_id().to_string();
+        let source_kind = source.kind();
+        match self.copy_to_clipboard(source, text.to_string()) {
+            Ok(()) => debug!(shortcut_id, source = source_kind, "queued clipboard copy"),
+            Err(error) => warn!(
+                ?error,
+                shortcut_id,
+                source = source_kind,
+                "failed to queue clipboard copy"
+            ),
         }
     }
 }
 
 fn clipboard_text_for_output<'a>(output: &OutputAction, text: &'a str) -> Option<&'a str> {
-    if !output.copy_to_clipboard {
+    if !output.copy_to_clipboard && !output.auto_paste {
         return None;
     }
     let text = text.trim();
@@ -136,11 +159,12 @@ fn clipboard_text_for_output<'a>(output: &OutputAction, text: &'a str) -> Option
 pub enum ClipboardCopySource {
     Transcription {
         shortcut_id: String,
-        paste: Option<PasteOutput>,
+        auto_paste: bool,
     },
     ScriptStdout {
         shortcut_id: String,
         script_path: String,
+        auto_paste: bool,
     },
 }
 
@@ -167,10 +191,11 @@ impl ClipboardCopySource {
         }
     }
 
-    pub(crate) fn paste(&self) -> Option<&PasteOutput> {
+    pub(crate) fn auto_paste(&self) -> bool {
         match self {
-            Self::Transcription { paste, .. } => paste.as_ref(),
-            Self::ScriptStdout { .. } => None,
+            Self::Transcription { auto_paste, .. } | Self::ScriptStdout { auto_paste, .. } => {
+                *auto_paste
+            }
         }
     }
 }
@@ -202,7 +227,8 @@ enum OutputWorkerCommand {
         shortcut_id: String,
         script_path: String,
         text: String,
-        copy_stdout_to_clipboard: bool,
+        copy_to_clipboard: bool,
+        auto_paste: bool,
     },
     CopyClipboard {
         source: ClipboardCopySource,
@@ -221,9 +247,10 @@ fn output_worker_loop(
                 shortcut_id,
                 script_path,
                 text,
-                copy_stdout_to_clipboard,
+                copy_to_clipboard,
+                auto_paste,
             } => {
-                let result = run_script(&script_path, &text, copy_stdout_to_clipboard)
+                let result = run_script(&script_path, &text, copy_to_clipboard, auto_paste)
                     .map_err(|error| format!("{error:#}"));
                 let _ = command_tx.send(AppCommand::OutputScriptFinished {
                     shortcut_id,
@@ -475,9 +502,11 @@ fn command_in_path_entries(command: &str, entries: Vec<PathBuf>) -> bool {
 fn run_script(
     script_path: &str,
     text: &str,
-    copy_stdout_to_clipboard: bool,
+    copy_to_clipboard: bool,
+    auto_paste: bool,
 ) -> Result<OutputScriptResult> {
-    let output = run_script_with_timeout(script_path, text)?;
+    let deliver_stdout = copy_to_clipboard || auto_paste;
+    let output = run_script_with_timeout(script_path, text, deliver_stdout)?;
     if !output.status.success() {
         bail!(
             "script {} exited with status {}; stderr: {}",
@@ -487,7 +516,7 @@ fn run_script(
         );
     }
 
-    let clipboard_text = if copy_stdout_to_clipboard {
+    let output_text = if deliver_stdout {
         Some(
             String::from_utf8(output.stdout)
                 .with_context(|| format!("script {script_path} stdout was not UTF-8"))?,
@@ -498,15 +527,26 @@ fn run_script(
 
     Ok(OutputScriptResult {
         script_path: script_path.to_string(),
-        clipboard_text,
+        output_text,
+        copy_to_clipboard,
+        auto_paste,
     })
 }
 
-fn run_script_with_timeout(script_path: &str, text: &str) -> Result<std::process::Output> {
+fn run_script_with_timeout(
+    script_path: &str,
+    text: &str,
+    capture_stdout: bool,
+) -> Result<std::process::Output> {
+    let stdout = if capture_stdout {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    };
     let mut child = Command::new(script_path)
         .arg(text)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
+        .stdout(stdout)
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to spawn output script {script_path}"))?;
@@ -532,9 +572,12 @@ fn run_script_with_timeout(script_path: &str, text: &str) -> Result<std::process
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use shared::{OutputAction, PasteOutput, PasteShortcut, ScriptOutput};
+    use shared::{OutputAction, ScriptOutput};
 
     use super::*;
 
@@ -542,40 +585,43 @@ mod tests {
     fn clipboard_disabled_when_output_does_not_request_it() {
         let output = OutputAction {
             copy_to_clipboard: false,
-            paste: None,
+            auto_paste: false,
             script: None,
         };
 
         assert!(!output.copy_to_clipboard);
+        assert!(!output.auto_paste);
     }
 
     #[test]
-    fn script_output_result_carries_clipboard_text() {
+    fn script_output_result_carries_final_text_and_delivery_flags() {
         let result = OutputScriptResult {
             script_path: "/bin/echo".to_string(),
-            clipboard_text: Some("hello\n".to_string()),
+            output_text: Some("hello\n".to_string()),
+            copy_to_clipboard: true,
+            auto_paste: true,
         };
 
-        assert_eq!(result.clipboard_text.as_deref(), Some("hello\n"));
+        assert_eq!(result.output_text.as_deref(), Some("hello\n"));
+        assert!(result.copy_to_clipboard);
+        assert!(result.auto_paste);
     }
 
     #[test]
-    fn output_action_can_request_script_stdout_clipboard_copy() {
+    fn output_action_can_run_script_and_auto_paste_final_text() {
         let output = OutputAction {
             copy_to_clipboard: true,
-            paste: None,
+            auto_paste: true,
             script: Some(ScriptOutput {
                 path: "/bin/echo".to_string(),
-                copy_stdout_to_clipboard: true,
             }),
         };
 
         assert!(output.copy_to_clipboard);
-        assert!(
-            output
-                .script
-                .as_ref()
-                .is_some_and(|script| script.copy_stdout_to_clipboard)
+        assert!(output.auto_paste);
+        assert_eq!(
+            output.script.as_ref().map(|script| script.path.as_str()),
+            Some("/bin/echo")
         );
     }
 
@@ -600,7 +646,7 @@ mod tests {
     fn clipboard_text_for_output_skips_disabled_clipboard() {
         let output = OutputAction {
             copy_to_clipboard: false,
-            paste: None,
+            auto_paste: false,
             script: None,
         };
 
@@ -608,21 +654,27 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_text_for_output_allows_auto_paste_transport_without_copy_checkbox() {
+        let output = OutputAction {
+            copy_to_clipboard: false,
+            auto_paste: true,
+            script: None,
+        };
+
+        assert_eq!(clipboard_text_for_output(&output, " hello "), Some("hello"));
+    }
+
+    #[test]
     fn clipboard_copy_source_tracks_transcription_context() {
         let source = ClipboardCopySource::Transcription {
             shortcut_id: "default".to_string(),
-            paste: Some(PasteOutput {
-                shortcut: PasteShortcut::CtrlV,
-            }),
+            auto_paste: true,
         };
 
         assert_eq!(source.shortcut_id(), "default");
         assert_eq!(source.kind(), "transcription");
         assert_eq!(source.script_path(), None);
-        assert_eq!(
-            source.paste().map(|paste| paste.shortcut),
-            Some(PasteShortcut::CtrlV)
-        );
+        assert!(source.auto_paste());
     }
 
     #[test]
@@ -630,12 +682,70 @@ mod tests {
         let source = ClipboardCopySource::ScriptStdout {
             shortcut_id: "default".to_string(),
             script_path: "/tmp/script".to_string(),
+            auto_paste: true,
         };
 
         assert_eq!(source.shortcut_id(), "default");
         assert_eq!(source.kind(), "script_stdout");
         assert_eq!(source.script_path(), Some("/tmp/script"));
-        assert_eq!(source.paste(), None);
+        assert!(source.auto_paste());
+    }
+
+    #[test]
+    fn run_script_skips_stdout_decode_when_delivery_is_disabled() {
+        let script = TestScript::new("invalid-stdout-unused", "printf '\\377'\n");
+
+        let result = run_script(script.path_str(), "hello", false, false)
+            .expect("script-only output should ignore stdout bytes");
+
+        assert_eq!(result.output_text, None);
+        assert!(!result.copy_to_clipboard);
+        assert!(!result.auto_paste);
+    }
+
+    #[test]
+    fn run_script_delivers_stdout_when_copy_is_requested() {
+        let script = TestScript::new("copy-stdout", "printf 'translated:%s' \"$1\"\n");
+
+        let result = run_script(script.path_str(), "hello", true, false)
+            .expect("copy output should capture script stdout");
+
+        assert_eq!(result.output_text.as_deref(), Some("translated:hello"));
+        assert!(result.copy_to_clipboard);
+        assert!(!result.auto_paste);
+    }
+
+    #[test]
+    fn run_script_delivers_stdout_when_auto_paste_is_requested_without_copy() {
+        let script = TestScript::new("paste-stdout", "printf 'paste:%s' \"$1\"\n");
+
+        let result = run_script(script.path_str(), "hello", false, true)
+            .expect("auto-paste output should capture script stdout");
+
+        assert_eq!(result.output_text.as_deref(), Some("paste:hello"));
+        assert!(!result.copy_to_clipboard);
+        assert!(result.auto_paste);
+    }
+
+    #[test]
+    fn run_script_rejects_invalid_utf8_when_delivery_is_requested() {
+        let script = TestScript::new("invalid-stdout-delivered", "printf '\\377'\n");
+
+        let error = run_script(script.path_str(), "hello", true, false)
+            .expect_err("delivered stdout must be UTF-8");
+
+        assert!(error.to_string().contains("stdout was not UTF-8"));
+    }
+
+    #[test]
+    fn run_script_nonzero_exit_fails_without_delivery_fallback() {
+        let script = TestScript::new("nonzero", "printf 'script failed' >&2\nexit 7\n");
+
+        let error = run_script(script.path_str(), "hello", false, true)
+            .expect_err("nonzero script should fail");
+
+        assert!(error.to_string().contains("script failed"));
+        assert!(error.to_string().contains("exited with status"));
     }
 
     #[test]
@@ -738,5 +848,42 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after epoch")
             .as_nanos()
+    }
+
+    struct TestScript {
+        path: PathBuf,
+        dir: PathBuf,
+    }
+
+    impl TestScript {
+        fn new(name: &str, body: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "myapp-output-script-test-{name}-{}",
+                unique_test_suffix()
+            ));
+            fs::create_dir_all(&dir).expect("test script dir should be writable");
+            let path = dir.join("script.sh");
+            fs::write(&path, format!("#!/bin/sh\n{body}")).expect("test script should be writable");
+            let mut permissions = fs::metadata(&path)
+                .expect("test script metadata should be readable")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&path, permissions).expect("test script should be executable");
+            Self { path, dir }
+        }
+
+        fn path_str(&self) -> &str {
+            path_str(&self.path)
+        }
+    }
+
+    impl Drop for TestScript {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn path_str(path: &Path) -> &str {
+        path.to_str().expect("test path should be valid UTF-8")
     }
 }

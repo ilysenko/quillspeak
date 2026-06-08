@@ -220,21 +220,19 @@ Models must be downloaded in Settings > Models before they can be used. If a
 shortcut points to a model that is not ready, recording stops with a clear log
 error and no hidden download starts during the hotkey flow.
 
-Output actions are executed after successful transcription. The app can copy
-recognized text to the system clipboard, optionally ask the daemon to paste it
-into the focused app, and run a configured script on a background worker thread.
+Output actions are executed after successful transcription. The output pipeline
+can optionally run a configured script on a background worker thread, then copy
+or auto-paste the final text. If a script is enabled, its stdout is the final
+text; the original transcript is not copied or pasted as a fallback.
 Clipboard writes use external Linux tools so Wayland and X11 clients see the
 same selection: install `wl-clipboard` for Wayland or `xclip` for X11. The app
 verifies clipboard writes with `wl-paste` or `xclip -out` before logging
 success; if copy or verification fails, the app logs the failure instead of
 reporting a successful copy.
 
-Copy-to-clipboard intentionally leaves the recognized text in the clipboard, and
-auto-paste uses that copied transcript as the paste source. The app does not
-restore the previous clipboard content after a successful copy. Tools that paste
-text into another app sometimes restore the clipboard because they use it only
-as a temporary paste transport; MyApp's copy action is a real copy action, so
-restoring the old value would erase the transcript the user asked to copy.
+Copy-to-clipboard intentionally leaves the final text in the clipboard, and
+auto-paste uses that same clipboard value as the paste source. The app does not
+restore the previous clipboard content after a successful copy or auto-paste.
 
 ## Configuration
 
@@ -247,7 +245,7 @@ The main app owns user settings and writes TOML to:
 Default config:
 
 ```toml
-schema_version = 6
+schema_version = 7
 
 [general]
 mode = "push_to_talk"
@@ -257,7 +255,7 @@ default_language = "auto"
 compute_backend = "auto"
 keep_model_loaded = true
 default_input = { type = "system_default" }
-default_output = { copy_to_clipboard = true }
+default_output = { copy_to_clipboard = true, auto_paste = false }
 
 [[shortcuts]]
 id = "default"
@@ -303,17 +301,17 @@ pkill -USR2 -x myapp
 pkill -USR1 -x myapp
 ```
 
-Output can copy the transcript to clipboard, paste it into the focused app with
-`Ctrl+V` or `Ctrl+Shift+V`, run a script with the transcript as its first
-argument, and optionally copy successful script stdout to clipboard. Auto-paste
-is available only when transcript clipboard copy is enabled; script stdout copy
-does not auto-paste.
+Output uses one simple pipeline: transcript, optional script transform, final
+text, optional clipboard copy, optional auto-paste. Auto-paste always uses
+`Ctrl+V`; if `auto_paste = true` and `copy_to_clipboard = false`, the app still
+copies the final text internally because clipboard is the current paste
+transport.
 
 TOML examples:
 
 ```toml
-default_output = { copy_to_clipboard = true, paste = { shortcut = "ctrl_v" } }
-output = { type = "custom", copy_to_clipboard = true, paste = { shortcut = "ctrl_shift_v" } }
+default_output = { copy_to_clipboard = true, auto_paste = false }
+output = { type = "custom", copy_to_clipboard = false, auto_paste = true, script = { path = "/home/igor/myapp-polite-english.sh" } }
 ```
 
 If transcription logs recognized text but another application cannot paste it,
@@ -326,8 +324,9 @@ install `xclip`.
 If auto-paste is enabled but nothing is inserted, check that the daemon is
 running and can create a uinput virtual keyboard through `/dev/uinput`. The
 daemon logs `failed daemon clipboard paste` when uinput is unavailable or the
-user lacks permission. `Ctrl+V` is the standard GUI paste shortcut;
-`Ctrl+Shift+V` is the common paste shortcut for terminals.
+user lacks permission. `Ctrl+V` is the only auto-paste shortcut in this
+prototype, so applications with nonstandard paste shortcuts are not configurable
+yet.
 
 Backend values:
 
@@ -348,8 +347,7 @@ Session bus names and object paths are defined in `shared`:
 The app exposes `HotkeyDown(shortcut_id)`, `HotkeyUp(shortcut_id)`,
 `DaemonStatus`, and `GetShortcutConfig` methods for the daemon. The daemon
 exposes `Ping`, `GetDaemonStatus`, `UpdateShortcutConfig`, and
-`PasteClipboard(shortcut: String) -> bool`. `PasteClipboard` accepts
-`ctrl_v` and `ctrl_shift_v`.
+`PasteClipboard() -> bool`.
 
 Daemon status is synchronized in both directions:
 
@@ -387,9 +385,8 @@ daemon is alive but did not find a usable evdev keyboard device for the
 configured shortcut.
 
 Auto-paste uses the same daemon process but a different Linux device interface:
-it creates a uinput virtual keyboard and emits `Ctrl+V` or `Ctrl+Shift+V`.
-Hotkey capture needs readable `/dev/input/event*`; auto-paste needs writable
-`/dev/uinput`.
+it creates a uinput virtual keyboard and emits fixed `Ctrl+V`. Hotkey capture
+needs readable `/dev/input/event*`; auto-paste needs writable `/dev/uinput`.
 
 ## Future Work
 

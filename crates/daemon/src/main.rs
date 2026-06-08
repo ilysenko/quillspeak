@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use shared::{
     DAEMON_BUS_NAME, DAEMON_INTERFACE, DAEMON_OBJECT_PATH, DEFAULT_SHORTCUT_ID, DaemonStatus,
-    PasteShortcut, ShortcutRuntimeConfig,
+    ShortcutRuntimeConfig,
 };
 use tracing::{debug, info, warn};
 use zbus::{blocking::connection, interface};
@@ -242,24 +242,12 @@ impl InputDaemon {
         true
     }
 
-    fn paste_clipboard(&self, shortcut: String) -> bool {
-        info!(
-            paste_shortcut = %shortcut,
-            method = "PasteClipboard",
-            "received daemon D-Bus method"
-        );
-        let Some(shortcut) = parse_paste_shortcut(&shortcut) else {
-            warn!(
-                method = "PasteClipboard",
-                "received unsupported paste shortcut"
-            );
-            return false;
-        };
+    fn paste_clipboard(&self) -> bool {
+        info!(method = "PasteClipboard", "received daemon D-Bus method");
 
-        match self.paste_service.paste_clipboard(shortcut) {
+        match self.paste_service.paste_clipboard() {
             Ok(()) => {
                 info!(
-                    paste_shortcut = shortcut.as_wire_str(),
                     method = "PasteClipboard",
                     "completed daemon clipboard paste"
                 );
@@ -268,7 +256,6 @@ impl InputDaemon {
             Err(error) => {
                 warn!(
                     ?error,
-                    paste_shortcut = shortcut.as_wire_str(),
                     method = "PasteClipboard",
                     "failed daemon clipboard paste"
                 );
@@ -276,10 +263,6 @@ impl InputDaemon {
             }
         }
     }
-}
-
-fn parse_paste_shortcut(value: &str) -> Option<PasteShortcut> {
-    PasteShortcut::from_wire_str(value.trim())
 }
 
 impl InputDaemon {
@@ -347,31 +330,4 @@ fn log_shortcut_runtime_config(context: &'static str, config: &ShortcutRuntimeCo
 
 fn is_dev_logging_enabled() -> bool {
     env_flag("MYAPP_DEV_LOG")
-}
-
-#[cfg(test)]
-mod tests {
-    use shared::PasteShortcut;
-
-    use super::parse_paste_shortcut;
-
-    #[test]
-    fn parse_paste_shortcut_accepts_supported_wire_values() {
-        assert_eq!(parse_paste_shortcut("ctrl_v"), Some(PasteShortcut::CtrlV));
-        assert_eq!(
-            parse_paste_shortcut("ctrl_shift_v"),
-            Some(PasteShortcut::CtrlShiftV)
-        );
-        assert_eq!(
-            parse_paste_shortcut(" ctrl_shift_v "),
-            Some(PasteShortcut::CtrlShiftV)
-        );
-    }
-
-    #[test]
-    fn parse_paste_shortcut_rejects_unsupported_wire_values() {
-        assert_eq!(parse_paste_shortcut(""), None);
-        assert_eq!(parse_paste_shortcut("ctrl-c"), None);
-        assert_eq!(parse_paste_shortcut("Ctrl+V"), None);
-    }
 }

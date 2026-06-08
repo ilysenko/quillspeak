@@ -75,7 +75,8 @@ cargo run -p daemon --bin myapp-daemon -- --hotkey-down --shortcut-id default
 - `crates/shared/src/config/language.rs`: supported language list including
   `auto`, default inheritance, and Ukrainian.
 - `crates/shared/src/config/output.rs`: default and per-shortcut output action
-  types, including clipboard, paste-after-copy, and script settings.
+  types for the final-text pipeline: optional script transform, clipboard copy,
+  and auto-paste settings.
 - `crates/shared/src/protocol.rs`: app/daemon D-Bus names, paths, interfaces,
   daemon status values, and `ShortcutRuntimeConfig`.
 - `crates/app/src/main.rs`: app module wiring and tracing setup.
@@ -208,8 +209,8 @@ shortcut and sends the captured audio to the Whisper worker.
 command orchestration. `RecordingPipeline` owns the background CPAL capture
 worker. `TranscriptionService` owns background Whisper inference. Output
 actions run through workers: clipboard copy happens in the app output worker,
-auto-paste is requested from the daemon after a successful transcript copy, and
-scripts run in the app output worker.
+auto-paste is requested from the daemon after a successful final-text clipboard
+copy, and scripts run in the app output worker.
 
 ## D-Bus Contract
 
@@ -234,7 +235,7 @@ Daemon-side methods:
 - `Ping() -> bool`
 - `GetDaemonStatus() -> String`
 - `UpdateShortcutConfig(config: ShortcutRuntimeConfig) -> bool`
-- `PasteClipboard(shortcut: String) -> bool`
+- `PasteClipboard() -> bool`
 
 If this contract changes, update `shared`, app, daemon, README, and tests
 together.
@@ -266,7 +267,7 @@ Current app config path:
 Current schema:
 
 ```toml
-schema_version = 6
+schema_version = 7
 
 [general]
 mode = "push_to_talk"
@@ -276,7 +277,7 @@ default_model_id = "large-v3-turbo-q5_0"
 default_language = "auto"
 compute_backend = "auto"
 keep_model_loaded = true
-default_output = { copy_to_clipboard = true }
+default_output = { copy_to_clipboard = true, auto_paste = false }
 
 [[shortcuts]]
 id = "default"
@@ -288,14 +289,17 @@ language = "default"
 output = { type = "default" }
 ```
 
-Only schema v6 is supported during development. Do not add old-config
+Only schema v7 is supported during development. Do not add old-config
 migration paths unless explicitly requested. If the schema changes during
 active development, update the current schema and tests directly instead of
 layering legacy compatibility.
 
-`OutputAction.paste` is optional and valid only when
-`copy_to_clipboard = true`. Supported paste shortcuts are `ctrl_v` and
-`ctrl_shift_v`; script stdout clipboard copies must not trigger paste.
+Output is one simple pipeline: transcript, optional script transform, final
+text, optional clipboard copy, optional auto-paste. If script is enabled, its
+stdout is the final text and the original transcript must not be copied or
+pasted as a fallback. Auto-paste uses fixed `Ctrl+V`; even when
+`copy_to_clipboard = false`, auto-paste may copy final text to clipboard as its
+transport.
 
 If a local development config is from an older schema, remove
 `~/.config/myapp/config.toml` and restart the app to generate the current
@@ -539,9 +543,9 @@ if a required tool is missing, log a clear `clipboard copy failed` message with
 the package hint. Future packaging may declare these as runtime dependencies or
 recommendations.
 
-Auto-paste uses the optional daemon and `/dev/uinput` to emit `Ctrl+V` or
-`Ctrl+Shift+V` after transcript clipboard copy succeeds. Missing uinput
-permissions must not block daemon startup; report them when paste is requested.
+Auto-paste uses the optional daemon and `/dev/uinput` to emit fixed `Ctrl+V`
+after final-text clipboard copy succeeds. Missing uinput permissions must not
+block daemon startup; report them when paste is requested.
 
 Default audio uses native PipeWire plus PulseAudio. The PulseAudio-only build is
 useful when native PipeWire development files are unavailable, and ALSA-only is
@@ -608,13 +612,12 @@ testing only. The main app must not depend on it.
 - Do not use GTK/GDK clipboard self-readback as success proof on Wayland. It can
   prove only that the app can read its own provider, not that other clients can
   paste the text.
-- Copy-to-clipboard leaves the transcript in the clipboard. Do not restore the
-  previous clipboard value for the copy action. Auto-paste uses that copied
-  transcript as the paste source.
-- Auto-paste must be enabled only when transcript clipboard copy is enabled.
-  Script stdout clipboard copies must not trigger auto-paste.
+- Copy-to-clipboard leaves the final output text in the clipboard. Do not
+  restore the previous clipboard value for the copy action.
+- Auto-paste uses clipboard transport and must paste the final output text:
+  script stdout when script is enabled, otherwise the transcript.
 - Daemon-side paste uses uinput key synthesis only; keep it worker based and
-  expose it through `PasteClipboard(shortcut: String) -> bool`.
+  expose it through `PasteClipboard() -> bool` with fixed `Ctrl+V`.
 - Use XDG/directories helpers instead of hardcoded user paths.
 - Keep incomplete output integrations honest: clipboard and script output are
   real, and auto-paste is clipboard-based. Direct text insertion without

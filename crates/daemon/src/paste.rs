@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use evdev::{AttributeSet, KeyCode, KeyEvent, uinput::VirtualDevice};
-use shared::PasteShortcut;
 use tracing::{debug, info, warn};
 
 const PASTE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -30,12 +29,11 @@ impl PasteServiceHandle {
         }
     }
 
-    pub fn paste_clipboard(&self, shortcut: PasteShortcut) -> Result<()> {
+    pub fn paste_clipboard(&self) -> Result<()> {
         let (result_tx, result_rx) = mpsc::channel();
         let deadline = Instant::now() + PASTE_TIMEOUT;
         self.command_tx
             .send(PasteCommand::Paste {
-                shortcut,
                 deadline,
                 result_tx,
             })
@@ -65,7 +63,6 @@ impl Drop for PasteServiceHandle {
 #[derive(Debug)]
 enum PasteCommand {
     Paste {
-        shortcut: PasteShortcut,
         deadline: Instant,
         result_tx: mpsc::Sender<Result<()>>,
     },
@@ -79,11 +76,10 @@ fn paste_service_loop(command_rx: mpsc::Receiver<PasteCommand>) {
     for command in command_rx {
         match command {
             PasteCommand::Paste {
-                shortcut,
                 deadline,
                 result_tx,
             } => {
-                let result = runtime.paste_clipboard(shortcut, deadline);
+                let result = runtime.paste_clipboard(deadline);
                 let _ = result_tx.send(result);
             }
             PasteCommand::Shutdown => break,
@@ -98,12 +94,12 @@ struct PasteRuntime {
 }
 
 impl PasteRuntime {
-    fn paste_clipboard(&mut self, shortcut: PasteShortcut, deadline: Instant) -> Result<()> {
+    fn paste_clipboard(&mut self, deadline: Instant) -> Result<()> {
         ensure_paste_request_not_expired(deadline, "before preparing virtual keyboard")?;
         let result = {
             let device = self.device()?;
             ensure_paste_request_not_expired(deadline, "before emitting paste shortcut")?;
-            emit_paste_sequence(device, shortcut)
+            emit_paste_sequence(device)
         };
         if result.is_err() {
             self.device = None;
@@ -132,7 +128,6 @@ fn ensure_paste_request_not_expired(deadline: Instant, context: &'static str) ->
 fn create_virtual_keyboard() -> Result<VirtualDevice> {
     let mut keys = AttributeSet::<KeyCode>::new();
     keys.insert(KeyCode::KEY_LEFTCTRL);
-    keys.insert(KeyCode::KEY_LEFTSHIFT);
     keys.insert(KeyCode::KEY_V);
 
     let device = VirtualDevice::builder()
@@ -148,37 +143,24 @@ fn create_virtual_keyboard() -> Result<VirtualDevice> {
     Ok(device)
 }
 
-fn emit_paste_sequence(device: &mut VirtualDevice, shortcut: PasteShortcut) -> Result<()> {
-    for (key, value) in paste_key_sequence(shortcut) {
+fn emit_paste_sequence(device: &mut VirtualDevice) -> Result<()> {
+    for (key, value) in paste_key_sequence() {
         let event = *KeyEvent::new(key, value);
-        device.emit(&[event]).with_context(|| {
-            format!("failed to emit {} paste key event", shortcut.as_wire_str())
-        })?;
+        device
+            .emit(&[event])
+            .context("failed to emit Ctrl+V paste key event")?;
     }
-    debug!(
-        paste_shortcut = shortcut.as_wire_str(),
-        "emitted clipboard paste shortcut"
-    );
+    debug!("emitted clipboard paste shortcut");
     Ok(())
 }
 
-fn paste_key_sequence(shortcut: PasteShortcut) -> Vec<(KeyCode, i32)> {
-    match shortcut {
-        PasteShortcut::CtrlV => vec![
-            (KeyCode::KEY_LEFTCTRL, 1),
-            (KeyCode::KEY_V, 1),
-            (KeyCode::KEY_V, 0),
-            (KeyCode::KEY_LEFTCTRL, 0),
-        ],
-        PasteShortcut::CtrlShiftV => vec![
-            (KeyCode::KEY_LEFTCTRL, 1),
-            (KeyCode::KEY_LEFTSHIFT, 1),
-            (KeyCode::KEY_V, 1),
-            (KeyCode::KEY_V, 0),
-            (KeyCode::KEY_LEFTSHIFT, 0),
-            (KeyCode::KEY_LEFTCTRL, 0),
-        ],
-    }
+fn paste_key_sequence() -> Vec<(KeyCode, i32)> {
+    vec![
+        (KeyCode::KEY_LEFTCTRL, 1),
+        (KeyCode::KEY_V, 1),
+        (KeyCode::KEY_V, 0),
+        (KeyCode::KEY_LEFTCTRL, 0),
+    ]
 }
 
 #[cfg(test)]
@@ -188,26 +170,11 @@ mod tests {
     #[test]
     fn ctrl_v_sequence_presses_and_releases_modifier_and_v() {
         assert_eq!(
-            paste_key_sequence(PasteShortcut::CtrlV),
+            paste_key_sequence(),
             vec![
                 (KeyCode::KEY_LEFTCTRL, 1),
                 (KeyCode::KEY_V, 1),
                 (KeyCode::KEY_V, 0),
-                (KeyCode::KEY_LEFTCTRL, 0),
-            ]
-        );
-    }
-
-    #[test]
-    fn ctrl_shift_v_sequence_releases_v_before_modifiers() {
-        assert_eq!(
-            paste_key_sequence(PasteShortcut::CtrlShiftV),
-            vec![
-                (KeyCode::KEY_LEFTCTRL, 1),
-                (KeyCode::KEY_LEFTSHIFT, 1),
-                (KeyCode::KEY_V, 1),
-                (KeyCode::KEY_V, 0),
-                (KeyCode::KEY_LEFTSHIFT, 0),
                 (KeyCode::KEY_LEFTCTRL, 0),
             ]
         );

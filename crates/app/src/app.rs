@@ -518,25 +518,37 @@ impl AppRuntime {
                 info!(
                     shortcut_id,
                     script = %result.script_path,
-                    copy_stdout_to_clipboard = result.clipboard_text.is_some(),
+                    output_text_chars = result
+                        .output_text
+                        .as_ref()
+                        .map(|text| text.chars().count())
+                        .unwrap_or(0),
+                    output_text_bytes = result
+                        .output_text
+                        .as_ref()
+                        .map(|text| text.len())
+                        .unwrap_or(0),
+                    output_text_delivered = result.output_text.is_some(),
+                    copy_to_clipboard = result.copy_to_clipboard,
+                    auto_paste = result.auto_paste,
                     "output script finished"
                 );
-                if let Some(text) = result.clipboard_text {
+                if let Some(output_text) = result.output_text {
+                    let output_action = shared::OutputAction {
+                        copy_to_clipboard: result.copy_to_clipboard,
+                        auto_paste: result.auto_paste,
+                        script: None,
+                    };
                     if let Some(output_service) = self.output_service.borrow().as_ref() {
-                        if let Err(error) = output_service.copy_to_clipboard(
+                        output_service.copy_final_text_if_requested(
                             ClipboardCopySource::ScriptStdout {
                                 shortcut_id: shortcut_id.to_string(),
                                 script_path: result.script_path.clone(),
+                                auto_paste: result.auto_paste,
                             },
-                            text,
-                        ) {
-                            warn!(
-                                ?error,
-                                shortcut_id,
-                                script = %result.script_path,
-                                "failed to queue output script stdout clipboard copy"
-                            );
-                        }
+                            &output_action,
+                            &output_text,
+                        );
                     } else {
                         warn!(
                             shortcut_id,
@@ -582,33 +594,25 @@ impl AppRuntime {
     }
 
     fn paste_after_clipboard_copy(&self, source: &ClipboardCopySource) {
-        let Some(paste) = source.paste() else {
+        if !source.auto_paste() {
             return;
-        };
+        }
 
         let shortcut_id = source.shortcut_id();
-        let paste_shortcut = paste.shortcut;
         let daemon_client_worker = self.daemon_client_worker.borrow();
         let Some(daemon_client_worker) = daemon_client_worker.as_ref() else {
             warn!(
                 shortcut_id,
-                paste_shortcut = paste_shortcut.as_wire_str(),
                 "daemon client worker is not running; cannot auto-paste clipboard"
             );
             return;
         };
 
-        match daemon_client_worker.paste_clipboard(paste_shortcut) {
-            Ok(()) => debug!(
-                shortcut_id,
-                paste_shortcut = paste_shortcut.as_wire_str(),
-                "queued daemon clipboard paste"
-            ),
+        match daemon_client_worker.paste_clipboard() {
+            Ok(()) => debug!(shortcut_id, "queued daemon clipboard paste"),
             Err(error) => warn!(
                 ?error,
-                shortcut_id,
-                paste_shortcut = paste_shortcut.as_wire_str(),
-                "failed to queue daemon clipboard paste"
+                shortcut_id, "failed to queue daemon clipboard paste"
             ),
         }
     }
