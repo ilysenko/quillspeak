@@ -21,8 +21,8 @@ use crate::hotkey::{
 };
 use crate::models::{FinishEffect, ModelDownloadManager, ModelRowState, ModelStore};
 use crate::output::{
-    ClipboardCopyOutcome, ClipboardCopySource, ClipboardPasteOutcome, OutputScriptResult,
-    OutputService,
+    ClipboardCopyOutcome, ClipboardCopySource, ClipboardPasteOutcome, OutputCompletion,
+    OutputDelivery, OutputScriptResult, OutputService,
 };
 use crate::recording::{RecordingPhase, RecordingPipeline, RecordingService};
 use crate::settings::{SettingsWindow, SettingsWindowInit};
@@ -83,12 +83,32 @@ struct AppRuntime {
     whisper_runtime_status: RefCell<WhisperRuntimeStatus>,
     recording: RefCell<RecordingService>,
     recording_phase: Cell<RecordingPhase>,
+    pending_output: RefCell<Option<PendingOutputDelivery>>,
     next_recording_id: Cell<u64>,
     is_quitting: Cell<bool>,
     settings_window: RefCell<Option<SettingsWindow>>,
     tray: RefCell<Option<Tray>>,
     hotkey_backend: RefCell<Option<HotkeyBackendHandle>>,
     signal_trigger_service: RefCell<Option<SignalTriggerService>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingOutputDelivery {
+    recording_id: u64,
+    shortcut_id: String,
+    completion: OutputCompletion,
+}
+
+impl PendingOutputDelivery {
+    fn matches(&self, recording_id: u64, shortcut_id: &str, completion: OutputCompletion) -> bool {
+        self.recording_id == recording_id
+            && self.shortcut_id == shortcut_id
+            && self.completion == completion
+    }
+
+    fn matches_recording(&self, recording_id: u64, shortcut_id: &str) -> bool {
+        self.recording_id == recording_id && self.shortcut_id == shortcut_id
+    }
 }
 
 struct ShutdownServices {
@@ -184,6 +204,7 @@ impl AppRuntime {
             config: RefCell::new(config),
             recording: RefCell::new(RecordingService::default()),
             recording_phase: Cell::new(RecordingPhase::Idle),
+            pending_output: RefCell::new(None),
             next_recording_id: Cell::new(1),
             is_quitting: Cell::new(false),
             settings_window: RefCell::new(None),
@@ -258,9 +279,10 @@ impl AppRuntime {
             }
             AppCommand::RefreshTrayRecordingPhase => self.force_refresh_recording_phase(),
             AppCommand::OutputScriptFinished {
+                recording_id,
                 shortcut_id,
                 result,
-            } => self.finish_output_script(&shortcut_id, result),
+            } => self.finish_output_script(recording_id, &shortcut_id, result),
             AppCommand::ClipboardCopyFinished { source, result } => {
                 self.finish_clipboard_copy(source, result)
             }
@@ -544,31 +566,126 @@ impl AppRuntime {
         shortcut_id: &str,
         result: std::result::Result<Box<TranscriptionResult>, String>,
     ) {
-        let (phase, accepted) =
-            self.recording
-                .borrow_mut()
-                .finish_processing(recording_id, shortcut_id, &result);
-        if !accepted {
+        if !self
+            .recording
+            .borrow()
+            .is_processing(recording_id, shortcut_id)
+        {
             info!(
                 recording_id,
                 shortcut_id, "ignoring stale transcription result"
             );
-            self.set_recording_phase(phase);
             return;
         }
 
-        self.set_recording_phase(phase);
-
-        if let Ok(result) = &result {
-            log_recognized_text(shortcut_id, result);
-            self.apply_transcription_output(shortcut_id, result);
+        match result {
+            Ok(result) => {
+                log_recognized_text(shortcut_id, &result);
+                match self.apply_transcription_output(recording_id, shortcut_id, &result) {
+                    OutputDelivery::Queued(completion) => {
+                        self.set_pending_output(recording_id, shortcut_id, completion);
+                    }
+                    OutputDelivery::NotQueued => {
+                        self.finish_processing_now(recording_id, shortcut_id, &Ok(()));
+                    }
+                }
+            }
+            Err(error) => {
+                let failed: std::result::Result<(), String> = Err(error);
+                self.finish_processing_now(recording_id, shortcut_id, &failed);
+            }
         }
     }
 
-    fn apply_transcription_output(&self, shortcut_id: &str, result: &TranscriptionResult) {
+    fn apply_transcription_output(
+        &self,
+        recording_id: u64,
+        shortcut_id: &str,
+        result: &TranscriptionResult,
+    ) -> OutputDelivery {
         if let Some(output_service) = self.output_service.borrow().as_ref() {
-            output_service.apply(shortcut_id, result);
+            output_service.apply(recording_id, shortcut_id, result)
+        } else {
+            warn!(recording_id, shortcut_id, "output worker is not running");
+            OutputDelivery::NotQueued
         }
+    }
+
+    fn set_pending_output(
+        &self,
+        recording_id: u64,
+        shortcut_id: &str,
+        completion: OutputCompletion,
+    ) {
+        debug!(
+            recording_id,
+            shortcut_id,
+            ?completion,
+            "recording processing is waiting for output delivery"
+        );
+        self.pending_output.replace(Some(PendingOutputDelivery {
+            recording_id,
+            shortcut_id: shortcut_id.to_string(),
+            completion,
+        }));
+    }
+
+    fn update_pending_output_completion(
+        &self,
+        recording_id: u64,
+        shortcut_id: &str,
+        completion: OutputCompletion,
+    ) {
+        if self
+            .pending_output
+            .borrow()
+            .as_ref()
+            .is_some_and(|pending| pending.matches_recording(recording_id, shortcut_id))
+        {
+            self.set_pending_output(recording_id, shortcut_id, completion);
+        }
+    }
+
+    fn finish_pending_output(&self, recording_id: u64, shortcut_id: &str, reason: &str) {
+        let Some(pending) = self.pending_output.borrow().as_ref().cloned() else {
+            debug!(
+                recording_id,
+                shortcut_id, reason, "output completion ignored because no output is pending"
+            );
+            return;
+        };
+        if !pending.matches_recording(recording_id, shortcut_id) {
+            debug!(
+                pending_recording_id = pending.recording_id,
+                pending_shortcut_id = %pending.shortcut_id,
+                recording_id,
+                shortcut_id,
+                reason, "stale output completion ignored"
+            );
+            return;
+        }
+
+        self.pending_output.borrow_mut().take();
+        self.finish_processing_now(recording_id, shortcut_id, &Ok(()));
+    }
+
+    fn finish_processing_now<T>(
+        &self,
+        recording_id: u64,
+        shortcut_id: &str,
+        result: &std::result::Result<T, String>,
+    ) {
+        let (phase, accepted) =
+            self.recording
+                .borrow_mut()
+                .finish_processing(recording_id, shortcut_id, result);
+        if !accepted {
+            info!(
+                recording_id,
+                shortcut_id, "ignoring stale processing completion"
+            );
+        }
+        self.set_recording_phase(phase);
     }
 
     fn mute_speakers_for_plan(&self, plan: &TranscriptionPlan) {
@@ -608,12 +725,29 @@ impl AppRuntime {
 
     fn finish_output_script(
         &self,
+        recording_id: u64,
         shortcut_id: &str,
         result: std::result::Result<OutputScriptResult, String>,
     ) {
+        if !self
+            .pending_output
+            .borrow()
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.matches(recording_id, shortcut_id, OutputCompletion::Script)
+            })
+        {
+            debug!(
+                recording_id,
+                shortcut_id, "stale output script result ignored"
+            );
+            return;
+        }
+
         match result {
             Ok(result) => {
                 info!(
+                    recording_id,
                     shortcut_id,
                     script = %result.script_path,
                     output_text_chars = result
@@ -633,24 +767,55 @@ impl AppRuntime {
                 );
                 if let Some(output_text) = result.output_text {
                     if let Some(output_service) = self.output_service.borrow().as_ref() {
-                        output_service.copy_final_text_if_requested(
+                        match output_service.copy_final_text_if_requested(
                             ClipboardCopySource::ScriptStdout {
+                                recording_id,
                                 shortcut_id: shortcut_id.to_string(),
                                 script_path: result.script_path.clone(),
                             },
                             &result.output,
                             &output_text,
-                        );
+                        ) {
+                            OutputDelivery::Queued(completion) => {
+                                self.update_pending_output_completion(
+                                    recording_id,
+                                    shortcut_id,
+                                    completion,
+                                );
+                            }
+                            OutputDelivery::NotQueued => {
+                                self.finish_pending_output(
+                                    recording_id,
+                                    shortcut_id,
+                                    "script output did not queue clipboard delivery",
+                                );
+                            }
+                        }
                     } else {
                         warn!(
+                            recording_id,
                             shortcut_id,
                             script = %result.script_path,
                             "output worker is not running"
                         );
+                        self.finish_pending_output(
+                            recording_id,
+                            shortcut_id,
+                            "output worker unavailable after script",
+                        );
                     }
+                } else {
+                    self.finish_pending_output(
+                        recording_id,
+                        shortcut_id,
+                        "script output finished without clipboard delivery",
+                    );
                 }
             }
-            Err(error) => warn!(shortcut_id, error, "output script failed"),
+            Err(error) => {
+                warn!(recording_id, shortcut_id, error, "output script failed");
+                self.finish_pending_output(recording_id, shortcut_id, "output script failed");
+            }
         }
     }
 
@@ -660,11 +825,14 @@ impl AppRuntime {
         result: std::result::Result<ClipboardCopyOutcome, String>,
     ) {
         let shortcut_id = source.shortcut_id();
+        let recording_id = source.recording_id();
         let copy_source = source.kind();
         let script_path = source.script_path().unwrap_or("");
+        let copy_failed = result.is_err();
         match result {
             Ok(result) => {
                 info!(
+                    recording_id,
                     shortcut_id,
                     source = copy_source,
                     script = script_path,
@@ -675,12 +843,29 @@ impl AppRuntime {
                 );
             }
             Err(error) => warn!(
+                recording_id,
                 shortcut_id,
                 source = copy_source,
                 script = script_path,
                 error,
                 "clipboard copy failed"
             ),
+        }
+
+        let pending_completion = self
+            .pending_output
+            .borrow()
+            .as_ref()
+            .filter(|pending| pending.matches_recording(recording_id, shortcut_id))
+            .map(|pending| pending.completion);
+        match pending_completion {
+            Some(OutputCompletion::ClipboardCopy) => {
+                self.finish_pending_output(recording_id, shortcut_id, "clipboard copy finished");
+            }
+            Some(OutputCompletion::ClipboardPaste) if copy_failed => {
+                self.finish_pending_output(recording_id, shortcut_id, "clipboard copy failed");
+            }
+            _ => {}
         }
     }
 
@@ -690,10 +875,12 @@ impl AppRuntime {
         result: std::result::Result<ClipboardPasteOutcome, String>,
     ) {
         let shortcut_id = source.shortcut_id();
+        let recording_id = source.recording_id();
         let copy_source = source.kind();
         let script_path = source.script_path().unwrap_or("");
         match result {
             Ok(result) => info!(
+                recording_id,
                 shortcut_id,
                 source = copy_source,
                 script = script_path,
@@ -702,12 +889,23 @@ impl AppRuntime {
                 "Pasted text from clipboard"
             ),
             Err(error) => warn!(
+                recording_id,
                 shortcut_id,
                 source = copy_source,
                 script = script_path,
                 error,
                 "clipboard paste failed"
             ),
+        }
+        if self
+            .pending_output
+            .borrow()
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.matches(recording_id, shortcut_id, OutputCompletion::ClipboardPaste)
+            })
+        {
+            self.finish_pending_output(recording_id, shortcut_id, "clipboard paste finished");
         }
     }
 
@@ -1192,5 +1390,25 @@ fn install_ctrl_c_handler(command_tx: mpsc::Sender<AppCommand>) {
         let _ = command_tx.send(AppCommand::Quit);
     }) {
         warn!(?error, "failed to install Ctrl-C handler");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_output_matches_recording_and_completion() {
+        let pending = PendingOutputDelivery {
+            recording_id: 7,
+            shortcut_id: "default".to_string(),
+            completion: OutputCompletion::ClipboardPaste,
+        };
+
+        assert!(pending.matches(7, "default", OutputCompletion::ClipboardPaste));
+        assert!(pending.matches_recording(7, "default"));
+        assert!(!pending.matches(7, "default", OutputCompletion::ClipboardCopy));
+        assert!(!pending.matches_recording(8, "default"));
+        assert!(!pending.matches_recording(7, "other"));
     }
 }

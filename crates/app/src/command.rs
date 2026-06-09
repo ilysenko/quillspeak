@@ -40,6 +40,7 @@ pub enum AppCommand {
     WhisperRuntimeStatusChanged(WhisperRuntimeStatus),
     RefreshTrayRecordingPhase,
     OutputScriptFinished {
+        recording_id: u64,
         shortcut_id: String,
         result: Result<OutputScriptResult, String>,
     },

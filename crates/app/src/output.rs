@@ -31,6 +31,19 @@ pub struct OutputService {
     cancel_requested: Arc<AtomicBool>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputDelivery {
+    NotQueued,
+    Queued(OutputCompletion),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputCompletion {
+    Script,
+    ClipboardCopy,
+    ClipboardPaste,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputScriptResult {
     pub script_path: String,
@@ -67,7 +80,12 @@ impl OutputService {
         })
     }
 
-    pub fn apply(&self, shortcut_id: &str, result: &TranscriptionResult) {
+    pub fn apply(
+        &self,
+        recording_id: u64,
+        shortcut_id: &str,
+        result: &TranscriptionResult,
+    ) -> OutputDelivery {
         if let TranscriptionStatus::Skipped { reason } = result.status {
             info!(
                 shortcut_id,
@@ -76,7 +94,7 @@ impl OutputService {
                 reason = reason.label(),
                 "Skipping output action because transcription was skipped"
             );
-            return;
+            return OutputDelivery::NotQueued;
         }
 
         let text = result.text.trim();
@@ -87,19 +105,20 @@ impl OutputService {
                 language = %result.debug.language,
                 "Skipping output action because recognized text is empty"
             );
-            return;
+            return OutputDelivery::NotQueued;
         }
 
         if let Some(script) = &result.output.script {
-            self.run_script(shortcut_id, script, &result.output, text);
+            self.run_script(recording_id, shortcut_id, script, &result.output, text)
         } else {
             self.copy_final_text_if_requested(
                 ClipboardCopySource::Transcription {
+                    recording_id,
                     shortcut_id: shortcut_id.to_string(),
                 },
                 &result.output,
                 text,
-            );
+            )
         }
     }
 
@@ -115,12 +134,14 @@ impl OutputService {
 
     fn run_script(
         &self,
+        recording_id: u64,
         shortcut_id: &str,
         script: &ScriptOutput,
         output: &OutputAction,
         text: &str,
-    ) {
+    ) -> OutputDelivery {
         let command = OutputWorkerCommand::RunScript {
+            recording_id,
             shortcut_id: shortcut_id.to_string(),
             script_path: script.path.clone(),
             text: text.to_string(),
@@ -128,6 +149,9 @@ impl OutputService {
         };
         if self.worker_tx.send(command).is_err() {
             warn!(shortcut_id, script = %script.path, "output worker is not running");
+            OutputDelivery::NotQueued
+        } else {
+            OutputDelivery::Queued(OutputCompletion::Script)
         }
     }
 
@@ -136,13 +160,14 @@ impl OutputService {
         source: ClipboardCopySource,
         output: &OutputAction,
         text: &str,
-    ) {
+    ) -> OutputDelivery {
         let Some(text) = clipboard_transport_text_for_output(output, text) else {
-            return;
+            return OutputDelivery::NotQueued;
         };
 
         let shortcut_id = source.shortcut_id().to_string();
         let source_kind = source.kind();
+        let completion = clipboard_completion_for_output(output);
         let paste = output
             .paste_from_clipboard
             .then(|| PasteRequest::from(output));
@@ -152,13 +177,19 @@ impl OutputService {
             paste,
         };
         match self.worker_tx.send(command) {
-            Ok(()) => debug!(shortcut_id, source = source_kind, "queued clipboard copy"),
-            Err(error) => warn!(
-                ?error,
-                shortcut_id,
-                source = source_kind,
-                "failed to queue clipboard copy"
-            ),
+            Ok(()) => {
+                debug!(shortcut_id, source = source_kind, "queued clipboard copy");
+                OutputDelivery::Queued(completion)
+            }
+            Err(error) => {
+                warn!(
+                    ?error,
+                    shortcut_id,
+                    source = source_kind,
+                    "failed to queue clipboard copy"
+                );
+                OutputDelivery::NotQueued
+            }
         }
     }
 }
@@ -174,21 +205,39 @@ fn clipboard_transport_text_for_output<'a>(
     (!text.is_empty()).then_some(text)
 }
 
+fn clipboard_completion_for_output(output: &OutputAction) -> OutputCompletion {
+    if output.paste_from_clipboard {
+        OutputCompletion::ClipboardPaste
+    } else {
+        OutputCompletion::ClipboardCopy
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClipboardCopySource {
     Transcription {
+        recording_id: u64,
         shortcut_id: String,
     },
     ScriptStdout {
+        recording_id: u64,
         shortcut_id: String,
         script_path: String,
     },
 }
 
 impl ClipboardCopySource {
+    pub(crate) fn recording_id(&self) -> u64 {
+        match self {
+            Self::Transcription { recording_id, .. } | Self::ScriptStdout { recording_id, .. } => {
+                *recording_id
+            }
+        }
+    }
+
     pub(crate) fn shortcut_id(&self) -> &str {
         match self {
-            Self::Transcription { shortcut_id } | Self::ScriptStdout { shortcut_id, .. } => {
+            Self::Transcription { shortcut_id, .. } | Self::ScriptStdout { shortcut_id, .. } => {
                 shortcut_id
             }
         }
@@ -250,6 +299,7 @@ impl From<&OutputAction> for PasteRequest {
 
 enum OutputWorkerCommand {
     RunScript {
+        recording_id: u64,
         shortcut_id: String,
         script_path: String,
         text: String,
@@ -274,6 +324,7 @@ fn output_worker_loop(
         }
         match command {
             OutputWorkerCommand::RunScript {
+                recording_id,
                 shortcut_id,
                 script_path,
                 text,
@@ -282,6 +333,7 @@ fn output_worker_loop(
                 let result = run_script(&script_path, &text, &output, &cancel_requested)
                     .map_err(|error| format!("{error:#}"));
                 let _ = command_tx.send(AppCommand::OutputScriptFinished {
+                    recording_id,
                     shortcut_id,
                     result,
                 });
@@ -991,11 +1043,31 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_completion_waits_for_paste_when_paste_is_requested() {
+        let copy_only = OutputAction::default();
+        assert_eq!(
+            clipboard_completion_for_output(&copy_only),
+            OutputCompletion::ClipboardCopy
+        );
+
+        let paste = OutputAction {
+            paste_from_clipboard: true,
+            ..OutputAction::default()
+        };
+        assert_eq!(
+            clipboard_completion_for_output(&paste),
+            OutputCompletion::ClipboardPaste
+        );
+    }
+
+    #[test]
     fn clipboard_copy_source_tracks_transcription_context() {
         let source = ClipboardCopySource::Transcription {
+            recording_id: 42,
             shortcut_id: "default".to_string(),
         };
 
+        assert_eq!(source.recording_id(), 42);
         assert_eq!(source.shortcut_id(), "default");
         assert_eq!(source.kind(), "transcription");
         assert_eq!(source.script_path(), None);
@@ -1004,10 +1076,12 @@ mod tests {
     #[test]
     fn clipboard_copy_source_tracks_script_context() {
         let source = ClipboardCopySource::ScriptStdout {
+            recording_id: 43,
             shortcut_id: "default".to_string(),
             script_path: "/tmp/script".to_string(),
         };
 
+        assert_eq!(source.recording_id(), 43);
         assert_eq!(source.shortcut_id(), "default");
         assert_eq!(source.kind(), "script_stdout");
         assert_eq!(source.script_path(), Some("/tmp/script"));
