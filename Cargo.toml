@@ -1,7 +1,6 @@
 [workspace]
 members = [
     "crates/app",
-    "crates/daemon",
     "crates/shared",
 ]
 resolver = "2"
@@ -14,11 +13,9 @@ license = "MIT"
 
 [workspace.dependencies]
 anyhow = "1"
-clap = { version = "4.5", features = ["derive"] }
 cpal = { version = "0.18", default-features = false }
 ctrlc = "3.5"
 directories = "6"
-evdev = "0.13"
 gtk4 = "0.11"
 hound = "3.5"
 ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
@@ -35,5 +32,3 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 whisper-rs = { version = "=0.13.2", default-features = false }
 x11rb = "0.13"
-zbus = { version = "5", default-features = true }
-zvariant = "5"

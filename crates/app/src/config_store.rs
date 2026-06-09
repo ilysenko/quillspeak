@@ -38,10 +38,13 @@ impl ConfigStore {
 
         let contents = fs::read_to_string(&self.path)
             .with_context(|| format!("failed to read config {}", self.path.display()))?;
-        if config_schema_version(&contents) != Some(CONFIG_SCHEMA_VERSION) {
+        let schema_version = config_schema_version(&contents);
+        if schema_version != Some(CONFIG_SCHEMA_VERSION) {
             warn!(
                 config_path = %self.path.display(),
-                "replacing unsupported settings config with defaults"
+                detected_schema_version = ?schema_version,
+                current_schema_version = CONFIG_SCHEMA_VERSION,
+                "discarding unsupported settings config and writing defaults"
             );
             return self.replace_with_default();
         }
@@ -107,6 +110,56 @@ mode = "push_to_talk"
             config_schema_version(&contents),
             Some(CONFIG_SCHEMA_VERSION)
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn schema_v7_daemon_config_is_discarded_instead_of_migrated() {
+        let root = temp_config_root();
+        let path = root.join("config.toml");
+        fs::create_dir_all(&root).expect("test config dir should be writable");
+        fs::write(
+            &path,
+            r#"
+schema_version = 7
+
+[general]
+mode = "push_to_talk"
+hotkey_backend = "daemon"
+default_input = { type = "system_default" }
+default_model_id = "large-v3-turbo-q5_0"
+default_language = "auto"
+compute_backend = "auto"
+keep_model_loaded = true
+default_output = { copy_to_clipboard = true, auto_paste = true }
+
+[[shortcuts]]
+id = "default"
+name = "Default"
+enabled = true
+trigger = { type = "linux_signal", start_signal = "SIGUSR1", stop_signal = "SIGUSR2" }
+model_id = "default"
+language = "default"
+output = { type = "custom", copy_to_clipboard = false, auto_paste = true, script = { path = "/tmp/old-output" } }
+"#,
+        )
+        .expect("v7 config should be writable");
+        let store = ConfigStore::for_path(path.clone());
+
+        let config = store
+            .load_or_create_default()
+            .expect("v7 config should be discarded");
+        let contents = fs::read_to_string(&path).expect("replacement config should be readable");
+
+        assert_eq!(config, AppConfig::default());
+        assert_eq!(
+            config_schema_version(&contents),
+            Some(CONFIG_SCHEMA_VERSION)
+        );
+        assert!(!contents.contains("auto_paste"));
+        assert!(!contents.contains("hotkey_backend = \"daemon\""));
+        assert!(!contents.contains("linux_signal"));
+        assert!(!contents.contains("/tmp/old-output"));
         let _ = fs::remove_dir_all(root);
     }
 

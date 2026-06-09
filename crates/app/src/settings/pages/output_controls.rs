@@ -48,14 +48,6 @@ pub fn add_default_output_controls(
         }
     });
 
-    controls
-        .auto_paste_switch
-        .connect_active_notify(move |switch| {
-            draft.update(|config| {
-                config.general.default_output.auto_paste = switch.is_active();
-            });
-        });
-
     controls.add_to_group(group);
 }
 
@@ -132,17 +124,6 @@ pub fn add_shortcut_output_controls(
         }
     });
 
-    let shortcut_id_for_paste = shortcut_id.to_string();
-    controls
-        .auto_paste_switch
-        .connect_active_notify(move |switch| {
-            draft.update_shortcut(&shortcut_id_for_paste, |shortcut| {
-                if let ShortcutOutput::Custom { action } = &mut shortcut.output {
-                    action.auto_paste = switch.is_active();
-                }
-            });
-        });
-
     group.add(&output_row.row);
     controls.add_to_group(group);
 }
@@ -154,8 +135,6 @@ struct OutputControls {
     script_row: adw::EntryRow,
     copy_row: adw::ActionRow,
     copy_switch: gtk::Switch,
-    auto_paste_row: adw::ActionRow,
-    auto_paste_switch: gtk::Switch,
 }
 
 impl OutputControls {
@@ -192,26 +171,12 @@ impl OutputControls {
         copy_row.add_suffix(&copy_switch);
         copy_row.set_activatable_widget(Some(&copy_switch));
 
-        let auto_paste_switch = gtk::Switch::builder()
-            .active(output.auto_paste)
-            .valign(gtk::Align::Center)
-            .sensitive(custom_sensitive)
-            .build();
-        let auto_paste_row = adw::ActionRow::builder()
-            .title("Auto paste")
-            .sensitive(custom_sensitive)
-            .build();
-        auto_paste_row.add_suffix(&auto_paste_switch);
-        auto_paste_row.set_activatable_widget(Some(&auto_paste_switch));
-
         Self {
             run_script_row,
             run_script_switch,
             script_row,
             copy_row,
             copy_switch,
-            auto_paste_row,
-            auto_paste_switch,
         }
     }
 
@@ -219,13 +184,11 @@ impl OutputControls {
         group.add(&self.run_script_row);
         group.add(&self.script_row);
         group.add(&self.copy_row);
-        group.add(&self.auto_paste_row);
     }
 
     fn action_from_rows(&self) -> OutputAction {
         OutputAction {
             copy_to_clipboard: self.copy_switch.is_active(),
-            auto_paste: self.auto_paste_switch.is_active(),
             script: self
                 .run_script_switch
                 .is_active()
@@ -244,8 +207,6 @@ impl OutputControls {
         self.run_script_switch.set_sensitive(sensitive);
         self.copy_row.set_sensitive(sensitive);
         self.copy_switch.set_sensitive(sensitive);
-        self.auto_paste_row.set_sensitive(sensitive);
-        self.auto_paste_switch.set_sensitive(sensitive);
         self.set_script_sensitive(self.run_script_switch.is_active(), sensitive);
     }
 

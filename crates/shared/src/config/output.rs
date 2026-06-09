@@ -7,8 +7,6 @@ use super::ConfigError;
 pub struct OutputAction {
     #[serde(default = "default_copy_to_clipboard")]
     pub copy_to_clipboard: bool,
-    #[serde(default)]
-    pub auto_paste: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<ScriptOutput>,
 }
@@ -23,7 +21,6 @@ impl OutputAction {
     pub fn clipboard() -> Self {
         Self {
             copy_to_clipboard: true,
-            auto_paste: false,
             script: None,
         }
     }
@@ -31,7 +28,6 @@ impl OutputAction {
     pub fn script(path: String) -> Self {
         Self {
             copy_to_clipboard: false,
-            auto_paste: false,
             script: Some(ScriptOutput { path }),
         }
     }
@@ -46,19 +42,11 @@ impl OutputAction {
     }
 
     pub fn label(&self) -> &'static str {
-        match (
-            self.script.is_some(),
-            self.copy_to_clipboard,
-            self.auto_paste,
-        ) {
-            (true, true, true) => "Run script, copy, and auto paste",
-            (true, true, false) => "Run script and copy to clipboard",
-            (true, false, true) => "Run script and auto paste",
-            (true, false, false) => "Run script",
-            (false, true, true) => "Copy and auto paste",
-            (false, true, false) => "Copy to clipboard",
-            (false, false, true) => "Auto paste",
-            (false, false, false) => "No output",
+        match (self.script.is_some(), self.copy_to_clipboard) {
+            (true, true) => "Run script and copy to clipboard",
+            (true, false) => "Run script",
+            (false, true) => "Copy to clipboard",
+            (false, false) => "No output",
         }
     }
 }
@@ -123,11 +111,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_output_copies_without_auto_paste_or_script() {
+    fn default_output_copies_without_script() {
         let output = OutputAction::default();
 
         assert!(output.copy_to_clipboard);
-        assert!(!output.auto_paste);
         assert_eq!(output.script, None);
     }
 
@@ -136,7 +123,6 @@ mod tests {
         let output = OutputAction::script("/tmp/translate".to_string());
 
         assert!(!output.copy_to_clipboard);
-        assert!(!output.auto_paste);
         assert_eq!(
             output.script.as_ref().map(|script| script.path.as_str()),
             Some("/tmp/translate")

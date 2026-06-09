@@ -1,39 +1,41 @@
 # MyApp Linux Voice Prototype
 
-Minimal Rust Linux desktop prototype for a future push-to-talk transcription app.
+Minimal Rust Linux desktop prototype for a future push-to-talk transcription
+app.
 
-The main app is a normal foreground process while developing. It starts with no
+The app is a normal foreground process while developing. It starts with no
 visible window, keeps running through a tray/top-bar StatusNotifierItem, and can
 be interrupted with Ctrl-C from the terminal. Later, the same runtime can be
-wrapped in desktop autostart or a user service without changing the tray, UI, or
-D-Bus architecture.
+wrapped in desktop autostart or a user service without changing the tray or UI.
 
 ## Workspace
 
-- `crates/app` builds `myapp`, the GTK4/libadwaita main app.
-- `crates/daemon` builds `myapp-daemon`, the optional Wayland input daemon.
-- `crates/shared` contains config and protocol types shared by both binaries.
+- `crates/app` builds `myapp`, the GTK4/libadwaita desktop app.
+- `crates/shared` contains config, model catalog, shortcut parsing, language,
+  output, and small shared constants.
+
+There is no in-repo input daemon. X11 hotkeys are handled by the app itself.
+Wayland hotkeys are expected to come from an external utility that sends Linux
+signals to the `myapp` process.
 
 ## System Dependencies
 
 On Debian/Ubuntu-style systems install the desktop, audio, and whisper.cpp build
-dependencies before building the main app:
+dependencies before building the app:
 
 ```sh
 sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libpulse-dev libpipewire-0.3-dev libgtk-4-dev libadwaita-1-dev
 ```
 
-Clipboard output uses small external runtime tools. They are not guaranteed to
-be installed by the desktop environment itself:
+Clipboard output uses small external runtime tools:
 
 ```sh
 sudo apt install wl-clipboard xclip
 ```
 
 `wl-clipboard` provides `wl-copy` and `wl-paste` for Wayland. `xclip` is used
-for X11. The app does not install these tools automatically or run package
-managers itself; if a required tool is missing, it logs `clipboard copy failed`
-with the package hint.
+for X11. The app does not install these tools automatically; if a required tool
+is missing, it logs `clipboard copy failed` with the package hint.
 
 The default development build enables CPAL's native PipeWire and PulseAudio
 backends. On modern Ubuntu desktops the app prefers PipeWire, falls back to
@@ -47,18 +49,9 @@ cargo run -p app --no-default-features --bin myapp
 
 The PipeWire feature requires `libpipewire-0.3-dev`. The final
 `--no-default-features` command is an ALSA-only fallback for debugging.
-The same fallback works for local validation on systems without PipeWire
-development headers:
-
-```sh
-cargo check --workspace --no-default-features
-cargo test --workspace --no-default-features
-cargo clippy --workspace --all-targets --no-default-features -- -D warnings
-```
 
 Vulkan is the intended packaged GPU backend because users should be able to
-install a future `.deb` without compiling CUDA locally. Builder machines need
-Vulkan development dependencies:
+install a future `.deb` without compiling CUDA locally:
 
 ```sh
 sudo apt install libvulkan-dev glslc
@@ -75,17 +68,11 @@ cargo run -p app --no-default-features --features whisper-vulkan,audio-pulseaudi
 
 The workspace currently pins `whisper-rs = "=0.13.2"` because that version's
 Vulkan feature builds here. Newer `whisper-rs` releases should be retested
-before upgrading; `0.14.4`, `0.15.1`, and `0.16.0` currently fail to compile
-their Vulkan wrapper against their generated `whisper-rs-sys` bindings.
-
-The daemon and shared crate do not require GTK. Real Wayland hotkey capture uses
-Linux evdev devices under `/dev/input/event*`; normal runtime should not use
-`sudo`, but your user must have permission to open the keyboard event devices
-through your distro's input group, logind ACLs, or a future udev/package rule.
+before upgrading.
 
 ## Build And Run
 
-Run the main app in foreground development mode:
+Run the app in foreground development mode:
 
 ```sh
 cargo run -p app --bin myapp
@@ -101,41 +88,18 @@ Expected behavior:
 - the tray recording item toggles between `Start Recording` and
   `Stop Recording`.
 
-Run the optional daemon:
-
-```sh
-cargo run -p daemon --bin myapp-daemon
-```
-
-On X11, `hotkey_backend = "auto"` makes the main app capture the shortcut
-in-process and the daemon is not needed. On Wayland, `auto` uses the daemon for
-precise key down/up events.
-
-Verbose development logs for transcription details:
+Verbose development logs:
 
 ```sh
 MYAPP_DEV_LOG=1 cargo run -p app --bin myapp
 MYAPP_DEBUG_SAVE_AUDIO=1 MYAPP_DEV_LOG=1 cargo run -p app --features whisper-vulkan --bin myapp
-MYAPP_DEV_LOG=1 cargo run -p daemon --bin myapp-daemon
 ```
 
 `MYAPP_DEV_LOG=1` enables debug logs for MyApp crates while keeping dependency
-crates at info level. A global `RUST_LOG=debug` is intentionally noisy and will
-include low-level PulseAudio/zbus internals. If you set `RUST_LOG` explicitly,
-use `RUST_LOG=info,pulseaudio::client::reactor=off` to keep the known
-PulseAudio reactor disconnect noise hidden.
-
-Simulate daemon hotkey events while `myapp` is running:
-
-```sh
-cargo run -p daemon --bin myapp-daemon -- --hotkey-down
-cargo run -p daemon --bin myapp-daemon -- --hotkey-up
-cargo run -p daemon --bin myapp-daemon -- --hotkey-down --shortcut-id default
-```
-
-The first command should make the app log `Start recording`; the second should
-make it log `Stop recording` and start transcription if the selected model is
-downloaded.
+crates at info level. A global `RUST_LOG=debug` is intentionally noisy. If you
+set `RUST_LOG` explicitly, use
+`RUST_LOG=info,pulseaudio::client::reactor=off` to keep known PulseAudio
+reactor disconnect noise hidden.
 
 The tray icon reflects the recording phase:
 
@@ -143,27 +107,64 @@ The tray icon reflects the recording phase:
 - red: recording,
 - orange: processing/transcription.
 
-Real hotkey behavior:
+## Hotkeys
 
-- pressing a configured shortcut sends `HotkeyDown(shortcut_id)` and turns the
-  tray icon red,
-- releasing any required key sends `HotkeyUp(shortcut_id)`, turns the icon
-  orange while transcription runs, then returns it to white,
-- unrelated keys are ignored by the daemon and are not logged.
+The app has two supported trigger paths:
+
+- X11: `hotkey_backend = "auto"` or `"x11"` lets the app capture configured
+  keyboard shortcuts directly with X11 passive grabs.
+- Wayland: configure shortcut profiles as Linux signal triggers and use an
+  external hotkey utility such as `swhkd` to send `SIGUSR1` or `SIGUSR2` to
+  `myapp`.
+
+Backend values:
+
+- `auto`: X11 uses the app's X11 backend; Wayland resolves to disabled so
+  external signal tooling can drive signal shortcuts.
+- `disabled`: no app-side global keyboard capture; tray manual actions and
+  Linux signal triggers still work.
+- `x11`: force app-side X11 capture.
+
+Linux signal triggers accept `SIGUSR1` and `SIGUSR2`. Using the same signal for
+start and stop makes that signal a toggle.
+
+Signal examples:
+
+```sh
+pkill -USR2 -x myapp
+pkill -USR1 -x myapp
+```
+
+Example `~/.config/swhkd/swhkdrc` entries for Wayland:
+
+```conf
+ctrl + space
+    pkill -USR1 -x myapp
+
+ctrl + @space
+    pkill -USR1 -x myapp
+
+ctrl + shift + space
+    pkill -USR2 -x myapp
+
+ctrl + shift + @space
+    pkill -USR2 -x myapp
+```
+
+If a shortcut uses the same start and stop signal, pressing the hotkey once
+starts recording and pressing it again stops recording. If a shortcut uses
+distinct start and stop signals, the external utility must send the matching
+signal for each edge.
 
 ## Audio And Transcription
 
 The app records audio with CPAL from the General page `Default input` setting.
 `System Default` is always available and resolves to the current Linux default
-input device at recording time. The settings dropdown also lists discovered
-input devices with stable CPAL device IDs when the host backend provides them.
-Audio capture is independent of X11/Wayland.
+input device at recording time. Audio capture is independent of X11/Wayland.
 
 The app keeps the input stream stopped while idle. It starts the CPAL stream
 only while recording and pauses it again on stop, so idle logs stay quiet and
-the microphone is not held open unnecessarily. Capture requests a bounded input
-buffer when the backend reports one, and falls back to the backend default if
-that fixed buffer cannot be opened.
+the microphone is not held open unnecessarily.
 
 On stop, the app converts captured audio to 16 kHz mono `f32` with `rubato`,
 runs `whisper-rs`/whisper.cpp on the model selected by the active shortcut, and
@@ -174,42 +175,24 @@ recognized text shortcut_id=default model_id=tiny language=auto text="..."
 ```
 
 Captures with too little usable source or prepared audio are reported as
-`Skipped` transcription results. They do not load Whisper, do not clear a good
-cached model because of an empty transcript, and do not run output actions. A
-very low callback count is logged as a capture diagnostic instead of dropping
-otherwise valid audio.
+`Skipped` transcription results. They do not load Whisper and do not run output
+actions.
 
 `MYAPP_DEV_LOG=1` prints the full transcription debug structure: shortcut name,
 model path, compute backend, input device, capture duration, source sample
-rate, audio RMS/peak, Whisper sample count, inference time, and segments. Info
-logs also include the real audio duration, shortcut wall-clock duration, startup
-latency, first accepted audio callback latency, callback count, and discarded
-stale callback/sample counts. Empty recognized text also logs segment count and
-audio RMS/peak to help distinguish a wrong or silent microphone from a
-transcription problem.
+rate, audio RMS/peak, Whisper sample count, inference time, and segments.
 
 Set `MYAPP_DEBUG_SAVE_AUDIO=1` to write source WAV, the exact 16 kHz mono WAV
 sent to Whisper, and TOML metadata under `/tmp/myapp-audio-debug`. Set it to a
-directory path to choose a different output directory. Skipped captures also
-write debug audio when this flag is set, but that audio is diagnostic only and
-is not sent to Whisper.
+directory path to choose a different output directory.
 
-To test the Whisper invocation without GTK, D-Bus, or microphone capture, run
-the ignored debug WAV test against a saved 16 kHz mono debug file:
+To test Whisper without GTK or microphone capture, run the ignored debug WAV
+test against a saved 16 kHz mono debug file:
 
 ```sh
 MYAPP_TEST_WHISPER_MODEL=/path/to/ggml-model.bin \
 MYAPP_TEST_WHISPER_WAV=/tmp/myapp-audio-debug/default-...-whisper-16k-mono.wav \
 cargo test -p app debug_whisper_wav_transcribes_with_app_params -- --ignored --nocapture
-```
-
-There is also an ignored cache regression for repeated transcription after a
-short skipped capture:
-
-```sh
-MYAPP_TEST_WHISPER_MODEL=/path/to/ggml-model.bin \
-MYAPP_TEST_WHISPER_WAV=/tmp/myapp-audio-debug/default-...-whisper-16k-mono.wav \
-cargo test -p app debug_whisper_cached_repeated_transcription_survives_short_skip -- --ignored --nocapture
 ```
 
 Auto language mode is used for normal transcription, but the app does not set
@@ -220,23 +203,30 @@ Models must be downloaded in Settings > Models before they can be used. If a
 shortcut points to a model that is not ready, recording stops with a clear log
 error and no hidden download starts during the hotkey flow.
 
-Output actions are executed after successful transcription. The output pipeline
-can optionally run a configured script on a background worker thread, then copy
-or auto-paste the final text. If a script is enabled, its stdout is the final
-text; the original transcript is not copied or pasted as a fallback.
-Clipboard writes use external Linux tools so Wayland and X11 clients see the
-same selection: install `wl-clipboard` for Wayland or `xclip` for X11. The app
-verifies clipboard writes with `wl-paste` or `xclip -out` before logging
-success; if copy or verification fails, the app logs the failure instead of
-reporting a successful copy.
+## Output
 
-Copy-to-clipboard intentionally leaves the final text in the clipboard, and
-auto-paste uses that same clipboard value as the paste source. The app does not
-restore the previous clipboard content after a successful copy or auto-paste.
+Output uses one simple pipeline:
+
+```text
+transcript -> optional script transform -> final text -> optional clipboard copy
+```
+
+If a script is enabled, its stdout is the final text; the original transcript is
+not copied as a fallback. Clipboard writes use external Linux tools so Wayland
+and X11 clients see the same selection. The app verifies clipboard writes with
+`wl-paste` or `xclip -out` before logging success.
+
+Copy-to-clipboard intentionally leaves the final text in the clipboard. Direct
+text insertion and auto-paste are not implemented in this app.
+
+If transcription logs recognized text but another application cannot paste it,
+check the MyApp logs for `Copied text to clipboard` or `clipboard copy failed`
+messages. On Wayland, check manually with `wl-paste --no-newline`; on X11, use
+`xclip -selection clipboard -out`.
 
 ## Configuration
 
-The main app owns user settings and writes TOML to:
+The app owns user settings and writes TOML to:
 
 ```text
 ~/.config/myapp/config.toml
@@ -245,7 +235,7 @@ The main app owns user settings and writes TOML to:
 Default config:
 
 ```toml
-schema_version = 7
+schema_version = 8
 
 [general]
 mode = "push_to_talk"
@@ -255,7 +245,7 @@ default_language = "auto"
 compute_backend = "auto"
 keep_model_loaded = true
 default_input = { type = "system_default" }
-default_output = { copy_to_clipboard = true, auto_paste = false }
+default_output = { copy_to_clipboard = true }
 
 [[shortcuts]]
 id = "default"
@@ -267,135 +257,48 @@ language = "default"
 output = { type = "default" }
 ```
 
-The daemon does not read this config directly. The app sends the current
-shortcut runtime config to the daemon over D-Bus. That runtime config is
-daemon-effective: shortcuts are enabled only when the resolved backend is
-`daemon`; for `disabled` or `x11`, the app sends disabled bindings so the daemon
-clears any active watcher. `keep_model_loaded = true` keeps only the last used
-Whisper model context in memory to speed up repeated transcription; `false`
-loads and drops the model for every transcription. The daemon stores an accepted
-last-known cache at
-`~/.config/myapp-input-daemon/shortcut-cache.toml` so it can start before the app
-and still know the last configured shortcuts. The daemon validates that runtime
-cache schema before applying it; stale or invalid cache files are ignored and
-the app config wins the next time the app is available. During development only
-the current schema is supported. If the app sees an older local config schema,
-it replaces it with a fresh default config instead of migrating it.
+During development only the current schema is supported. If the app sees an
+older local config schema, including v7, it replaces it with a fresh default
+config instead of migrating it.
 
-Settings has `General`, `Models`, `Default`, and `Add New` pages. `Models`
-manages downloaded whisper.cpp ggml models under `~/.local/share/myapp/models`.
-Shortcut pages choose only ready models, or `Default` to inherit the general
-model. Model downloads use `*.part`, progress updates, SHA-1 verification, and
-atomic rename.
+Settings has `General`, `Models`, one page per shortcut profile, and `Add New`
+pages. `Models` manages downloaded whisper.cpp ggml models under
+`~/.local/share/myapp/models`. Shortcut pages choose only ready models, or
+`Default` to inherit the general model.
 
 Each shortcut profile has its own trigger, model override, language override,
 and output pipeline. Triggers can be keyboard shortcuts or Linux signals.
-Linux signal triggers accept `SIGUSR1` and `SIGUSR2`; using the same signal for
-start and stop makes that signal a toggle. The Handy-compatible default when
-switching a shortcut to Linux signals is `SIGUSR2` for both start and stop.
 
-Signal examples:
-
-```sh
-pkill -USR2 -x myapp
-pkill -USR1 -x myapp
-```
-
-Output uses one simple pipeline: transcript, optional script transform, final
-text, optional clipboard copy, optional auto-paste. Auto-paste always uses
-`Ctrl+V`; if `auto_paste = true` and `copy_to_clipboard = false`, the app still
-copies the final text internally because clipboard is the current paste
-transport.
-
-TOML examples:
+TOML output examples:
 
 ```toml
-default_output = { copy_to_clipboard = true, auto_paste = false }
-output = { type = "custom", copy_to_clipboard = false, auto_paste = true, script = { path = "/home/igor/myapp-polite-english.sh" } }
+default_output = { copy_to_clipboard = true }
+output = { type = "custom", copy_to_clipboard = true, script = { path = "/home/igor/myapp-polite-english.sh" } }
 ```
 
-If transcription logs recognized text but another application cannot paste it,
-check the MyApp logs for `Copied text to clipboard` or `clipboard copy
-failed` messages. On Wayland, check manually with `wl-paste --no-newline`; on
-X11, use `xclip -selection clipboard -out`. If the log says `wl-copy not found`
-or `wl-paste not found`, install `wl-clipboard`; if it says `xclip not found`,
-install `xclip`.
+## Verification
 
-If auto-paste is enabled but nothing is inserted, check that the daemon is
-running and can create a uinput virtual keyboard through `/dev/uinput`. The
-daemon logs `failed daemon clipboard paste` when uinput is unavailable or the
-user lacks permission. `Ctrl+V` is the only auto-paste shortcut in this
-prototype, so applications with nonstandard paste shortcuts are not configurable
-yet.
-
-Backend values:
-
-- `auto`: Wayland uses the daemon, X11 uses the app's X11 backend,
-- `disabled`: no global hotkey, tray manual actions still work,
-- `x11`: force app-side X11 capture,
-- `daemon`: force daemon capture.
-
-## D-Bus Prototype
-
-Session bus names and object paths are defined in `shared`:
-
-- app bus: `org.example.MyApp.App`
-- app object: `/org/example/MyApp/App`
-- daemon bus: `org.example.MyApp.InputDaemon`
-- daemon object: `/org/example/MyApp/InputDaemon`
-
-The app exposes `HotkeyDown(shortcut_id)`, `HotkeyUp(shortcut_id)`,
-`DaemonStatus`, and `GetShortcutConfig` methods for the daemon. The daemon
-exposes `Ping`, `GetDaemonStatus`, `UpdateShortcutConfig`, and
-`PasteClipboard() -> bool`.
-
-Daemon status is synchronized in both directions:
-
-- the daemon requests config from the app and reports `DaemonStatus` when it
-  starts,
-- the app watches the daemon D-Bus name and refreshes status when the daemon
-  appears or vanishes,
-- when the daemon appears, the app pushes the current shortcut config again.
-
-## Optional Daemon Service
-
-A future installable user service is included at:
-
-```text
-packaging/systemd/user/myapp-input-daemon.service
-```
-
-It is for manual testing and future packaging only. The main app does not depend
-on this service, does not require sudo, and must work when the daemon is missing
-or stopped.
-
-During development you can restart the daemon after code changes with Ctrl-C in
-the daemon terminal, then:
+Useful checks:
 
 ```sh
-cargo run -p daemon --bin myapp-daemon
+cargo fmt --all --check
+cargo check --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+git diff --check
 ```
 
-If Settings shows `Permission error`, the daemon is running but cannot open the
-needed `/dev/input/event*` keyboard device. Do not run the main app with sudo.
-For temporary local testing you can run the daemon with elevated permissions,
-but the intended install path is a user-level permission rule for the daemon.
-If Settings says the daemon is running but the shortcut is unavailable, the
-daemon is alive but did not find a usable evdev keyboard device for the
-configured shortcut.
-
-Auto-paste uses the same daemon process but a different Linux device interface:
-it creates a uinput virtual keyboard and emits fixed `Ctrl+V`. Hotkey capture
-needs readable `/dev/input/event*`; auto-paste needs writable `/dev/uinput`.
+If the full app build fails because `gtk4.pc`, `libadwaita-1.pc`, or related
+pkg-config files are missing, install the GTK4/libadwaita development packages
+instead of rewriting the app away from GTK4/libadwaita.
 
 ## Future Work
 
 The prototype intentionally leaves these unimplemented:
 
 - XDG GlobalShortcuts portal support,
-- libinput/logind integration and robust packaged device permissions,
 - production-grade audio buffering/resampling,
 - streaming/VAD transcription,
 - direct text insertion without clipboard transport,
 - Flatpak packaging for the main app,
-- `.deb` packaging for the optional daemon.
+- `.deb` packaging for the main app.

@@ -57,20 +57,6 @@ impl HotkeyBackend for DisabledBackend {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct DaemonBackend;
-
-impl HotkeyBackend for DaemonBackend {
-    fn name(&self) -> &'static str {
-        "daemon"
-    }
-
-    fn configure(&self, _config: &AppConfig) -> Result<Option<HotkeyBackendHandle>> {
-        info!("Daemon hotkey backend selected; daemon will receive runtime config over D-Bus");
-        Ok(None)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct X11Backend {
     command_tx: mpsc::Sender<AppCommand>,
@@ -104,12 +90,7 @@ pub fn configure_hotkey_backend(
 ) -> Option<HotkeyBackendHandle> {
     match resolve_backend_kind(config.general.hotkey_backend) {
         HotkeyBackendKind::Disabled => configure_backend(DisabledBackend, config),
-        HotkeyBackendKind::Daemon => configure_backend(DaemonBackend, config),
         HotkeyBackendKind::X11 => configure_backend(X11Backend::new(command_tx), config),
-        HotkeyBackendKind::Portal => {
-            info!("Portal hotkey backend placeholder selected; using disabled backend");
-            configure_backend(DisabledBackend, config)
-        }
         HotkeyBackendKind::Auto => unreachable!("auto should resolve to a concrete backend"),
     }
 }
@@ -132,22 +113,34 @@ fn configure_backend<B: HotkeyBackend>(
     }
 }
 
-pub fn backend_name_for_config(config: &AppConfig) -> &'static str {
-    match resolve_backend_kind(config.general.hotkey_backend) {
+pub fn configured_backend_name(config: &AppConfig) -> &'static str {
+    backend_kind_name(config.general.hotkey_backend)
+}
+
+pub fn effective_backend_name(config: &AppConfig) -> &'static str {
+    backend_kind_name(resolve_backend_kind(config.general.hotkey_backend))
+}
+
+fn backend_kind_name(backend: HotkeyBackendKind) -> &'static str {
+    match backend {
         HotkeyBackendKind::Auto => "auto",
         HotkeyBackendKind::Disabled => "disabled",
-        HotkeyBackendKind::Daemon => "daemon",
         HotkeyBackendKind::X11 => "x11",
-        HotkeyBackendKind::Portal => "portal",
     }
 }
 
 pub fn resolve_backend_kind(configured: HotkeyBackendKind) -> HotkeyBackendKind {
+    resolve_backend_kind_with_env(configured, |name| env::var_os(name).is_some())
+}
+
+fn resolve_backend_kind_with_env<F>(configured: HotkeyBackendKind, has_env: F) -> HotkeyBackendKind
+where
+    F: Fn(&str) -> bool,
+{
     match configured {
-        HotkeyBackendKind::Auto if env::var_os("WAYLAND_DISPLAY").is_some() => {
-            HotkeyBackendKind::Daemon
+        HotkeyBackendKind::Auto if has_env("DISPLAY") && !has_env("WAYLAND_DISPLAY") => {
+            HotkeyBackendKind::X11
         }
-        HotkeyBackendKind::Auto if env::var_os("DISPLAY").is_some() => HotkeyBackendKind::X11,
         HotkeyBackendKind::Auto => HotkeyBackendKind::Disabled,
         other => other,
     }
@@ -162,6 +155,53 @@ mod tests {
         let mut config = AppConfig::default();
         config.general.hotkey_backend = HotkeyBackendKind::Disabled;
 
-        assert_eq!(backend_name_for_config(&config), "disabled");
+        assert_eq!(configured_backend_name(&config), "disabled");
+        assert_eq!(effective_backend_name(&config), "disabled");
+    }
+
+    #[test]
+    fn auto_backend_uses_x11_when_only_display_is_set() {
+        let backend = resolve_backend_kind_with_env(HotkeyBackendKind::Auto, |name| {
+            matches!(name, "DISPLAY")
+        });
+
+        assert_eq!(backend, HotkeyBackendKind::X11);
+    }
+
+    #[test]
+    fn auto_backend_is_disabled_on_wayland() {
+        let backend = resolve_backend_kind_with_env(HotkeyBackendKind::Auto, |name| {
+            matches!(name, "DISPLAY" | "WAYLAND_DISPLAY")
+        });
+
+        assert_eq!(backend, HotkeyBackendKind::Disabled);
+    }
+
+    #[test]
+    fn auto_backend_is_disabled_without_display() {
+        let backend = resolve_backend_kind_with_env(HotkeyBackendKind::Auto, |_| false);
+
+        assert_eq!(backend, HotkeyBackendKind::Disabled);
+    }
+
+    #[test]
+    fn configured_and_effective_backend_names_are_separate() {
+        let config = AppConfig::default();
+
+        assert_eq!(configured_backend_name(&config), "auto");
+        assert_eq!(
+            backend_kind_name(resolve_backend_kind_with_env(
+                config.general.hotkey_backend,
+                |name| matches!(name, "WAYLAND_DISPLAY"),
+            )),
+            "disabled"
+        );
+    }
+
+    #[test]
+    fn explicit_x11_backend_stays_x11() {
+        let backend = resolve_backend_kind_with_env(HotkeyBackendKind::X11, |_| false);
+
+        assert_eq!(backend, HotkeyBackendKind::X11);
     }
 }

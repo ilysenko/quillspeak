@@ -20,7 +20,7 @@ pub use shortcut::{
     ShortcutModifiers, ShortcutProfile, ShortcutTrigger, next_shortcut_id, normalize_accelerator,
 };
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 7;
+pub const CONFIG_SCHEMA_VERSION: u32 = 8;
 pub const INHERIT_VALUE: &str = "default";
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -89,9 +89,7 @@ pub enum HotkeyBackend {
     #[default]
     Auto,
     Disabled,
-    Daemon,
     X11,
-    Portal,
 }
 
 impl HotkeyBackend {
@@ -99,9 +97,7 @@ impl HotkeyBackend {
         match self {
             Self::Auto => "auto",
             Self::Disabled => "disabled",
-            Self::Daemon => "daemon",
             Self::X11 => "x11",
-            Self::Portal => "portal",
         }
     }
 }
@@ -113,9 +109,7 @@ impl TryFrom<&str> for HotkeyBackend {
         match value {
             "auto" => Ok(Self::Auto),
             "disabled" => Ok(Self::Disabled),
-            "daemon" => Ok(Self::Daemon),
             "x11" => Ok(Self::X11),
-            "portal" => Ok(Self::Portal),
             other => Err(ConfigError::UnsupportedBackend(other.to_string())),
         }
     }
@@ -440,7 +434,7 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_schema_without_default_input() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 7
+schema_version = 8
 
 [general]
 mode = "push_to_talk"
@@ -469,7 +463,7 @@ output = { type = "default" }
     fn rejects_schema_without_keep_model_loaded() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 7
+schema_version = 8
 
 [general]
 mode = "push_to_talk"
@@ -506,11 +500,93 @@ output = { type = "default" }
     }
 
     #[test]
-    fn config_round_trips_auto_paste_output() {
+    fn rejects_removed_auto_paste_output() {
+        let mut config = AppConfig::default();
+        config.general.default_output.copy_to_clipboard = false;
+
+        let encoded = toml::to_string(&config).expect("config should encode");
+        let mut value = toml::from_str::<toml::Value>(&encoded).expect("config should parse");
+        value
+            .get_mut("general")
+            .and_then(|general| general.get_mut("default_output"))
+            .and_then(|output| output.as_table_mut())
+            .expect("default output should be a table")
+            .insert("auto_paste".to_string(), toml::Value::Boolean(true));
+        let encoded = toml::to_string(&value).expect("config should encode");
+
+        let decoded = toml::from_str::<AppConfig>(&encoded)
+            .expect_err("auto_paste is not part of the current output schema");
+
+        assert!(decoded.to_string().contains("auto_paste"));
+    }
+
+    #[test]
+    fn rejects_removed_daemon_backend() {
+        let result = toml::from_str::<AppConfig>(
+            r#"
+schema_version = 8
+
+[general]
+mode = "push_to_talk"
+hotkey_backend = "daemon"
+default_input = { type = "system_default" }
+default_model_id = "large-v3-turbo-q5_0"
+default_language = "auto"
+compute_backend = "auto"
+keep_model_loaded = true
+default_output = { copy_to_clipboard = true }
+
+[[shortcuts]]
+id = "default"
+name = "Default"
+enabled = true
+trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
+model_id = "default"
+language = "default"
+output = { type = "default" }
+"#,
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("daemon"));
+    }
+
+    #[test]
+    fn rejects_removed_portal_backend() {
+        let result = toml::from_str::<AppConfig>(
+            r#"
+schema_version = 8
+
+[general]
+mode = "push_to_talk"
+hotkey_backend = "portal"
+default_input = { type = "system_default" }
+default_model_id = "large-v3-turbo-q5_0"
+default_language = "auto"
+compute_backend = "auto"
+keep_model_loaded = true
+default_output = { copy_to_clipboard = true }
+
+[[shortcuts]]
+id = "default"
+name = "Default"
+enabled = true
+trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
+model_id = "default"
+language = "default"
+output = { type = "default" }
+"#,
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("portal"));
+    }
+
+    #[test]
+    fn config_round_trips_copy_output() {
         let mut config = AppConfig::default();
         config.general.default_output = OutputAction {
-            copy_to_clipboard: false,
-            auto_paste: true,
+            copy_to_clipboard: true,
             script: None,
         };
 
@@ -521,7 +597,7 @@ output = { type = "default" }
             .expect("config should normalize");
 
         assert_eq!(decoded, config);
-        assert!(encoded.contains("auto_paste = true"));
+        assert!(encoded.contains("copy_to_clipboard = true"));
     }
 
     #[test]

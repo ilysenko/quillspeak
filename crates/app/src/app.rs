@@ -1,7 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -10,20 +9,14 @@ use gtk::gio;
 use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use shared::{
-    APP_ID, AppConfig, DEFAULT_SHORTCUT_ID, DaemonStatus, LinuxSignalName, ShortcutRuntimeConfig,
-    ShortcutTrigger,
-};
+use shared::{APP_ID, AppConfig, DEFAULT_SHORTCUT_ID, LinuxSignalName, ShortcutTrigger};
 use tracing::{debug, error, info, warn};
 
 use crate::audio::{AudioInputDevice, list_input_devices};
 use crate::command::{AppCommand, DownloadId, ModelDownloadOutcome};
 use crate::config_store::ConfigStore;
-use crate::daemon_client::{DaemonClient, DaemonClientWorker};
-use crate::daemon_monitor::DaemonMonitorHandle;
-use crate::dbus::AppDbusHandle;
 use crate::hotkey::{
-    HotkeyBackendHandle, backend_name_for_config, configure_hotkey_backend, resolve_backend_kind,
+    HotkeyBackendHandle, configure_hotkey_backend, configured_backend_name, effective_backend_name,
 };
 use crate::models::{FinishEffect, ModelDownloadManager, ModelRowState, ModelStore};
 use crate::output::{ClipboardCopyOutcome, ClipboardCopySource, OutputScriptResult, OutputService};
@@ -78,9 +71,6 @@ struct AppRuntime {
     transcription_service: TranscriptionService,
     output_service: RefCell<Option<OutputService>>,
     config: RefCell<AppConfig>,
-    daemon_client_worker: RefCell<Option<DaemonClientWorker>>,
-    daemon_status: Cell<DaemonStatus>,
-    shortcut_runtime_config: Arc<Mutex<ShortcutRuntimeConfig>>,
     recording: RefCell<RecordingService>,
     recording_phase: Cell<RecordingPhase>,
     next_recording_id: Cell<u64>,
@@ -88,8 +78,6 @@ struct AppRuntime {
     tray: RefCell<Option<Tray>>,
     hotkey_backend: RefCell<Option<HotkeyBackendHandle>>,
     signal_trigger_service: RefCell<Option<SignalTriggerService>>,
-    dbus_handle: RefCell<Option<AppDbusHandle>>,
-    daemon_monitor: RefCell<Option<DaemonMonitorHandle>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,17 +102,11 @@ impl AppRuntime {
             )
         })?;
 
-        let daemon_client_worker = DaemonClientWorker::spawn(command_tx.clone())?;
-        let daemon_runtime_config = daemon_runtime_config_for(&config);
-        let shortcut_runtime_config = Arc::new(Mutex::new(daemon_runtime_config.clone()));
-        let dbus_handle =
-            AppDbusHandle::spawn(command_tx.clone(), Arc::clone(&shortcut_runtime_config));
         let transcription_service =
             TranscriptionService::spawn(command_tx.clone(), config.general.keep_model_loaded)?;
         let recording_pipeline = RecordingPipeline::spawn(command_tx.clone())?;
         let output_service = OutputService::spawn(command_tx.clone())?;
 
-        let daemon_status = DaemonStatus::NotInstalled;
         let hotkey_backend = configure_hotkey_backend(command_tx.clone(), &config);
 
         let tray = match Tray::new(command_tx.clone()) {
@@ -138,7 +120,6 @@ impl AppRuntime {
             }
         };
 
-        let daemon_monitor = DaemonMonitorHandle::spawn(command_tx.clone(), DaemonClient);
         let signal_trigger_service = SignalTriggerService::spawn(command_tx.clone())?;
         install_ctrl_c_handler(command_tx.clone());
 
@@ -154,9 +135,6 @@ impl AppRuntime {
             transcription_service,
             output_service: RefCell::new(Some(output_service)),
             config: RefCell::new(config),
-            daemon_client_worker: RefCell::new(Some(daemon_client_worker)),
-            daemon_status: Cell::new(daemon_status),
-            shortcut_runtime_config,
             recording: RefCell::new(RecordingService::default()),
             recording_phase: Cell::new(RecordingPhase::Idle),
             next_recording_id: Cell::new(1),
@@ -164,13 +142,9 @@ impl AppRuntime {
             tray: RefCell::new(tray),
             hotkey_backend: RefCell::new(hotkey_backend),
             signal_trigger_service: RefCell::new(Some(signal_trigger_service)),
-            dbus_handle: RefCell::new(Some(dbus_handle)),
-            daemon_monitor: RefCell::new(Some(daemon_monitor)),
         });
 
         Self::attach_command_pump(&runtime, command_rx);
-        runtime.probe_daemon_status();
-        runtime.sync_shortcut_config_to_daemon(&daemon_runtime_config);
         runtime.prepare_audio_capture();
         runtime.log_startup_state();
         Ok(runtime)
@@ -257,9 +231,6 @@ impl AppRuntime {
                 model_id,
                 outcome,
             } => self.finish_model_download(download_id, model_id, outcome),
-            AppCommand::DaemonAppeared(status) => self.handle_daemon_appeared(status),
-            AppCommand::DaemonVanished(status) => self.set_daemon_status(status),
-            AppCommand::DaemonStatusChanged(status) => self.set_daemon_status(status),
             AppCommand::Quit => self.quit(),
         }
     }
@@ -530,13 +501,11 @@ impl AppRuntime {
                         .unwrap_or(0),
                     output_text_delivered = result.output_text.is_some(),
                     copy_to_clipboard = result.copy_to_clipboard,
-                    auto_paste = result.auto_paste,
                     "output script finished"
                 );
                 if let Some(output_text) = result.output_text {
                     let output_action = shared::OutputAction {
                         copy_to_clipboard: result.copy_to_clipboard,
-                        auto_paste: result.auto_paste,
                         script: None,
                     };
                     if let Some(output_service) = self.output_service.borrow().as_ref() {
@@ -544,7 +513,6 @@ impl AppRuntime {
                             ClipboardCopySource::ScriptStdout {
                                 shortcut_id: shortcut_id.to_string(),
                                 script_path: result.script_path.clone(),
-                                auto_paste: result.auto_paste,
                             },
                             &output_action,
                             &output_text,
@@ -581,7 +549,6 @@ impl AppRuntime {
                     text_bytes = result.text_bytes,
                     "Copied text to clipboard"
                 );
-                self.paste_after_clipboard_copy(&source);
             }
             Err(error) => warn!(
                 shortcut_id,
@@ -589,30 +556,6 @@ impl AppRuntime {
                 script = script_path,
                 error,
                 "clipboard copy failed"
-            ),
-        }
-    }
-
-    fn paste_after_clipboard_copy(&self, source: &ClipboardCopySource) {
-        if !source.auto_paste() {
-            return;
-        }
-
-        let shortcut_id = source.shortcut_id();
-        let daemon_client_worker = self.daemon_client_worker.borrow();
-        let Some(daemon_client_worker) = daemon_client_worker.as_ref() else {
-            warn!(
-                shortcut_id,
-                "daemon client worker is not running; cannot auto-paste clipboard"
-            );
-            return;
-        };
-
-        match daemon_client_worker.paste_clipboard() {
-            Ok(()) => debug!(shortcut_id, "queued daemon clipboard paste"),
-            Err(error) => warn!(
-                ?error,
-                shortcut_id, "failed to queue daemon clipboard paste"
             ),
         }
     }
@@ -673,18 +616,13 @@ impl AppRuntime {
                 self.audio_input_devices.borrow().clone(),
                 self.model_row_states(),
                 self.model_store.ready_model_ids(),
-                self.daemon_status.get(),
                 self.command_sender(),
             );
             self.settings_window.replace(Some(window));
         }
 
         if let Some(window) = self.settings_window.borrow().as_ref() {
-            window.refresh_live_state(
-                self.model_row_states(),
-                self.model_store.ready_model_ids(),
-                self.daemon_status.get(),
-            );
+            window.refresh_live_state(self.model_row_states(), self.model_store.ready_model_ids());
             window.present();
         }
         self.request_audio_input_refresh();
@@ -710,11 +648,6 @@ impl AppRuntime {
         self.hotkey_backend.borrow_mut().take();
         let hotkey_backend = configure_hotkey_backend(self.command_sender(), &config);
         self.hotkey_backend.replace(hotkey_backend);
-        let daemon_runtime_config = daemon_runtime_config_for(&config);
-        if let Ok(mut runtime_config) = self.shortcut_runtime_config.lock() {
-            *runtime_config = daemon_runtime_config.clone();
-        }
-        self.sync_shortcut_config_to_daemon(&daemon_runtime_config);
         if let Err(error) = self
             .transcription_service
             .set_keep_model_loaded(config.general.keep_model_loaded)
@@ -952,47 +885,6 @@ impl AppRuntime {
             .row_states(&config, download_manager.statuses())
     }
 
-    fn handle_daemon_appeared(&self, status: DaemonStatus) {
-        self.set_daemon_status(status);
-        self.sync_current_shortcut_config_to_daemon();
-        self.refresh_daemon_status();
-    }
-
-    fn sync_current_shortcut_config_to_daemon(&self) {
-        let daemon_runtime_config = daemon_runtime_config_for(&self.config.borrow());
-        if let Ok(mut runtime_config) = self.shortcut_runtime_config.lock() {
-            *runtime_config = daemon_runtime_config.clone();
-        }
-        self.sync_shortcut_config_to_daemon(&daemon_runtime_config);
-    }
-
-    fn refresh_daemon_status(&self) {
-        self.probe_daemon_status();
-    }
-
-    fn probe_daemon_status(&self) {
-        if let Some(worker) = self.daemon_client_worker.borrow().as_ref()
-            && let Err(error) = worker.probe_status()
-        {
-            warn!(?error, "failed to request daemon status refresh");
-        }
-    }
-
-    fn sync_shortcut_config_to_daemon(&self, runtime_config: &ShortcutRuntimeConfig) {
-        if let Some(worker) = self.daemon_client_worker.borrow().as_ref()
-            && let Err(error) = worker.sync_shortcut_config(runtime_config.clone())
-        {
-            warn!(?error, "failed to request daemon shortcut config sync");
-        }
-    }
-
-    fn set_daemon_status(&self, status: DaemonStatus) {
-        self.daemon_status.set(status);
-        if let Some(window) = self.settings_window.borrow().as_ref() {
-            window.update_daemon_status(status);
-        }
-    }
-
     fn quit(&self) {
         info!("Quitting MyApp");
         if let Some(pipeline) = self.recording_pipeline.borrow_mut().take() {
@@ -1005,11 +897,6 @@ impl AppRuntime {
             signal_trigger_service.shutdown();
         }
         self.hotkey_backend.borrow_mut().take();
-        self.daemon_monitor.borrow_mut().take();
-        if let Some(worker) = self.daemon_client_worker.borrow_mut().take() {
-            worker.shutdown();
-        }
-        self.dbus_handle.borrow_mut().take();
         self.tray.borrow_mut().take();
         self.hold_guard.borrow_mut().take();
         self.application.quit();
@@ -1024,13 +911,13 @@ impl AppRuntime {
             shortcut_trigger = %default_trigger,
             shortcut_count = config.shortcuts.len(),
             mode = %config.general.mode.as_str(),
-            backend = %backend_name_for_config(&config),
+            configured_hotkey_backend = %configured_backend_name(&config),
+            effective_hotkey_backend = %effective_backend_name(&config),
             default_input = %config.general.default_input.display_label(),
             keep_model_loaded = config.general.keep_model_loaded,
             whisper_compute = %config.general.compute_backend.as_str(),
             compiled_whisper_backends = %whisper_backends.display_label(),
             whisper_gpu_compiled = whisper_backends.has_gpu(),
-            daemon_status = %self.daemon_status.get().display_label(),
             model_dir = %self.model_store.root().display(),
             "MyApp started in foreground development mode"
         );
@@ -1046,10 +933,6 @@ impl AppRuntime {
             .set(recording_id.checked_add(1).unwrap_or(1));
         recording_id
     }
-}
-
-fn daemon_runtime_config_for(config: &AppConfig) -> ShortcutRuntimeConfig {
-    ShortcutRuntimeConfig::for_daemon(config, resolve_backend_kind(config.general.hotkey_backend))
 }
 
 fn trigger_summary(trigger: &ShortcutTrigger) -> String {

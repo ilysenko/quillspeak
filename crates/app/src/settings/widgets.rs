@@ -4,7 +4,7 @@ use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use shared::{
-    AUTO_LANGUAGE_VALUE, ComputeBackend, DaemonStatus, HotkeyBackend, INHERIT_VALUE, MODEL_CATALOG,
+    AUTO_LANGUAGE_VALUE, ComputeBackend, HotkeyBackend, INHERIT_VALUE, MODEL_CATALOG,
     ModelCatalogEntry, SUPPORTED_LANGUAGES, model_catalog_entry, supported_language_label,
 };
 
@@ -157,8 +157,6 @@ pub fn backend_index(backend: HotkeyBackend) -> u32 {
         HotkeyBackend::Auto => 0,
         HotkeyBackend::Disabled => 1,
         HotkeyBackend::X11 => 2,
-        HotkeyBackend::Daemon => 3,
-        HotkeyBackend::Portal => 0,
     }
 }
 
@@ -166,7 +164,6 @@ pub fn backend_from_index(index: u32) -> HotkeyBackend {
     match index {
         1 => HotkeyBackend::Disabled,
         2 => HotkeyBackend::X11,
-        3 => HotkeyBackend::Daemon,
         _ => HotkeyBackend::Auto,
     }
 }
@@ -193,16 +190,9 @@ pub fn compute_from_index(index: u32) -> ComputeBackend {
     }
 }
 
-pub fn advanced_hotkey_status(daemon_status: DaemonStatus) -> &'static str {
-    match daemon_status {
-        DaemonStatus::RunningConfigured => return "Daemon backend available",
-        DaemonStatus::RunningUnconfigured => return "Daemon running, shortcut unavailable",
-        DaemonStatus::PermissionError => return "Daemon permission error",
-        DaemonStatus::NotInstalled | DaemonStatus::InstalledButNotRunning => {}
-    }
-
+pub fn advanced_hotkey_status() -> &'static str {
     if env::var_os("WAYLAND_DISPLAY").is_some() {
-        "Unavailable on Wayland without daemon"
+        "Use external Linux signal shortcuts on Wayland"
     } else if env::var_os("DISPLAY").is_some() {
         "X11 backend available in app"
     } else {

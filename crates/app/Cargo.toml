@@ -30,7 +30,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 whisper-rs.workspace = true
 x11rb.workspace = true
-zbus.workspace = true
 
 [features]
 default = ["audio-pipewire", "audio-pulseaudio"]

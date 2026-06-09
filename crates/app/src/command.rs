@@ -1,5 +1,4 @@
 use shared::AppConfig;
-use shared::DaemonStatus;
 use shared::LinuxSignalName;
 
 use crate::output::{ClipboardCopyOutcome, ClipboardCopySource, OutputScriptResult};
@@ -68,9 +67,6 @@ pub enum AppCommand {
         model_id: String,
         outcome: ModelDownloadOutcome,
     },
-    DaemonAppeared(DaemonStatus),
-    DaemonVanished(DaemonStatus),
-    DaemonStatusChanged(DaemonStatus),
     Quit,
 }
 

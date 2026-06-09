@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use shared::{AppConfig, DaemonStatus};
+use shared::AppConfig;
 
 use crate::audio::AudioInputDevice;
 use crate::settings::SettingsDraft;
@@ -21,20 +21,11 @@ const GENERAL_TIGHTENING_WIDTH: i32 = 600;
 #[derive(Clone)]
 pub struct GeneralPage {
     page: adw::Clamp,
-    daemon_status_row: adw::ActionRow,
-    advanced_hotkey_row: adw::ActionRow,
 }
 
 impl GeneralPage {
     pub fn widget(&self) -> &adw::Clamp {
         &self.page
-    }
-
-    pub fn update_daemon_status(&self, daemon_status: DaemonStatus) {
-        self.daemon_status_row
-            .set_subtitle(daemon_status.display_label());
-        self.advanced_hotkey_row
-            .set_subtitle(advanced_hotkey_status(daemon_status));
     }
 }
 
@@ -42,7 +33,6 @@ pub fn build(
     config: &AppConfig,
     audio_input_devices: Vec<AudioInputDevice>,
     ready_model_ids: HashSet<String>,
-    daemon_status: DaemonStatus,
     draft: SettingsDraft,
 ) -> GeneralPage {
     let content = gtk::Box::builder()
@@ -60,10 +50,7 @@ pub fn build(
         .child(&content)
         .build();
     let status_group = adw::PreferencesGroup::builder().title("Status").build();
-    let daemon_status_row = property_row("Daemon status", daemon_status.display_label());
-    status_group.add(&daemon_status_row);
-    let advanced_hotkey_row =
-        property_row("Advanced hotkeys", advanced_hotkey_status(daemon_status));
+    let advanced_hotkey_row = property_row("Advanced hotkeys", advanced_hotkey_status());
     status_group.add(&advanced_hotkey_row);
 
     let general_group = adw::PreferencesGroup::builder()
@@ -71,7 +58,7 @@ pub fn build(
         .build();
     let backend = dropdown_row(
         "Hotkey backend",
-        &["Auto", "Disabled", "X11", "Daemon"],
+        &["Auto", "Disabled", "X11"],
         backend_index(config.general.hotkey_backend),
     );
     backend.dropdown.connect_selected_notify({
@@ -178,9 +165,5 @@ pub fn build(
     content.append(&status_group);
     content.append(&general_group);
     content.append(&output_group);
-    GeneralPage {
-        page,
-        daemon_status_row,
-        advanced_hotkey_row,
-    }
+    GeneralPage { page }
 }

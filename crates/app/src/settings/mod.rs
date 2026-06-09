@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use shared::{AppConfig, DEFAULT_SHORTCUT_ID, DaemonStatus};
+use shared::{AppConfig, DEFAULT_SHORTCUT_ID};
 
 use crate::audio::AudioInputDevice;
 use crate::command::AppCommand;
@@ -23,7 +23,6 @@ pub use draft::SettingsDraft;
 #[derive(Clone)]
 pub struct SettingsState {
     draft: SettingsDraft,
-    daemon_status: Rc<Cell<DaemonStatus>>,
     audio_input_devices: Rc<RefCell<Vec<AudioInputDevice>>>,
     model_states: Rc<RefCell<Vec<ModelRowState>>>,
     ready_model_ids: Rc<RefCell<HashSet<String>>>,
@@ -47,12 +46,10 @@ impl SettingsWindow {
         audio_input_devices: Vec<AudioInputDevice>,
         model_states: Vec<ModelRowState>,
         ready_model_ids: HashSet<String>,
-        daemon_status: DaemonStatus,
         command_tx: mpsc::Sender<AppCommand>,
     ) -> Self {
         let state = SettingsState {
             draft: SettingsDraft::new(config.clone()),
-            daemon_status: Rc::new(Cell::new(daemon_status)),
             audio_input_devices: Rc::new(RefCell::new(audio_input_devices)),
             model_states: Rc::new(RefCell::new(model_states)),
             ready_model_ids: Rc::new(RefCell::new(ready_model_ids)),
@@ -137,12 +134,10 @@ impl SettingsWindow {
         &self,
         model_states: Vec<ModelRowState>,
         ready_model_ids: HashSet<String>,
-        daemon_status: DaemonStatus,
     ) {
         let visible = self.stack.visible_child_name().map(|name| name.to_string());
         self.state.model_states.replace(model_states);
         self.state.ready_model_ids.replace(ready_model_ids);
-        self.state.daemon_status.set(daemon_status);
         self.render(visible);
     }
 
@@ -176,16 +171,6 @@ impl SettingsWindow {
         self.state.model_states.replace(model_states);
         self.state.ready_model_ids.replace(ready_model_ids);
         self.render(visible);
-    }
-
-    pub fn update_daemon_status(&self, daemon_status: DaemonStatus) {
-        self.state.daemon_status.set(daemon_status);
-        if let Some(general_page) = self.general_page.borrow().as_ref() {
-            general_page.update_daemon_status(daemon_status);
-        } else {
-            let visible = self.stack.visible_child_name().map(|name| name.to_string());
-            self.render(visible);
-        }
     }
 
     pub fn update_save_status(&self, status: &str) {
@@ -266,7 +251,6 @@ fn render_stack(
         &config,
         state.audio_input_devices.borrow().clone(),
         ready_model_ids.clone(),
-        state.daemon_status.get(),
         state.draft.clone(),
     );
     stack.add_titled(general_page.widget(), Some("general"), "General");
