@@ -97,7 +97,6 @@ impl AudioSignalStats {
 
 pub struct AudioCaptureService {
     stream: Stream,
-    input: AudioInputRef,
     consumer: Consumer<f32>,
     active: Arc<AtomicBool>,
     callback_count: Arc<AtomicU64>,
@@ -184,7 +183,6 @@ impl AudioCaptureService {
 
             return Ok(Self {
                 stream,
-                input: input.clone(),
                 consumer,
                 active,
                 callback_count,
@@ -206,10 +204,6 @@ impl AudioCaptureService {
         }
 
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no input stream config was attempted")))
-    }
-
-    pub fn input(&self) -> &AudioInputRef {
-        &self.input
     }
 
     pub fn input_label(&self) -> &str {

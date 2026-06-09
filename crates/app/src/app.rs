@@ -181,7 +181,6 @@ impl AppRuntime {
         });
 
         Self::attach_command_pump(&runtime, command_rx);
-        runtime.prepare_audio_capture();
         runtime.log_startup_state();
         Ok(runtime)
     }
@@ -777,7 +776,6 @@ impl AppRuntime {
         }
 
         self.config.replace(config.clone());
-        self.prepare_audio_capture();
         if let Some(window) = self.settings_window.borrow().as_ref() {
             window.update_config(&config);
             window.update_model_states(self.model_row_states(), self.model_store.ready_model_ids());
@@ -964,24 +962,6 @@ impl AppRuntime {
             })
         {
             warn!(?error, "failed to spawn audio input device refresh worker");
-        }
-    }
-
-    fn prepare_audio_capture(&self) {
-        let input = self.config.borrow().general.default_input.clone();
-        let prepare_result = self
-            .recording_pipeline
-            .borrow()
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("audio capture pipeline is shut down"))
-            .and_then(|pipeline| pipeline.prepare_input(input.clone()));
-
-        if let Err(error) = prepare_result {
-            warn!(
-                ?error,
-                input = %input.display_label(),
-                "failed to request audio capture prepare"
-            );
         }
     }
 
