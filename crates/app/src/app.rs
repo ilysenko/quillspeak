@@ -1,6 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -75,16 +75,51 @@ struct AppRuntime {
     download_manager: RefCell<ModelDownloadManager>,
     audio_input_devices: RefCell<Vec<AudioInputDevice>>,
     recording_pipeline: RefCell<Option<RecordingPipeline>>,
-    transcription_service: TranscriptionService,
+    transcription_service: RefCell<Option<TranscriptionService>>,
     output_service: RefCell<Option<OutputService>>,
     config: RefCell<AppConfig>,
     recording: RefCell<RecordingService>,
     recording_phase: Cell<RecordingPhase>,
     next_recording_id: Cell<u64>,
+    is_quitting: Cell<bool>,
     settings_window: RefCell<Option<SettingsWindow>>,
     tray: RefCell<Option<Tray>>,
     hotkey_backend: RefCell<Option<HotkeyBackendHandle>>,
     signal_trigger_service: RefCell<Option<SignalTriggerService>>,
+}
+
+struct ShutdownServices {
+    recording_pipeline: Option<RecordingPipeline>,
+    output_service: Option<OutputService>,
+    signal_trigger_service: Option<SignalTriggerService>,
+    transcription_service: Option<TranscriptionService>,
+    hotkey_backend: Option<HotkeyBackendHandle>,
+}
+
+impl ShutdownServices {
+    fn shutdown(self) {
+        let Self {
+            recording_pipeline,
+            output_service,
+            signal_trigger_service,
+            transcription_service,
+            hotkey_backend,
+        } = self;
+
+        drop(hotkey_backend);
+        if let Some(signal_trigger_service) = signal_trigger_service {
+            signal_trigger_service.shutdown();
+        }
+        if let Some(pipeline) = recording_pipeline {
+            pipeline.shutdown();
+        }
+        if let Some(output_service) = output_service {
+            output_service.shutdown();
+        }
+        if let Some(transcription_service) = transcription_service {
+            transcription_service.shutdown();
+        }
+    }
 }
 
 impl AppRuntime {
@@ -132,12 +167,13 @@ impl AppRuntime {
             download_manager: RefCell::new(ModelDownloadManager::default()),
             audio_input_devices: RefCell::new(audio_input_devices),
             recording_pipeline: RefCell::new(Some(recording_pipeline)),
-            transcription_service,
+            transcription_service: RefCell::new(Some(transcription_service)),
             output_service: RefCell::new(Some(output_service)),
             config: RefCell::new(config),
             recording: RefCell::new(RecordingService::default()),
             recording_phase: Cell::new(RecordingPhase::Idle),
             next_recording_id: Cell::new(1),
+            is_quitting: Cell::new(false),
             settings_window: RefCell::new(None),
             tray: RefCell::new(tray),
             hotkey_backend: RefCell::new(hotkey_backend),
@@ -165,6 +201,13 @@ impl AppRuntime {
     }
 
     fn handle_command(&self, command: AppCommand) {
+        if self.is_quitting.get()
+            && !matches!(command, AppCommand::ShutdownComplete | AppCommand::Quit)
+        {
+            debug!(?command, "ignoring command while app is quitting");
+            return;
+        }
+
         match command {
             AppCommand::ShowSettings => self.show_settings(),
             AppCommand::ToggleRecording => self.toggle_recording(),
@@ -234,6 +277,7 @@ impl AppRuntime {
                 model_id,
                 outcome,
             } => self.finish_model_download(download_id, model_id, outcome),
+            AppCommand::ShutdownComplete => self.finish_shutdown(),
             AppCommand::Quit => self.quit(),
         }
     }
@@ -452,9 +496,13 @@ impl AppRuntime {
             return;
         }
 
-        let result = result
-            .map_err(anyhow::Error::msg)
-            .and_then(|request| self.transcription_service.submit(request));
+        let result = result.map_err(anyhow::Error::msg).and_then(|request| {
+            self.transcription_service
+                .borrow()
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("transcription worker is shut down"))
+                .and_then(|service| service.submit(request))
+        });
 
         if let Err(error) = result {
             warn!(
@@ -708,20 +756,22 @@ impl AppRuntime {
                 self.signal_trigger_service.replace(None);
             }
         }
-        if let Err(error) = self
-            .transcription_service
-            .set_keep_model_loaded(config.general.keep_model_loaded)
-        {
-            warn!(?error, "failed to update whisper model cache policy");
-        }
-        if let Err(error) = self
-            .transcription_service
-            .clear_cached_context("settings config changed")
-        {
-            warn!(
-                ?error,
-                "failed to clear whisper model cache after settings change"
-            );
+        if let Some(transcription_service) = self.transcription_service.borrow().as_ref() {
+            if let Err(error) =
+                transcription_service.set_keep_model_loaded(config.general.keep_model_loaded)
+            {
+                warn!(?error, "failed to update whisper model cache policy");
+            }
+            if let Err(error) =
+                transcription_service.clear_cached_context("settings config changed")
+            {
+                warn!(
+                    ?error,
+                    "failed to clear whisper model cache after settings change"
+                );
+            }
+        } else {
+            warn!("transcription worker is not running while applying settings config");
         }
 
         self.config.replace(config.clone());
@@ -781,12 +831,14 @@ impl AppRuntime {
             .delete_model(model_id, &self.config.borrow())
         {
             Ok(()) => {
-                if let Some(model_path) = model_path
-                    && let Err(error) = self
-                        .transcription_service
-                        .clear_cached_model_path(model_path)
-                {
-                    warn!(?error, model_id, "failed to clear cached deleted model");
+                if let Some(model_path) = model_path {
+                    let transcription_service = self.transcription_service.borrow();
+                    if let Some(transcription_service) = transcription_service.as_ref()
+                        && let Err(error) =
+                            transcription_service.clear_cached_model_path(model_path)
+                    {
+                        warn!(?error, model_id, "failed to clear cached deleted model");
+                    }
                 }
             }
             Err(error) => {
@@ -946,6 +998,11 @@ impl AppRuntime {
     }
 
     fn quit(&self) {
+        if self.is_quitting.replace(true) {
+            debug!("Quit ignored because shutdown is already in progress");
+            return;
+        }
+
         info!("Quitting MyApp");
         let download_handles = self.download_manager.borrow_mut().cancel_all();
         if !download_handles.is_empty() {
@@ -957,16 +1014,19 @@ impl AppRuntime {
         for handle in download_handles {
             handle.cancel();
         }
-        if let Some(pipeline) = self.recording_pipeline.borrow_mut().take() {
-            pipeline.shutdown();
-        }
-        if let Some(output_service) = self.output_service.borrow_mut().take() {
-            output_service.shutdown();
-        }
-        if let Some(signal_trigger_service) = self.signal_trigger_service.borrow_mut().take() {
-            signal_trigger_service.shutdown();
-        }
-        self.hotkey_backend.borrow_mut().take();
+
+        let services = ShutdownServices {
+            recording_pipeline: self.recording_pipeline.borrow_mut().take(),
+            output_service: self.output_service.borrow_mut().take(),
+            signal_trigger_service: self.signal_trigger_service.borrow_mut().take(),
+            transcription_service: self.transcription_service.borrow_mut().take(),
+            hotkey_backend: self.hotkey_backend.borrow_mut().take(),
+        };
+        spawn_shutdown_worker(self.command_sender(), services);
+    }
+
+    fn finish_shutdown(&self) {
+        info!("MyApp shutdown complete");
         self.tray.borrow_mut().take();
         self.hold_guard.borrow_mut().take();
         self.application.quit();
@@ -1002,6 +1062,41 @@ impl AppRuntime {
         self.next_recording_id
             .set(recording_id.checked_add(1).unwrap_or(1));
         recording_id
+    }
+}
+
+fn spawn_shutdown_worker(command_tx: mpsc::Sender<AppCommand>, services: ShutdownServices) {
+    let services = Arc::new(Mutex::new(Some(services)));
+    let worker_services = Arc::clone(&services);
+    let worker_command_tx = command_tx.clone();
+    match thread::Builder::new()
+        .name("myapp-shutdown".to_string())
+        .spawn(move || {
+            if let Some(services) = take_shutdown_services(&worker_services) {
+                services.shutdown();
+            }
+            let _ = worker_command_tx.send(AppCommand::ShutdownComplete);
+        }) {
+        Ok(_) => {}
+        Err(error) => {
+            warn!(
+                ?error,
+                "failed to spawn shutdown worker; completing shutdown on main thread"
+            );
+            if let Some(services) = take_shutdown_services(&services) {
+                services.shutdown();
+            }
+            let _ = command_tx.send(AppCommand::ShutdownComplete);
+        }
+    }
+}
+
+fn take_shutdown_services(
+    services: &Arc<Mutex<Option<ShutdownServices>>>,
+) -> Option<ShutdownServices> {
+    match services.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(poisoned) => poisoned.into_inner().take(),
     }
 }
 

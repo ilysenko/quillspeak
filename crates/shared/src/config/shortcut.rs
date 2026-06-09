@@ -183,6 +183,12 @@ fn canonical_user_signal(input: &str) -> Option<&'static str> {
     match value.as_str() {
         "USR1" | "USER1" => Some("SIGUSR1"),
         "USR2" | "USER2" => Some("SIGUSR2"),
+        "HUP" => Some("SIGHUP"),
+        "ALRM" | "ALARM" => Some("SIGALRM"),
+        "WINCH" => Some("SIGWINCH"),
+        "INT" => Some("SIGINT"),
+        "TERM" => Some("SIGTERM"),
+        "QUIT" => Some("SIGQUIT"),
         _ => None,
     }
 }

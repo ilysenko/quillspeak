@@ -151,6 +151,8 @@ fn download_model_inner(
     ensure_not_canceled(cancel_requested)?;
     progress.send_final(downloaded);
     file.flush().context("failed to flush partial model")?;
+    file.sync_all().context("failed to sync partial model")?;
+    drop(file);
 
     ensure_not_canceled(cancel_requested)?;
     progress.send_verifying(downloaded);
@@ -172,8 +174,15 @@ fn download_model_inner(
             target.display()
         )
     })?;
+    sync_directory(root);
     info!(model_id, path = %target.display(), "model download finished");
     Ok(())
+}
+
+fn sync_directory(path: &Path) {
+    if let Ok(directory) = File::open(path) {
+        let _ = directory.sync_all();
+    }
 }
 
 type DownloadResult<T> = std::result::Result<T, DownloadError>;

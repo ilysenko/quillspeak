@@ -762,6 +762,32 @@ stop_signal = "SIGUSR2"
     }
 
     #[test]
+    fn duplicate_supported_linux_signal_aliases_are_rejected() {
+        let mut config = AppConfig::default();
+        config.shortcuts[0].trigger = ShortcutTrigger::LinuxSignal {
+            start_signal: LinuxSignal::new("ALARM"),
+            stop_signal: LinuxSignal::sigusr1(),
+        };
+        config.shortcuts.push(ShortcutProfile {
+            id: "second".to_string(),
+            name: "Second".to_string(),
+            enabled: true,
+            trigger: ShortcutTrigger::LinuxSignal {
+                start_signal: LinuxSignal::new("SIGALRM"),
+                stop_signal: LinuxSignal::sigusr2(),
+            },
+            model_id: INHERIT_VALUE.to_string(),
+            language: INHERIT_VALUE.to_string(),
+            output: ShortcutOutput::Default,
+        });
+
+        assert_eq!(
+            config.normalized(),
+            Err(ConfigError::DuplicateSignal("SIGALRM".to_string()))
+        );
+    }
+
+    #[test]
     fn arbitrary_non_empty_linux_signal_text_is_allowed() {
         let mut config = AppConfig::default();
         config.shortcuts[0].trigger = ShortcutTrigger::LinuxSignal {

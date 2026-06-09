@@ -233,7 +233,9 @@ explicit through the `Save` button. Do not write config on every UI change.
 On X11, shortcut pages show both keyboard and Linux signal trigger options. On
 Wayland or mixed Wayland/X11 sessions, shortcut pages show only Linux signal
 trigger controls and new shortcut profiles default to `SIGUSR1` start and
-`SIGUSR2` stop.
+`SIGUSR2` stop. If the default signal pair is already used by an enabled
+profile, newly added or coerced duplicate signal profiles should be left
+disabled until the user configures unique signals and enables them.
 
 Display capability coercion belongs in `SettingsDraft` before rendering pages.
 Do not mutate the draft from a page builder just because a widget is being

@@ -2,6 +2,7 @@ use std::sync::mpsc;
 use std::thread;
 
 use anyhow::{Context, Result, anyhow};
+use tracing::warn;
 
 use crate::command::AppCommand;
 use crate::transcription::engine::WhisperEngine;
@@ -52,14 +53,24 @@ impl TranscriptionService {
             ))
             .map_err(|_| anyhow!("transcription worker is not running"))
     }
+
+    pub fn shutdown(mut self) {
+        self.shutdown_inner();
+    }
+
+    fn shutdown_inner(&mut self) {
+        let _ = self.worker_tx.send(TranscriptionWorkerCommand::Shutdown);
+        if let Some(join_handle) = self.join_handle.take()
+            && let Err(error) = join_handle.join()
+        {
+            warn!(?error, "transcription worker panicked during shutdown");
+        }
+    }
 }
 
 impl Drop for TranscriptionService {
     fn drop(&mut self) {
-        let _ = self.worker_tx.send(TranscriptionWorkerCommand::Shutdown);
-        if let Some(join_handle) = self.join_handle.take() {
-            let _ = join_handle.join();
-        }
+        self.shutdown_inner();
     }
 }
 

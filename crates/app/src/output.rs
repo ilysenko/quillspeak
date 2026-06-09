@@ -1,8 +1,12 @@
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::mpsc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,6 +28,7 @@ const TEXT_FILE_BUSY_OS_ERROR: i32 = 26;
 pub struct OutputService {
     worker_tx: mpsc::Sender<OutputWorkerCommand>,
     join_handle: Option<thread::JoinHandle<()>>,
+    cancel_requested: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,13 +54,16 @@ pub struct ClipboardPasteOutcome {
 impl OutputService {
     pub fn spawn(command_tx: mpsc::Sender<AppCommand>) -> Result<Self> {
         let (worker_tx, worker_rx) = mpsc::channel();
+        let cancel_requested = Arc::new(AtomicBool::new(false));
+        let worker_cancel_requested = Arc::clone(&cancel_requested);
         let join_handle = thread::Builder::new()
             .name("myapp-output".to_string())
-            .spawn(move || output_worker_loop(worker_rx, command_tx))
+            .spawn(move || output_worker_loop(worker_rx, command_tx, worker_cancel_requested))
             .map_err(|error| anyhow!("failed to spawn output worker: {error}"))?;
         Ok(Self {
             worker_tx,
             join_handle: Some(join_handle),
+            cancel_requested,
         })
     }
 
@@ -96,6 +104,7 @@ impl OutputService {
     }
 
     pub fn shutdown(mut self) {
+        self.cancel_requested.store(true, Ordering::Relaxed);
         let _ = self.worker_tx.send(OutputWorkerCommand::Shutdown);
         if let Some(join_handle) = self.join_handle.take()
             && let Err(error) = join_handle.join()
@@ -257,8 +266,12 @@ enum OutputWorkerCommand {
 fn output_worker_loop(
     worker_rx: mpsc::Receiver<OutputWorkerCommand>,
     command_tx: mpsc::Sender<AppCommand>,
+    cancel_requested: Arc<AtomicBool>,
 ) {
     for command in worker_rx {
+        if cancel_requested.load(Ordering::Relaxed) {
+            break;
+        }
         match command {
             OutputWorkerCommand::RunScript {
                 shortcut_id,
@@ -266,8 +279,8 @@ fn output_worker_loop(
                 text,
                 output,
             } => {
-                let result =
-                    run_script(&script_path, &text, &output).map_err(|error| format!("{error:#}"));
+                let result = run_script(&script_path, &text, &output, &cancel_requested)
+                    .map_err(|error| format!("{error:#}"));
                 let _ = command_tx.send(AppCommand::OutputScriptFinished {
                     shortcut_id,
                     result,
@@ -278,10 +291,10 @@ fn output_worker_loop(
                 text,
                 paste,
             } => {
-                let result = copy_text_to_external_clipboard(&text);
+                let result = copy_text_to_external_clipboard(&text, &cancel_requested);
                 let paste_result = result.as_ref().ok().and_then(|copy| {
                     paste.map(|paste| {
-                        paste_from_external_clipboard(copy.backend, &paste)
+                        paste_from_external_clipboard(copy.backend, &paste, &cancel_requested)
                             .map_err(|error| format!("{error:#}"))
                     })
                 });
@@ -303,13 +316,16 @@ fn output_worker_loop(
     }
 }
 
-fn copy_text_to_external_clipboard(text: &str) -> Result<ClipboardCopyOutcome> {
+fn copy_text_to_external_clipboard(
+    text: &str,
+    cancel_requested: &AtomicBool,
+) -> Result<ClipboardCopyOutcome> {
     let backend = detect_clipboard_backend_from_env(|name| std::env::var_os(name))?;
     match backend {
-        ClipboardBackend::Wayland => copy_text_to_wayland_clipboard(text)?,
-        ClipboardBackend::X11 => copy_text_to_x11_clipboard(text)?,
+        ClipboardBackend::Wayland => copy_text_to_wayland_clipboard(text, cancel_requested)?,
+        ClipboardBackend::X11 => copy_text_to_x11_clipboard(text, cancel_requested)?,
     }
-    verify_external_clipboard(backend, text)?;
+    verify_external_clipboard(backend, text, cancel_requested)?;
 
     Ok(ClipboardCopyOutcome {
         backend,
@@ -341,15 +357,21 @@ fn non_empty_env(value: Option<OsString>) -> bool {
     value.is_some_and(|value| !value.as_os_str().is_empty())
 }
 
-fn copy_text_to_wayland_clipboard(text: &str) -> Result<()> {
+fn copy_text_to_wayland_clipboard(text: &str, cancel_requested: &AtomicBool) -> Result<()> {
     let commands = clipboard_commands(ClipboardBackend::Wayland);
     ensure_command_in_path(commands.copy, commands.package_hint)?;
     let mut command = Command::new(commands.copy);
     command.args(wayland_copy_args());
-    run_status_with_stdin(&mut command, text, CLIPBOARD_TIMEOUT, "wl-copy")
+    run_status_with_stdin(
+        &mut command,
+        text,
+        CLIPBOARD_TIMEOUT,
+        "wl-copy",
+        cancel_requested,
+    )
 }
 
-fn copy_text_to_x11_clipboard(text: &str) -> Result<()> {
+fn copy_text_to_x11_clipboard(text: &str, cancel_requested: &AtomicBool) -> Result<()> {
     let commands = clipboard_commands(ClipboardBackend::X11);
     ensure_command_in_path(commands.copy, commands.package_hint)?;
     let mut command = Command::new(commands.copy);
@@ -359,11 +381,16 @@ fn copy_text_to_x11_clipboard(text: &str) -> Result<()> {
         text,
         CLIPBOARD_TIMEOUT,
         "xclip clipboard copy",
+        cancel_requested,
     )
 }
 
-fn verify_external_clipboard(backend: ClipboardBackend, expected_text: &str) -> Result<()> {
-    let actual_text = read_external_clipboard(backend)?;
+fn verify_external_clipboard(
+    backend: ClipboardBackend,
+    expected_text: &str,
+    cancel_requested: &AtomicBool,
+) -> Result<()> {
+    let actual_text = read_external_clipboard(backend, cancel_requested)?;
     if actual_text == expected_text {
         return Ok(());
     }
@@ -378,21 +405,34 @@ fn verify_external_clipboard(backend: ClipboardBackend, expected_text: &str) -> 
     );
 }
 
-fn read_external_clipboard(backend: ClipboardBackend) -> Result<String> {
+fn read_external_clipboard(
+    backend: ClipboardBackend,
+    cancel_requested: &AtomicBool,
+) -> Result<String> {
     let output = match backend {
         ClipboardBackend::Wayland => {
             let commands = clipboard_commands(backend);
             ensure_command_in_path(commands.paste, commands.package_hint)?;
             let mut command = Command::new(commands.paste);
             command.args(wayland_paste_args());
-            run_output_with_timeout(&mut command, CLIPBOARD_TIMEOUT, "wl-paste")?
+            run_output_with_timeout(
+                &mut command,
+                CLIPBOARD_TIMEOUT,
+                "wl-paste",
+                cancel_requested,
+            )?
         }
         ClipboardBackend::X11 => {
             let commands = clipboard_commands(backend);
             ensure_command_in_path(commands.paste, commands.package_hint)?;
             let mut command = Command::new(commands.paste);
             command.args(["-selection", "clipboard", "-out"]);
-            run_output_with_timeout(&mut command, CLIPBOARD_TIMEOUT, "xclip clipboard read")?
+            run_output_with_timeout(
+                &mut command,
+                CLIPBOARD_TIMEOUT,
+                "xclip clipboard read",
+                cancel_requested,
+            )?
         }
     };
 
@@ -412,10 +452,11 @@ fn read_external_clipboard(backend: ClipboardBackend) -> Result<String> {
 fn paste_from_external_clipboard(
     backend: ClipboardBackend,
     request: &PasteRequest,
+    cancel_requested: &AtomicBool,
 ) -> Result<ClipboardPasteOutcome> {
     match backend {
-        ClipboardBackend::Wayland => paste_with_ydotool(request)?,
-        ClipboardBackend::X11 => paste_with_xdotool(request)?,
+        ClipboardBackend::Wayland => paste_with_ydotool(request, cancel_requested)?,
+        ClipboardBackend::X11 => paste_with_xdotool(request, cancel_requested)?,
     }
     Ok(ClipboardPasteOutcome {
         backend,
@@ -423,7 +464,7 @@ fn paste_from_external_clipboard(
     })
 }
 
-fn paste_with_xdotool(request: &PasteRequest) -> Result<()> {
+fn paste_with_xdotool(request: &PasteRequest, cancel_requested: &AtomicBool) -> Result<()> {
     ensure_command_in_path("xdotool", "xdotool")?;
     let key_sequences = xdotool_key_sequences(request)?;
     let mut command = Command::new("xdotool");
@@ -431,15 +472,25 @@ fn paste_with_xdotool(request: &PasteRequest) -> Result<()> {
         .arg("key")
         .arg("--clearmodifiers")
         .args(key_sequences);
-    run_status_without_stdin(&mut command, CLIPBOARD_TIMEOUT, "xdotool paste shortcut")
+    run_status_without_stdin(
+        &mut command,
+        CLIPBOARD_TIMEOUT,
+        "xdotool paste shortcut",
+        cancel_requested,
+    )
 }
 
-fn paste_with_ydotool(request: &PasteRequest) -> Result<()> {
+fn paste_with_ydotool(request: &PasteRequest, cancel_requested: &AtomicBool) -> Result<()> {
     ensure_command_in_path("ydotool", "ydotool")?;
     let key_events = ydotool_key_events(request)?;
     let mut command = Command::new("ydotool");
     command.arg("key").args(key_events);
-    run_status_without_stdin(&mut command, CLIPBOARD_TIMEOUT, "ydotool paste shortcut")
+    run_status_without_stdin(
+        &mut command,
+        CLIPBOARD_TIMEOUT,
+        "ydotool paste shortcut",
+        cancel_requested,
+    )
 }
 
 fn xdotool_key_sequences(request: &PasteRequest) -> Result<Vec<String>> {
@@ -527,30 +578,35 @@ fn run_status_with_stdin(
     text: &str,
     timeout: Duration,
     description: &str,
+    cancel_requested: &AtomicBool,
 ) -> Result<()> {
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to spawn {description}"))?;
 
-    let write_result = child
-        .stdin
-        .take()
-        .context("failed to open child stdin")?
-        .write_all(text.as_bytes())
-        .with_context(|| format!("failed to write text to {description} stdin"));
-    if let Err(error) = write_result {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error);
+    let stdin = child.stdin.take().context("failed to open child stdin")?;
+    let writer = match spawn_stdin_writer(stdin, text.to_string(), description) {
+        Ok(writer) => writer,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    let output_result = wait_for_child_output(child, timeout, description, cancel_requested);
+    let write_result = join_stdin_writer(writer, description);
+    let output = output_result?;
+    if !output.status.success() {
+        bail!(
+            "{description} exited with status {}; stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
-
-    let status = wait_for_child_status(&mut child, timeout, description)?;
-    if !status.success() {
-        bail!("{description} exited with status {status}");
-    }
+    write_result?;
 
     Ok(())
 }
@@ -559,8 +615,9 @@ fn run_status_without_stdin(
     command: &mut Command,
     timeout: Duration,
     description: &str,
+    cancel_requested: &AtomicBool,
 ) -> Result<()> {
-    let output = run_output_with_timeout(command, timeout, description)?;
+    let output = run_output_with_timeout(command, timeout, description, cancel_requested)?;
     if !output.status.success() {
         bail!(
             "{description} exited with status {}; stderr: {}",
@@ -576,51 +633,134 @@ fn run_output_with_timeout(
     command: &mut Command,
     timeout: Duration,
     description: &str,
+    cancel_requested: &AtomicBool,
 ) -> Result<Output> {
-    let mut child = command
+    let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to spawn {description}"))?;
-
-    let started_at = Instant::now();
-    loop {
-        if child.try_wait()?.is_some() {
-            return child
-                .wait_with_output()
-                .with_context(|| format!("failed to collect {description} output"));
-        }
-
-        if started_at.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("{description} timed out after {timeout:?}");
-        }
-
-        thread::sleep(SCRIPT_POLL_INTERVAL);
-    }
+    wait_for_child_output(child, timeout, description, cancel_requested)
 }
 
-fn wait_for_child_status(
-    child: &mut std::process::Child,
+fn wait_for_child_output(
+    mut child: Child,
     timeout: Duration,
     description: &str,
-) -> Result<std::process::ExitStatus> {
+    cancel_requested: &AtomicBool,
+) -> Result<Output> {
+    let stdout_reader = match child.stdout.take() {
+        Some(stdout) => match spawn_pipe_reader(stdout, description, "stdout") {
+            Ok(reader) => Some(reader),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        },
+        None => None,
+    };
+    let stderr_reader = match child.stderr.take() {
+        Some(stderr) => match spawn_pipe_reader(stderr, description, "stderr") {
+            Ok(reader) => Some(reader),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_pipe_reader(stdout_reader, description, "stdout");
+                return Err(error);
+            }
+        },
+        None => None,
+    };
     let started_at = Instant::now();
-    loop {
+    let mut timed_out = false;
+    let mut canceled = false;
+    let status = loop {
         if let Some(status) = child.try_wait()? {
-            return Ok(status);
+            break status;
+        }
+
+        if cancel_requested.load(Ordering::Relaxed) {
+            canceled = true;
+            let _ = child.kill();
+            break child.wait()?;
         }
 
         if started_at.elapsed() >= timeout {
+            timed_out = true;
             let _ = child.kill();
-            let _ = child.wait();
-            bail!("{description} timed out after {timeout:?}");
+            break child.wait()?;
         }
 
         thread::sleep(SCRIPT_POLL_INTERVAL);
+    };
+
+    let stdout = join_pipe_reader(stdout_reader, description, "stdout")?;
+    let stderr = join_pipe_reader(stderr_reader, description, "stderr")?;
+
+    if canceled {
+        bail!("{description} canceled during shutdown");
     }
+    if timed_out {
+        bail!("{description} timed out after {timeout:?}");
+    }
+
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn spawn_pipe_reader<R>(
+    mut reader: R,
+    description: &str,
+    stream_name: &'static str,
+) -> Result<thread::JoinHandle<io::Result<Vec<u8>>>>
+where
+    R: Read + Send + 'static,
+{
+    thread::Builder::new()
+        .name(format!("myapp-output-{stream_name}"))
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes)?;
+            Ok(bytes)
+        })
+        .with_context(|| format!("failed to spawn {description} {stream_name} reader"))
+}
+
+fn join_pipe_reader(
+    reader: Option<thread::JoinHandle<io::Result<Vec<u8>>>>,
+    description: &str,
+    stream_name: &str,
+) -> Result<Vec<u8>> {
+    let Some(reader) = reader else {
+        return Ok(Vec::new());
+    };
+    reader
+        .join()
+        .map_err(|error| anyhow!("{description} {stream_name} reader panicked: {error:?}"))?
+        .with_context(|| format!("failed to read {description} {stream_name}"))
+}
+
+fn spawn_stdin_writer(
+    mut stdin: std::process::ChildStdin,
+    text: String,
+    description: &str,
+) -> Result<thread::JoinHandle<io::Result<()>>> {
+    thread::Builder::new()
+        .name("myapp-output-stdin".to_string())
+        .spawn(move || stdin.write_all(text.as_bytes()))
+        .with_context(|| format!("failed to spawn {description} stdin writer"))
+}
+
+fn join_stdin_writer(writer: thread::JoinHandle<io::Result<()>>, description: &str) -> Result<()> {
+    writer
+        .join()
+        .map_err(|error| anyhow!("{description} stdin writer panicked: {error:?}"))?
+        .with_context(|| format!("failed to write text to {description} stdin"))
 }
 
 fn ensure_command_in_path(command: &str, package_hint: &str) -> Result<()> {
@@ -642,9 +782,15 @@ fn command_in_path_entries(command: &str, entries: Vec<PathBuf>) -> bool {
     entries.iter().any(|entry| entry.join(command).is_file())
 }
 
-fn run_script(script_path: &str, text: &str, action: &OutputAction) -> Result<OutputScriptResult> {
+fn run_script(
+    script_path: &str,
+    text: &str,
+    action: &OutputAction,
+    cancel_requested: &AtomicBool,
+) -> Result<OutputScriptResult> {
     let deliver_stdout = action.copy_to_clipboard || action.paste_from_clipboard;
-    let process_output = run_script_with_timeout(script_path, text, deliver_stdout)?;
+    let process_output =
+        run_script_with_timeout(script_path, text, deliver_stdout, cancel_requested)?;
     if !process_output.status.success() {
         bail!(
             "script {} exited with status {}; stderr: {}",
@@ -676,26 +822,16 @@ fn run_script_with_timeout(
     script_path: &str,
     text: &str,
     capture_stdout: bool,
+    cancel_requested: &AtomicBool,
 ) -> Result<std::process::Output> {
-    let mut child = spawn_script_with_retry(script_path, text, capture_stdout)
+    let child = spawn_script_with_retry(script_path, text, capture_stdout)
         .with_context(|| format!("failed to spawn output script {script_path}"))?;
-
-    let started_at = Instant::now();
-    loop {
-        if child.try_wait()?.is_some() {
-            return child
-                .wait_with_output()
-                .with_context(|| format!("failed to collect output script {script_path} output"));
-        }
-
-        if started_at.elapsed() >= SCRIPT_TIMEOUT {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!("script {script_path} timed out after {SCRIPT_TIMEOUT:?}");
-        }
-
-        thread::sleep(SCRIPT_POLL_INTERVAL);
-    }
+    wait_for_child_output(
+        child,
+        SCRIPT_TIMEOUT,
+        &format!("output script {script_path}"),
+        cancel_requested,
+    )
 }
 
 fn spawn_script_with_retry(script_path: &str, text: &str, capture_stdout: bool) -> Result<Child> {
@@ -740,7 +876,7 @@ mod tests {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     use shared::{OutputAction, ScriptOutput};
 
@@ -860,7 +996,7 @@ mod tests {
             paste_from_clipboard: false,
             ..OutputAction::default()
         };
-        let result = run_script(script.path_str(), "hello", &output)
+        let result = run_script(script.path_str(), "hello", &output, never_cancel())
             .expect("script-only output should ignore stdout bytes");
 
         assert_eq!(result.output_text, None);
@@ -872,7 +1008,7 @@ mod tests {
         let script = TestScript::new("copy-stdout", "printf 'translated:%s' \"$1\"\n");
 
         let output = OutputAction::default();
-        let result = run_script(script.path_str(), "hello", &output)
+        let result = run_script(script.path_str(), "hello", &output, never_cancel())
             .expect("copy output should capture script stdout");
 
         assert_eq!(result.output_text.as_deref(), Some("translated:hello"));
@@ -888,7 +1024,7 @@ mod tests {
             ..OutputAction::default()
         };
 
-        let result = run_script(script.path_str(), "hello", &output)
+        let result = run_script(script.path_str(), "hello", &output, never_cancel())
             .expect("paste output should capture script stdout");
 
         assert_eq!(result.output_text.as_deref(), Some("translated:hello"));
@@ -900,7 +1036,7 @@ mod tests {
         let script = TestScript::new("invalid-stdout-delivered", "printf '\\377'\n");
 
         let output = OutputAction::default();
-        let error = run_script(script.path_str(), "hello", &output)
+        let error = run_script(script.path_str(), "hello", &output, never_cancel())
             .expect_err("delivered stdout must be UTF-8");
 
         assert!(error.to_string().contains("stdout was not UTF-8"));
@@ -915,11 +1051,29 @@ mod tests {
             paste_from_clipboard: false,
             ..OutputAction::default()
         };
-        let error = run_script(script.path_str(), "hello", &output)
+        let error = run_script(script.path_str(), "hello", &output, never_cancel())
             .expect_err("nonzero script should fail");
 
         assert!(error.to_string().contains("script failed"));
         assert!(error.to_string().contains("exited with status"));
+    }
+
+    #[test]
+    fn run_script_drains_large_stdout_without_deadlock() {
+        let script = TestScript::new(
+            "large-stdout",
+            "i=0\nwhile [ \"$i\" -lt 20000 ]; do printf '0123456789'; i=$((i + 1)); done\n",
+        );
+
+        let result = run_script(
+            script.path_str(),
+            "hello",
+            &OutputAction::default(),
+            never_cancel(),
+        )
+        .expect("large stdout should be drained while waiting");
+
+        assert_eq!(result.output_text.as_ref().map(String::len), Some(200_000));
     }
 
     #[test]
@@ -1029,16 +1183,19 @@ mod tests {
     #[ignore = "requires a real Wayland session and mutates the system clipboard"]
     fn wayland_clipboard_copy_round_trips_text() {
         let text = format!("myapp clipboard smoke {}", unique_test_suffix());
-        let _restore_guard =
-            ClipboardRestoreGuard::new(read_external_clipboard(ClipboardBackend::Wayland).ok());
+        let _restore_guard = ClipboardRestoreGuard::new(
+            read_external_clipboard(ClipboardBackend::Wayland, never_cancel()).ok(),
+        );
 
-        copy_text_to_external_clipboard(&text).expect("external clipboard copy should succeed");
+        copy_text_to_external_clipboard(&text, never_cancel())
+            .expect("external clipboard copy should succeed");
 
         let backend = detect_clipboard_backend_from_env(|name| std::env::var_os(name))
             .expect("display env should select a clipboard backend");
         assert_eq!(backend, ClipboardBackend::Wayland);
 
-        let actual = read_external_clipboard(backend).expect("clipboard text should be readable");
+        let actual = read_external_clipboard(backend, never_cancel())
+            .expect("clipboard text should be readable");
         assert_eq!(actual, text);
     }
 
@@ -1055,9 +1212,14 @@ mod tests {
     impl Drop for ClipboardRestoreGuard {
         fn drop(&mut self) {
             if let Some(original_text) = self.original_text.take() {
-                let _ = copy_text_to_external_clipboard(&original_text);
+                let _ = copy_text_to_external_clipboard(&original_text, never_cancel());
             }
         }
+    }
+
+    fn never_cancel() -> &'static AtomicBool {
+        static NEVER_CANCEL: AtomicBool = AtomicBool::new(false);
+        &NEVER_CANCEL
     }
 
     fn test_env<'a>(values: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {

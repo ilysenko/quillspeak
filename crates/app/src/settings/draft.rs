@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use shared::{
@@ -28,10 +29,21 @@ impl SettingsDraft {
             return;
         }
 
+        let mut occupied_signals = HashSet::new();
         for shortcut in &mut self.config.borrow_mut().shortcuts {
             if matches!(shortcut.trigger, ShortcutTrigger::Keyboard { .. }) {
                 shortcut.trigger = ShortcutTrigger::default_linux_signal();
-                shortcut.enabled = true;
+                if shortcut.enabled && signal_keys_conflict(shortcut, &occupied_signals) {
+                    shortcut.enabled = false;
+                }
+            }
+
+            if shortcut.enabled {
+                if signal_keys_conflict(shortcut, &occupied_signals) {
+                    shortcut.enabled = false;
+                } else {
+                    insert_shortcut_signal_keys(shortcut, &mut occupied_signals);
+                }
             }
         }
     }
@@ -73,6 +85,14 @@ impl SettingsDraft {
         let mut shortcut = ShortcutProfile::new_profile(id, name);
         if !capabilities.keyboard_available() {
             shortcut.trigger = ShortcutTrigger::default_linux_signal();
+            shortcut.enabled = !shortcut_signal_keys(&shortcut).is_some_and(|keys| {
+                config
+                    .shortcuts
+                    .iter()
+                    .filter(|shortcut| shortcut.enabled)
+                    .flat_map(|shortcut| shortcut_signal_keys(shortcut).unwrap_or_default())
+                    .any(|existing| keys.contains(&existing))
+            });
         }
         config.shortcuts.push(shortcut.clone());
         shortcut
@@ -88,6 +108,35 @@ impl SettingsDraft {
             .shortcuts
             .retain(|shortcut| shortcut.id != shortcut_id);
         config.shortcuts.len() != original_len
+    }
+}
+
+fn signal_keys_conflict(shortcut: &ShortcutProfile, occupied_signals: &HashSet<String>) -> bool {
+    shortcut_signal_keys(shortcut)
+        .is_some_and(|keys| keys.iter().any(|key| occupied_signals.contains(key)))
+}
+
+fn insert_shortcut_signal_keys(shortcut: &ShortcutProfile, occupied_signals: &mut HashSet<String>) {
+    if let Some(keys) = shortcut_signal_keys(shortcut) {
+        occupied_signals.extend(keys);
+    }
+}
+
+fn shortcut_signal_keys(shortcut: &ShortcutProfile) -> Option<Vec<String>> {
+    let ShortcutTrigger::LinuxSignal {
+        start_signal,
+        stop_signal,
+    } = &shortcut.trigger
+    else {
+        return None;
+    };
+
+    let start_signal = start_signal.duplicate_key().ok()?;
+    let stop_signal = stop_signal.duplicate_key().ok()?;
+    if start_signal == stop_signal {
+        Some(vec![start_signal])
+    } else {
+        Some(vec![start_signal, stop_signal])
     }
 }
 
@@ -136,6 +185,18 @@ mod tests {
     }
 
     #[test]
+    fn added_signal_shortcut_starts_disabled_when_default_pair_is_taken() {
+        let draft = SettingsDraft::new(AppConfig::default());
+        draft.coerce_trigger_capabilities(ShortcutTriggerCapabilities::SignalsOnly);
+
+        let shortcut = draft.add_shortcut(ShortcutTriggerCapabilities::SignalsOnly);
+
+        assert_eq!(shortcut.trigger, ShortcutTrigger::default_linux_signal());
+        assert!(!shortcut.enabled);
+        assert!(draft.snapshot().normalized().is_ok());
+    }
+
+    #[test]
     fn coerces_keyboard_shortcuts_to_signals_when_keyboard_is_unavailable() {
         let draft = SettingsDraft::new(AppConfig::default());
 
@@ -145,6 +206,33 @@ mod tests {
             draft.snapshot().shortcuts[0].trigger,
             ShortcutTrigger::default_linux_signal()
         );
+    }
+
+    #[test]
+    fn disables_duplicate_signal_profiles_after_keyboard_coercion() {
+        let draft = SettingsDraft::new(AppConfig::default());
+        let added = draft.add_shortcut(ShortcutTriggerCapabilities::KeyboardAndSignals);
+
+        draft.coerce_trigger_capabilities(ShortcutTriggerCapabilities::SignalsOnly);
+
+        let config = draft.snapshot();
+        assert_eq!(config.shortcuts.len(), 2);
+        assert!(config.shortcuts[0].enabled);
+        assert_eq!(
+            config.shortcuts[0].trigger,
+            ShortcutTrigger::default_linux_signal()
+        );
+        let added_shortcut = config
+            .shortcuts
+            .iter()
+            .find(|shortcut| shortcut.id == added.id)
+            .expect("added shortcut should remain");
+        assert!(!added_shortcut.enabled);
+        assert_eq!(
+            added_shortcut.trigger,
+            ShortcutTrigger::default_linux_signal()
+        );
+        assert!(config.normalized().is_ok());
     }
 
     #[test]

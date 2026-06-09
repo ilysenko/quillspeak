@@ -248,9 +248,16 @@ transcript -> optional script transform -> final text -> optional clipboard copy
 ```
 
 If a script is enabled, its stdout is the final text; the original transcript is
-not copied as a fallback. Clipboard writes use external Linux tools so Wayland
-and X11 clients see the same selection. The app verifies clipboard writes with
-`wl-paste` or `xclip -out` before logging success.
+not copied as a fallback. The script path is executed directly with the
+transcript as its first argument and stdin closed. When clipboard copy or paste
+is enabled, stdout must be UTF-8 and becomes the final text; when neither is
+enabled, stdout is ignored. A 30-second script timeout, spawn failure, or
+nonzero exit stops the output pipeline without falling back to the original
+transcript.
+
+Clipboard writes use external Linux tools so Wayland and X11 clients see the
+same selection. The app verifies clipboard writes with `wl-paste` or
+`xclip -out` before logging success.
 
 Copy-to-clipboard intentionally leaves the final text in the clipboard. If
 `Paste from clipboard` is enabled, the app first writes and verifies the final
@@ -312,8 +319,10 @@ only signal trigger controls.
 
 If an existing draft contains keyboard triggers while the current session is not
 keyboard-capable, Settings converts those draft triggers to the default Linux
-signal pair before rendering. The conversion is still saved only when you press
-`Save`.
+signal pair before rendering. If that would create duplicate enabled signal
+bindings, the first profile keeps the binding and later duplicates are left
+disabled until you configure unique signals and turn them back on. The
+conversion is still saved only when you press `Save`.
 
 During development only the current schema is supported. If the app sees an
 older local config schema, including v10, it replaces it with a fresh default

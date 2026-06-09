@@ -45,6 +45,24 @@ pub fn build(
     });
     group.add(&name_row);
 
+    let enabled_switch = gtk::Switch::builder()
+        .active(shortcut.enabled)
+        .valign(gtk::Align::Center)
+        .build();
+    let enabled_row = adw::ActionRow::builder().title("Enabled").build();
+    enabled_row.add_suffix(&enabled_switch);
+    enabled_row.set_activatable_widget(Some(&enabled_switch));
+    enabled_switch.connect_active_notify({
+        let draft = draft.clone();
+        let shortcut_id = shortcut_id.clone();
+        move |switch| {
+            draft.update_shortcut(&shortcut_id, |shortcut| {
+                shortcut.enabled = switch.is_active();
+            });
+        }
+    });
+    group.add(&enabled_row);
+
     let trigger_is_keyboard =
         keyboard_available && matches!(shortcut.trigger, ShortcutTrigger::Keyboard { .. });
     let trigger = dropdown_row(
@@ -64,12 +82,15 @@ pub fn build(
     shortcut_entry.connect_changed({
         let draft = draft.clone();
         let shortcut_id = shortcut_id.clone();
+        let enabled_switch = enabled_switch.clone();
         move |row| {
+            let enabled = !row.text().trim().is_empty();
+            enabled_switch.set_active(enabled);
             draft.update_shortcut(&shortcut_id, |shortcut| {
                 shortcut.trigger = ShortcutTrigger::Keyboard {
                     accelerator: row.text().to_string(),
                 };
-                shortcut.enabled = !row.text().trim().is_empty();
+                shortcut.enabled = enabled;
             });
         }
     });
@@ -91,7 +112,9 @@ pub fn build(
         let draft = draft.clone();
         let shortcut_id = shortcut_id.clone();
         let stop_signal_row = stop_signal_row.clone();
+        let enabled_switch = enabled_switch.clone();
         move |row| {
+            enabled_switch.set_active(true);
             draft.update_shortcut(&shortcut_id, |shortcut| {
                 shortcut.trigger = ShortcutTrigger::LinuxSignal {
                     start_signal: LinuxSignal::new(row.text().to_string()),
@@ -105,7 +128,9 @@ pub fn build(
         let draft = draft.clone();
         let shortcut_id = shortcut_id.clone();
         let start_signal_row = start_signal_row.clone();
+        let enabled_switch = enabled_switch.clone();
         move |row| {
+            enabled_switch.set_active(true);
             draft.update_shortcut(&shortcut_id, |shortcut| {
                 shortcut.trigger = ShortcutTrigger::LinuxSignal {
                     start_signal: LinuxSignal::new(start_signal_row.text().to_string()),
@@ -124,8 +149,10 @@ pub fn build(
         let shortcut_entry = shortcut_entry.clone();
         let start_signal_row = start_signal_row.clone();
         let stop_signal_row = stop_signal_row.clone();
+        let enabled_switch = enabled_switch.clone();
         move |dropdown| {
             let is_keyboard = dropdown.selected() == 0;
+            let enabled = !is_keyboard || !shortcut_entry.text().to_string().trim().is_empty();
             shortcut_entry.set_visible(is_keyboard);
             start_signal_row.set_visible(!is_keyboard);
             stop_signal_row.set_visible(!is_keyboard);
@@ -133,6 +160,7 @@ pub fn build(
                 start_signal_row.set_text("SIGUSR1");
                 stop_signal_row.set_text("SIGUSR2");
             }
+            enabled_switch.set_active(enabled);
             draft.update_shortcut(&shortcut_id, |shortcut| {
                 shortcut.trigger = if is_keyboard {
                     ShortcutTrigger::Keyboard {
@@ -141,8 +169,7 @@ pub fn build(
                 } else {
                     ShortcutTrigger::default_linux_signal()
                 };
-                shortcut.enabled =
-                    !is_keyboard || !shortcut_entry.text().to_string().trim().is_empty();
+                shortcut.enabled = enabled;
             });
         }
     });

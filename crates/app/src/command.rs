@@ -71,6 +71,7 @@ pub enum AppCommand {
         model_id: String,
         outcome: ModelDownloadOutcome,
     },
+    ShutdownComplete,
     Quit,
 }
 
