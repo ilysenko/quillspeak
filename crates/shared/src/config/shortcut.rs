@@ -1,4 +1,4 @@
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
 use super::output::ShortcutOutput;
 use super::{ConfigError, inherit_value, normalize_language_ref, normalize_model_ref};
@@ -69,8 +69,8 @@ pub enum ShortcutTrigger {
         accelerator: String,
     },
     LinuxSignal {
-        start_signal: LinuxSignalName,
-        stop_signal: LinuxSignalName,
+        start_signal: LinuxSignal,
+        stop_signal: LinuxSignal,
     },
 }
 
@@ -81,10 +81,10 @@ impl ShortcutTrigger {
         }
     }
 
-    pub const fn default_linux_signal() -> Self {
+    pub fn default_linux_signal() -> Self {
         Self::LinuxSignal {
-            start_signal: LinuxSignalName::SigUsr2,
-            stop_signal: LinuxSignalName::SigUsr2,
+            start_signal: LinuxSignal::sigusr2(),
+            stop_signal: LinuxSignal::sigusr2(),
         }
     }
 
@@ -103,60 +103,87 @@ impl ShortcutTrigger {
     }
 
     fn normalized(mut self, enabled: bool) -> Result<Self, ConfigError> {
-        if let Self::Keyboard { accelerator } = &mut self {
-            if !enabled && accelerator.trim().is_empty() {
-                accelerator.clear();
-            } else {
-                *accelerator = normalize_accelerator(accelerator)?;
+        match &mut self {
+            Self::Keyboard { accelerator } => {
+                if !enabled && accelerator.trim().is_empty() {
+                    accelerator.clear();
+                } else {
+                    *accelerator = normalize_accelerator(accelerator)?;
+                }
+            }
+            Self::LinuxSignal {
+                start_signal,
+                stop_signal,
+            } => {
+                *start_signal = start_signal.normalized()?;
+                *stop_signal = stop_signal.normalized()?;
             }
         }
         Ok(self)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum LinuxSignalName {
-    SigUsr1,
-    SigUsr2,
-}
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LinuxSignal(String);
 
-impl LinuxSignalName {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::SigUsr1 => "SIGUSR1",
-            Self::SigUsr2 => "SIGUSR2",
-        }
+impl LinuxSignal {
+    pub fn sigusr1() -> Self {
+        Self("SIGUSR1".to_string())
+    }
+
+    pub fn sigusr2() -> Self {
+        Self("SIGUSR2".to_string())
+    }
+
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn normalized(&self) -> Result<Self, ConfigError> {
+        let value = normalize_signal_text(self.as_str())?;
+        Ok(Self(value))
+    }
+
+    pub fn duplicate_key(&self) -> Result<String, ConfigError> {
+        normalize_signal_text(self.as_str())
     }
 }
 
-impl Serialize for LinuxSignalName {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
+impl Default for LinuxSignal {
+    fn default() -> Self {
+        Self("SIGUSR2".to_string())
     }
 }
 
-impl<'de> Deserialize<'de> for LinuxSignalName {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        parse_linux_signal_name(&value).map_err(serde::de::Error::custom)
+fn normalize_signal_text(input: &str) -> Result<String, ConfigError> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(ConfigError::EmptySignal);
     }
+
+    Ok(match canonical_user_signal(trimmed) {
+        Some(signal) => signal.to_string(),
+        None => trimmed.to_string(),
+    })
 }
 
-fn parse_linux_signal_name(input: &str) -> Result<LinuxSignalName, String> {
+fn canonical_user_signal(input: &str) -> Option<&'static str> {
     let mut value = input.trim().to_ascii_uppercase();
+    value.retain(|character| {
+        !character.is_ascii_whitespace() && character != '_' && character != '-'
+    });
     if let Some(rest) = value.strip_prefix("SIG") {
         value = rest.to_string();
     }
     match value.as_str() {
-        "USR1" => Ok(LinuxSignalName::SigUsr1),
-        "USR2" => Ok(LinuxSignalName::SigUsr2),
-        _ => Err(format!("unsupported Linux signal: {input}")),
+        "USR1" | "USER1" => Some("SIGUSR1"),
+        "USR2" | "USER2" => Some("SIGUSR2"),
+        _ => None,
     }
 }
 

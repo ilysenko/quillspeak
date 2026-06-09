@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
-use shared::{OutputAction, ScriptOutput};
+use shared::{OutputAction, PasteShortcut, ScriptOutput};
 use tracing::{debug, info, warn};
 
 use crate::command::AppCommand;
@@ -27,7 +27,7 @@ pub struct OutputService {
 pub struct OutputScriptResult {
     pub script_path: String,
     pub output_text: Option<String>,
-    pub copy_to_clipboard: bool,
+    pub output: OutputAction,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +35,12 @@ pub struct ClipboardCopyOutcome {
     pub backend: ClipboardBackend,
     pub text_chars: usize,
     pub text_bytes: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipboardPasteOutcome {
+    pub backend: ClipboardBackend,
+    pub shortcut: PasteShortcut,
 }
 
 impl OutputService {
@@ -106,18 +112,11 @@ impl OutputService {
             shortcut_id: shortcut_id.to_string(),
             script_path: script.path.clone(),
             text: text.to_string(),
-            copy_to_clipboard: output.copy_to_clipboard,
+            output: output.clone(),
         };
         if self.worker_tx.send(command).is_err() {
             warn!(shortcut_id, script = %script.path, "output worker is not running");
         }
-    }
-
-    pub fn copy_to_clipboard(&self, source: ClipboardCopySource, text: String) -> Result<()> {
-        let command = OutputWorkerCommand::CopyClipboard { source, text };
-        self.worker_tx
-            .send(command)
-            .map_err(|_| anyhow!("output worker is not running"))
     }
 
     pub fn copy_final_text_if_requested(
@@ -126,13 +125,21 @@ impl OutputService {
         output: &OutputAction,
         text: &str,
     ) {
-        let Some(text) = clipboard_text_for_output(output, text) else {
+        let Some(text) = clipboard_transport_text_for_output(output, text) else {
             return;
         };
 
         let shortcut_id = source.shortcut_id().to_string();
         let source_kind = source.kind();
-        match self.copy_to_clipboard(source, text.to_string()) {
+        let paste = output
+            .paste_from_clipboard
+            .then(|| PasteRequest::from(output));
+        let command = OutputWorkerCommand::CopyClipboard {
+            source,
+            text: text.to_string(),
+            paste,
+        };
+        match self.worker_tx.send(command) {
             Ok(()) => debug!(shortcut_id, source = source_kind, "queued clipboard copy"),
             Err(error) => warn!(
                 ?error,
@@ -144,8 +151,11 @@ impl OutputService {
     }
 }
 
-fn clipboard_text_for_output<'a>(output: &OutputAction, text: &'a str) -> Option<&'a str> {
-    if !output.copy_to_clipboard {
+fn clipboard_transport_text_for_output<'a>(
+    output: &OutputAction,
+    text: &'a str,
+) -> Option<&'a str> {
+    if !output.copy_to_clipboard && !output.paste_from_clipboard {
         return None;
     }
     let text = text.trim();
@@ -209,16 +219,34 @@ struct ClipboardCommands {
     package_hint: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PasteRequest {
+    shortcut: PasteShortcut,
+    custom_x11: String,
+    custom_wayland: String,
+}
+
+impl From<&OutputAction> for PasteRequest {
+    fn from(output: &OutputAction) -> Self {
+        Self {
+            shortcut: output.paste_shortcut,
+            custom_x11: output.paste_custom_x11.clone(),
+            custom_wayland: output.paste_custom_wayland.clone(),
+        }
+    }
+}
+
 enum OutputWorkerCommand {
     RunScript {
         shortcut_id: String,
         script_path: String,
         text: String,
-        copy_to_clipboard: bool,
+        output: OutputAction,
     },
     CopyClipboard {
         source: ClipboardCopySource,
         text: String,
+        paste: Option<PasteRequest>,
     },
     Shutdown,
 }
@@ -233,19 +261,39 @@ fn output_worker_loop(
                 shortcut_id,
                 script_path,
                 text,
-                copy_to_clipboard,
+                output,
             } => {
-                let result = run_script(&script_path, &text, copy_to_clipboard)
-                    .map_err(|error| format!("{error:#}"));
+                let result =
+                    run_script(&script_path, &text, &output).map_err(|error| format!("{error:#}"));
                 let _ = command_tx.send(AppCommand::OutputScriptFinished {
                     shortcut_id,
                     result,
                 });
             }
-            OutputWorkerCommand::CopyClipboard { source, text } => {
-                let result =
-                    copy_text_to_external_clipboard(&text).map_err(|error| format!("{error:#}"));
-                let _ = command_tx.send(AppCommand::ClipboardCopyFinished { source, result });
+            OutputWorkerCommand::CopyClipboard {
+                source,
+                text,
+                paste,
+            } => {
+                let result = copy_text_to_external_clipboard(&text);
+                let paste_result = result.as_ref().ok().and_then(|copy| {
+                    paste.map(|paste| {
+                        paste_from_external_clipboard(copy.backend, &paste)
+                            .map_err(|error| format!("{error:#}"))
+                    })
+                });
+                let copy_result = result.map_err(|error| format!("{error:#}"));
+                let paste_source = source.clone();
+                let _ = command_tx.send(AppCommand::ClipboardCopyFinished {
+                    source,
+                    result: copy_result,
+                });
+                if let Some(result) = paste_result {
+                    let _ = command_tx.send(AppCommand::ClipboardPasteFinished {
+                        source: paste_source,
+                        result,
+                    });
+                }
             }
             OutputWorkerCommand::Shutdown => break,
         }
@@ -358,6 +406,96 @@ fn read_external_clipboard(backend: ClipboardBackend) -> Result<String> {
         .with_context(|| format!("{} clipboard text was not UTF-8", backend.as_str()))
 }
 
+fn paste_from_external_clipboard(
+    backend: ClipboardBackend,
+    request: &PasteRequest,
+) -> Result<ClipboardPasteOutcome> {
+    match backend {
+        ClipboardBackend::Wayland => paste_with_ydotool(request)?,
+        ClipboardBackend::X11 => paste_with_xdotool(request)?,
+    }
+    Ok(ClipboardPasteOutcome {
+        backend,
+        shortcut: request.shortcut,
+    })
+}
+
+fn paste_with_xdotool(request: &PasteRequest) -> Result<()> {
+    ensure_command_in_path("xdotool", "xdotool")?;
+    let key_sequences = xdotool_key_sequences(request)?;
+    let mut command = Command::new("xdotool");
+    command
+        .arg("key")
+        .arg("--clearmodifiers")
+        .args(key_sequences);
+    run_status_without_stdin(&mut command, CLIPBOARD_TIMEOUT, "xdotool paste shortcut")
+}
+
+fn paste_with_ydotool(request: &PasteRequest) -> Result<()> {
+    ensure_command_in_path("ydotool", "ydotool")?;
+    let key_events = ydotool_key_events(request)?;
+    let mut command = Command::new("ydotool");
+    command.arg("key").args(key_events);
+    run_status_without_stdin(&mut command, CLIPBOARD_TIMEOUT, "ydotool paste shortcut")
+}
+
+fn xdotool_key_sequences(request: &PasteRequest) -> Result<Vec<String>> {
+    let sequences = match request.shortcut {
+        PasteShortcut::CtrlV => vec!["ctrl+v".to_string()],
+        PasteShortcut::CtrlShiftV => vec!["ctrl+shift+v".to_string()],
+        PasteShortcut::Custom => request
+            .custom_x11
+            .split_whitespace()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+    };
+    if sequences.is_empty() {
+        bail!("custom xdotool paste shortcut is empty");
+    }
+    Ok(sequences)
+}
+
+fn ydotool_key_events(request: &PasteRequest) -> Result<Vec<String>> {
+    let events = match request.shortcut {
+        PasteShortcut::CtrlV => vec!["29:1", "47:1", "47:0", "29:0"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        PasteShortcut::CtrlShiftV => vec!["29:1", "42:1", "47:1", "47:0", "42:0", "29:0"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        PasteShortcut::Custom => request
+            .custom_wayland
+            .split_whitespace()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+    };
+    if events.is_empty() {
+        bail!("custom ydotool paste shortcut is empty");
+    }
+    for event in &events {
+        validate_ydotool_key_event(event)?;
+    }
+    Ok(events)
+}
+
+fn validate_ydotool_key_event(event: &str) -> Result<()> {
+    let Some((keycode, pressed)) = event.split_once(':') else {
+        bail!("invalid ydotool key event {event:?}; expected keycode:pressed")
+    };
+    let keycode = keycode
+        .parse::<u16>()
+        .with_context(|| format!("invalid ydotool keycode in {event:?}"))?;
+    if keycode == 0 {
+        bail!("invalid ydotool keycode in {event:?}; keycode must be positive");
+    }
+    match pressed {
+        "0" | "1" => Ok(()),
+        _ => bail!("invalid ydotool key state in {event:?}; expected 0 or 1"),
+    }
+}
+
 fn clipboard_commands(backend: ClipboardBackend) -> ClipboardCommands {
     match backend {
         ClipboardBackend::Wayland => ClipboardCommands {
@@ -409,6 +547,23 @@ fn run_status_with_stdin(
     let status = wait_for_child_status(&mut child, timeout, description)?;
     if !status.success() {
         bail!("{description} exited with status {status}");
+    }
+
+    Ok(())
+}
+
+fn run_status_without_stdin(
+    command: &mut Command,
+    timeout: Duration,
+    description: &str,
+) -> Result<()> {
+    let output = run_output_with_timeout(command, timeout, description)?;
+    if !output.status.success() {
+        bail!(
+            "{description} exited with status {}; stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
 
     Ok(())
@@ -484,35 +639,33 @@ fn command_in_path_entries(command: &str, entries: Vec<PathBuf>) -> bool {
     entries.iter().any(|entry| entry.join(command).is_file())
 }
 
-fn run_script(
-    script_path: &str,
-    text: &str,
-    copy_to_clipboard: bool,
-) -> Result<OutputScriptResult> {
-    let deliver_stdout = copy_to_clipboard;
-    let output = run_script_with_timeout(script_path, text, deliver_stdout)?;
-    if !output.status.success() {
+fn run_script(script_path: &str, text: &str, action: &OutputAction) -> Result<OutputScriptResult> {
+    let deliver_stdout = action.copy_to_clipboard || action.paste_from_clipboard;
+    let process_output = run_script_with_timeout(script_path, text, deliver_stdout)?;
+    if !process_output.status.success() {
         bail!(
             "script {} exited with status {}; stderr: {}",
             script_path,
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
+            process_output.status,
+            String::from_utf8_lossy(&process_output.stderr).trim()
         );
     }
 
     let output_text = if deliver_stdout {
         Some(
-            String::from_utf8(output.stdout)
+            String::from_utf8(process_output.stdout)
                 .with_context(|| format!("script {script_path} stdout was not UTF-8"))?,
         )
     } else {
         None
     };
+    let mut output = action.clone();
+    output.script = None;
 
     Ok(OutputScriptResult {
         script_path: script_path.to_string(),
         output_text,
-        copy_to_clipboard,
+        output,
     })
 }
 
@@ -569,7 +722,7 @@ mod tests {
     fn clipboard_disabled_when_output_does_not_request_it() {
         let output = OutputAction {
             copy_to_clipboard: false,
-            script: None,
+            ..OutputAction::default()
         };
 
         assert!(!output.copy_to_clipboard);
@@ -580,11 +733,11 @@ mod tests {
         let result = OutputScriptResult {
             script_path: "/bin/echo".to_string(),
             output_text: Some("hello\n".to_string()),
-            copy_to_clipboard: true,
+            output: OutputAction::default(),
         };
 
         assert_eq!(result.output_text.as_deref(), Some("hello\n"));
-        assert!(result.copy_to_clipboard);
+        assert!(result.output.copy_to_clipboard);
     }
 
     #[test]
@@ -594,6 +747,7 @@ mod tests {
             script: Some(ScriptOutput {
                 path: "/bin/echo".to_string(),
             }),
+            ..OutputAction::default()
         };
 
         assert!(output.copy_to_clipboard);
@@ -608,7 +762,7 @@ mod tests {
         let output = OutputAction::default();
 
         assert_eq!(
-            clipboard_text_for_output(&output, "  hello clipboard  "),
+            clipboard_transport_text_for_output(&output, "  hello clipboard  "),
             Some("hello clipboard")
         );
     }
@@ -617,17 +771,33 @@ mod tests {
     fn clipboard_text_for_output_skips_empty_text() {
         let output = OutputAction::default();
 
-        assert_eq!(clipboard_text_for_output(&output, "   "), None);
+        assert_eq!(clipboard_transport_text_for_output(&output, "   "), None);
     }
 
     #[test]
     fn clipboard_text_for_output_skips_disabled_clipboard() {
         let output = OutputAction {
             copy_to_clipboard: false,
-            script: None,
+            paste_from_clipboard: false,
+            ..OutputAction::default()
         };
 
-        assert_eq!(clipboard_text_for_output(&output, "hello"), None);
+        assert_eq!(clipboard_transport_text_for_output(&output, "hello"), None);
+    }
+
+    #[test]
+    fn clipboard_transport_is_required_for_paste_even_when_copy_is_disabled() {
+        let output = OutputAction {
+            copy_to_clipboard: false,
+            paste_from_clipboard: true,
+            script: None,
+            ..OutputAction::default()
+        };
+
+        assert_eq!(
+            clipboard_transport_text_for_output(&output, "hello"),
+            Some("hello")
+        );
     }
 
     #[test]
@@ -657,29 +827,52 @@ mod tests {
     fn run_script_skips_stdout_decode_when_delivery_is_disabled() {
         let script = TestScript::new("invalid-stdout-unused", "printf '\\377'\n");
 
-        let result = run_script(script.path_str(), "hello", false)
+        let output = OutputAction {
+            copy_to_clipboard: false,
+            paste_from_clipboard: false,
+            ..OutputAction::default()
+        };
+        let result = run_script(script.path_str(), "hello", &output)
             .expect("script-only output should ignore stdout bytes");
 
         assert_eq!(result.output_text, None);
-        assert!(!result.copy_to_clipboard);
+        assert!(!result.output.copy_to_clipboard);
     }
 
     #[test]
     fn run_script_delivers_stdout_when_copy_is_requested() {
         let script = TestScript::new("copy-stdout", "printf 'translated:%s' \"$1\"\n");
 
-        let result = run_script(script.path_str(), "hello", true)
+        let output = OutputAction::default();
+        let result = run_script(script.path_str(), "hello", &output)
             .expect("copy output should capture script stdout");
 
         assert_eq!(result.output_text.as_deref(), Some("translated:hello"));
-        assert!(result.copy_to_clipboard);
+        assert!(result.output.copy_to_clipboard);
+    }
+
+    #[test]
+    fn run_script_delivers_stdout_when_paste_is_requested() {
+        let script = TestScript::new("paste-stdout", "printf 'translated:%s' \"$1\"\n");
+        let output = OutputAction {
+            copy_to_clipboard: false,
+            paste_from_clipboard: true,
+            ..OutputAction::default()
+        };
+
+        let result = run_script(script.path_str(), "hello", &output)
+            .expect("paste output should capture script stdout");
+
+        assert_eq!(result.output_text.as_deref(), Some("translated:hello"));
+        assert!(result.output.paste_from_clipboard);
     }
 
     #[test]
     fn run_script_rejects_invalid_utf8_when_delivery_is_requested() {
         let script = TestScript::new("invalid-stdout-delivered", "printf '\\377'\n");
 
-        let error = run_script(script.path_str(), "hello", true)
+        let output = OutputAction::default();
+        let error = run_script(script.path_str(), "hello", &output)
             .expect_err("delivered stdout must be UTF-8");
 
         assert!(error.to_string().contains("stdout was not UTF-8"));
@@ -689,8 +882,13 @@ mod tests {
     fn run_script_nonzero_exit_fails_without_delivery_fallback() {
         let script = TestScript::new("nonzero", "printf 'script failed' >&2\nexit 7\n");
 
-        let error =
-            run_script(script.path_str(), "hello", false).expect_err("nonzero script should fail");
+        let output = OutputAction {
+            copy_to_clipboard: false,
+            paste_from_clipboard: false,
+            ..OutputAction::default()
+        };
+        let error = run_script(script.path_str(), "hello", &output)
+            .expect_err("nonzero script should fail");
 
         assert!(error.to_string().contains("script failed"));
         assert!(error.to_string().contains("exited with status"));
@@ -725,6 +923,58 @@ mod tests {
             wayland_paste_args(),
             ["--no-newline", "--type", WAYLAND_TEXT_MIME]
         );
+    }
+
+    #[test]
+    fn paste_presets_build_expected_commands() {
+        let ctrl_v = PasteRequest {
+            shortcut: PasteShortcut::CtrlV,
+            custom_x11: String::new(),
+            custom_wayland: String::new(),
+        };
+        assert_eq!(xdotool_key_sequences(&ctrl_v).unwrap(), vec!["ctrl+v"]);
+        assert_eq!(
+            ydotool_key_events(&ctrl_v).unwrap(),
+            vec!["29:1", "47:1", "47:0", "29:0"]
+        );
+
+        let ctrl_shift_v = PasteRequest {
+            shortcut: PasteShortcut::CtrlShiftV,
+            custom_x11: String::new(),
+            custom_wayland: String::new(),
+        };
+        assert_eq!(
+            xdotool_key_sequences(&ctrl_shift_v).unwrap(),
+            vec!["ctrl+shift+v"]
+        );
+        assert_eq!(
+            ydotool_key_events(&ctrl_shift_v).unwrap(),
+            vec!["29:1", "42:1", "47:1", "47:0", "42:0", "29:0"]
+        );
+    }
+
+    #[test]
+    fn custom_paste_commands_are_validated() {
+        let custom = PasteRequest {
+            shortcut: PasteShortcut::Custom,
+            custom_x11: "ctrl+v 0xff0d".to_string(),
+            custom_wayland: "29:1 47:1 47:0 29:0".to_string(),
+        };
+
+        assert_eq!(
+            xdotool_key_sequences(&custom).unwrap(),
+            vec!["ctrl+v", "0xff0d"]
+        );
+        assert_eq!(
+            ydotool_key_events(&custom).unwrap(),
+            vec!["29:1", "47:1", "47:0", "29:0"]
+        );
+
+        let bad = PasteRequest {
+            custom_wayland: "29:x".to_string(),
+            ..custom
+        };
+        assert!(ydotool_key_events(&bad).is_err());
     }
 
     #[test]

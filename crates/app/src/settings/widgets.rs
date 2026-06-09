@@ -192,10 +192,44 @@ pub fn compute_from_index(index: u32) -> ComputeBackend {
 
 pub fn advanced_hotkey_status() -> &'static str {
     if env::var_os("WAYLAND_DISPLAY").is_some() {
-        "Use external Linux signal shortcuts on Wayland"
+        "Keyboard shortcuts disabled; Linux signals active"
     } else if env::var_os("DISPLAY").is_some() {
-        "X11 backend available in app"
+        "Keyboard shortcuts: X11"
     } else {
-        "Disabled"
+        "Keyboard shortcuts disabled; Linux signals active"
     }
+}
+
+pub fn output_tools_status() -> String {
+    if env::var_os("WAYLAND_DISPLAY").is_some()
+        || env::var_os("XDG_SESSION_TYPE")
+            .and_then(|value| value.into_string().ok())
+            .is_some_and(|value| value.eq_ignore_ascii_case("wayland"))
+    {
+        tool_status(&["wl-copy", "wl-paste", "ydotool"])
+    } else if env::var_os("DISPLAY").is_some() {
+        tool_status(&["xclip", "xdotool"])
+    } else {
+        "No display backend detected".to_string()
+    }
+}
+
+fn tool_status(commands: &[&str]) -> String {
+    let missing = commands
+        .iter()
+        .copied()
+        .filter(|command| !command_in_path(command))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        format!("Ready: {}", commands.join(", "))
+    } else {
+        format!("Missing: {}", missing.join(", "))
+    }
+}
+
+fn command_in_path(command: &str) -> bool {
+    let Some(path) = env::var_os("PATH") else {
+        return false;
+    };
+    env::split_paths(&path).any(|entry| entry.join(command).is_file())
 }

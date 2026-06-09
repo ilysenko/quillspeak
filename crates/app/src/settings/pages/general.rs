@@ -12,7 +12,7 @@ use crate::settings::pages::output_controls::add_default_output_controls;
 use crate::settings::widgets::{
     advanced_hotkey_status, all_model_entries, backend_from_index, backend_index,
     compute_from_index, compute_index, dropdown_row, language_dropdown_row, model_dropdown_row,
-    property_row,
+    output_tools_status, property_row,
 };
 
 const GENERAL_MAX_WIDTH: i32 = 740;
@@ -52,6 +52,9 @@ pub fn build(
     let status_group = adw::PreferencesGroup::builder().title("Status").build();
     let advanced_hotkey_row = property_row("Advanced hotkeys", advanced_hotkey_status());
     status_group.add(&advanced_hotkey_row);
+    let output_tools = output_tools_status();
+    let output_tools_row = property_row("Output tools", &output_tools);
+    status_group.add(&output_tools_row);
 
     let general_group = adw::PreferencesGroup::builder()
         .title("Configuration")

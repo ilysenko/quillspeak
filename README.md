@@ -27,15 +27,17 @@ dependencies before building the app:
 sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libpulse-dev libpipewire-0.3-dev libgtk-4-dev libadwaita-1-dev
 ```
 
-Clipboard output uses small external runtime tools:
+Clipboard output and paste shortcuts use small external runtime tools:
 
 ```sh
-sudo apt install wl-clipboard xclip
+sudo apt install wl-clipboard xclip xdotool ydotool
 ```
 
 `wl-clipboard` provides `wl-copy` and `wl-paste` for Wayland. `xclip` is used
-for X11. The app does not install these tools automatically; if a required tool
-is missing, it logs `clipboard copy failed` with the package hint.
+for X11. `xdotool` sends paste shortcuts on X11; `ydotool` sends paste
+shortcuts on Wayland. The app does not install these tools automatically; if a
+required tool is missing, it logs the failing output action with the package
+hint.
 
 The default development build enables CPAL's native PipeWire and PulseAudio
 backends. On modern Ubuntu desktops the app prefers PipeWire, falls back to
@@ -114,8 +116,7 @@ The app has two supported trigger paths:
 - X11: `hotkey_backend = "auto"` or `"x11"` lets the app capture configured
   keyboard shortcuts directly with X11 passive grabs.
 - Wayland: configure shortcut profiles as Linux signal triggers and use an
-  external hotkey utility such as `swhkd` to send `SIGUSR1` or `SIGUSR2` to
-  `myapp`.
+  external hotkey utility such as `swhkd` to send Linux signals to `myapp`.
 
 Backend values:
 
@@ -125,8 +126,11 @@ Backend values:
   Linux signal triggers still work.
 - `x11`: force app-side X11 capture.
 
-Linux signal triggers accept `SIGUSR1` and `SIGUSR2`. Using the same signal for
-start and stop makes that signal a toggle.
+Linux signal triggers are text fields. Common aliases such as `usr1`, `User 1`,
+and `SIGUSR1` resolve to `SIGUSR1`; arbitrary non-empty text is saved, and if it
+cannot be resolved to a Linux signal at runtime the app logs a diagnostic and
+skips that binding. Using the same signal for start and stop makes that signal a
+toggle.
 
 Signal examples:
 
@@ -208,7 +212,7 @@ error and no hidden download starts during the hotkey flow.
 Output uses one simple pipeline:
 
 ```text
-transcript -> optional script transform -> final text -> optional clipboard copy
+transcript -> optional script transform -> final text -> optional clipboard copy/transport -> optional paste shortcut
 ```
 
 If a script is enabled, its stdout is the final text; the original transcript is
@@ -216,8 +220,11 @@ not copied as a fallback. Clipboard writes use external Linux tools so Wayland
 and X11 clients see the same selection. The app verifies clipboard writes with
 `wl-paste` or `xclip -out` before logging success.
 
-Copy-to-clipboard intentionally leaves the final text in the clipboard. Direct
-text insertion and auto-paste are not implemented in this app.
+Copy-to-clipboard intentionally leaves the final text in the clipboard. If
+`Paste from clipboard` is enabled, the app first writes and verifies the final
+text in the external clipboard, then sends the configured paste shortcut:
+`Ctrl+V`, `Ctrl+Shift+V`, or custom `xdotool` / `ydotool` key syntax. Direct
+text insertion without clipboard transport is not implemented.
 
 If transcription logs recognized text but another application cannot paste it,
 check the MyApp logs for `Copied text to clipboard` or `clipboard copy failed`
@@ -235,7 +242,7 @@ The app owns user settings and writes TOML to:
 Default config:
 
 ```toml
-schema_version = 8
+schema_version = 9
 
 [general]
 mode = "push_to_talk"
@@ -245,7 +252,7 @@ default_language = "auto"
 compute_backend = "auto"
 keep_model_loaded = true
 default_input = { type = "system_default" }
-default_output = { copy_to_clipboard = true }
+default_output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 
 [[shortcuts]]
 id = "default"
@@ -258,7 +265,7 @@ output = { type = "default" }
 ```
 
 During development only the current schema is supported. If the app sees an
-older local config schema, including v7, it replaces it with a fresh default
+older local config schema, including v8, it replaces it with a fresh default
 config instead of migrating it.
 
 Settings has `General`, `Models`, one page per shortcut profile, and `Add New`
@@ -272,8 +279,9 @@ and output pipeline. Triggers can be keyboard shortcuts or Linux signals.
 TOML output examples:
 
 ```toml
-default_output = { copy_to_clipboard = true }
-output = { type = "custom", copy_to_clipboard = true, script = { path = "/home/igor/myapp-polite-english.sh" } }
+default_output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
+output = { type = "custom", copy_to_clipboard = false, paste_from_clipboard = true, paste_shortcut = "ctrl_shift_v", script = { path = "/home/igor/myapp-polite-english.sh" } }
+output = { type = "custom", copy_to_clipboard = false, paste_from_clipboard = true, paste_shortcut = "custom", paste_custom_x11 = "ctrl+v", paste_custom_wayland = "29:1 47:1 47:0 29:0" }
 ```
 
 ## Verification

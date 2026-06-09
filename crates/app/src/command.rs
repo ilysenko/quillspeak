@@ -1,9 +1,9 @@
-use shared::AppConfig;
-use shared::LinuxSignalName;
-
-use crate::output::{ClipboardCopyOutcome, ClipboardCopySource, OutputScriptResult};
+use crate::output::{
+    ClipboardCopyOutcome, ClipboardCopySource, ClipboardPasteOutcome, OutputScriptResult,
+};
 use crate::transcription::TranscriptionRequest;
 use crate::transcription::TranscriptionResult;
+use shared::AppConfig;
 
 pub type DownloadId = u64;
 
@@ -11,7 +11,7 @@ pub type DownloadId = u64;
 pub enum AppCommand {
     ShowSettings,
     ToggleRecording,
-    LinuxSignalReceived(LinuxSignalName),
+    LinuxSignalReceived(i32),
     StartRecording(String),
     StopRecording(String),
     AudioCaptureStarted {
@@ -44,6 +44,10 @@ pub enum AppCommand {
     ClipboardCopyFinished {
         source: ClipboardCopySource,
         result: Result<ClipboardCopyOutcome, String>,
+    },
+    ClipboardPasteFinished {
+        source: ClipboardCopySource,
+        result: Result<ClipboardPasteOutcome, String>,
     },
     AudioInputDevicesRefreshed(Vec<crate::audio::AudioInputDevice>),
     SaveConfig(AppConfig),

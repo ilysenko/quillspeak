@@ -14,13 +14,13 @@ pub use language::{
     AUTO_LANGUAGE_VALUE, SUPPORTED_LANGUAGES, SupportedLanguage, supported_language_label,
 };
 pub use model::{DEFAULT_MODEL_ID, MODEL_CATALOG, ModelCatalogEntry, model_catalog_entry};
-pub use output::{OutputAction, ResolvedOutput, ScriptOutput, ShortcutOutput};
+pub use output::{OutputAction, PasteShortcut, ResolvedOutput, ScriptOutput, ShortcutOutput};
 pub use shortcut::{
-    DEFAULT_SHORTCUT_ID, DEFAULT_SHORTCUT_NAME, LinuxSignalName, ShortcutChord, ShortcutKey,
+    DEFAULT_SHORTCUT_ID, DEFAULT_SHORTCUT_NAME, LinuxSignal, ShortcutChord, ShortcutKey,
     ShortcutModifiers, ShortcutProfile, ShortcutTrigger, next_shortcut_id, normalize_accelerator,
 };
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 8;
+pub const CONFIG_SCHEMA_VERSION: u32 = 9;
 pub const INHERIT_VALUE: &str = "default";
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -55,6 +55,10 @@ pub enum ConfigError {
     UnsupportedLanguage(String),
     #[error("script output path cannot be empty")]
     EmptyScriptPath,
+    #[error("linux signal trigger cannot be empty")]
+    EmptySignal,
+    #[error("{0} paste shortcut cannot be empty")]
+    EmptyPasteShortcut(&'static str),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,11 +234,9 @@ impl AppConfig {
                         start_signal,
                         stop_signal,
                     } => {
-                        for signal in unique_shortcut_signals(*start_signal, *stop_signal) {
-                            if !linux_signals.insert(signal) {
-                                return Err(ConfigError::DuplicateSignal(
-                                    signal.as_str().to_string(),
-                                ));
+                        for signal in unique_shortcut_signals(start_signal, stop_signal)? {
+                            if !linux_signals.insert(signal.clone()) {
+                                return Err(ConfigError::DuplicateSignal(signal));
                             }
                         }
                     }
@@ -317,14 +319,16 @@ impl AppConfig {
 }
 
 fn unique_shortcut_signals(
-    start_signal: LinuxSignalName,
-    stop_signal: LinuxSignalName,
-) -> Vec<LinuxSignalName> {
-    if start_signal == stop_signal {
+    start_signal: &LinuxSignal,
+    stop_signal: &LinuxSignal,
+) -> Result<Vec<String>, ConfigError> {
+    let start_signal = start_signal.duplicate_key()?;
+    let stop_signal = stop_signal.duplicate_key()?;
+    Ok(if start_signal == stop_signal {
         vec![start_signal]
     } else {
         vec![start_signal, stop_signal]
-    }
+    })
 }
 
 impl Default for AppConfig {
@@ -434,7 +438,7 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_schema_without_default_input() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 8
+schema_version = 9
 
 [general]
 mode = "push_to_talk"
@@ -463,7 +467,7 @@ output = { type = "default" }
     fn rejects_schema_without_keep_model_loaded() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 8
+schema_version = 9
 
 [general]
 mode = "push_to_talk"
@@ -524,7 +528,7 @@ output = { type = "default" }
     fn rejects_removed_daemon_backend() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 8
+schema_version = 9
 
 [general]
 mode = "push_to_talk"
@@ -555,7 +559,7 @@ output = { type = "default" }
     fn rejects_removed_portal_backend() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 8
+schema_version = 9
 
 [general]
 mode = "push_to_talk"
@@ -587,7 +591,7 @@ output = { type = "default" }
         let mut config = AppConfig::default();
         config.general.default_output = OutputAction {
             copy_to_clipboard: true,
-            script: None,
+            ..OutputAction::default()
         };
 
         let encoded = toml::to_string(&config).expect("config should encode");
@@ -701,7 +705,7 @@ output = { type = "default" }
         let trigger = toml::from_str::<ShortcutTrigger>(
             r#"
 type = "linux_signal"
-start_signal = "usr1"
+start_signal = "User 1"
 stop_signal = "SIGUSR2"
 "#,
         )
@@ -710,8 +714,21 @@ stop_signal = "SIGUSR2"
         assert_eq!(
             trigger,
             ShortcutTrigger::LinuxSignal {
-                start_signal: LinuxSignalName::SigUsr1,
-                stop_signal: LinuxSignalName::SigUsr2,
+                start_signal: LinuxSignal::new("User 1"),
+                stop_signal: LinuxSignal::new("SIGUSR2"),
+            }
+        );
+
+        let mut config = AppConfig::default();
+        config.shortcuts[0].trigger = trigger;
+        let normalized = config
+            .normalized()
+            .expect("signal trigger should normalize");
+        assert_eq!(
+            normalized.default_shortcut().trigger,
+            ShortcutTrigger::LinuxSignal {
+                start_signal: LinuxSignal::sigusr1(),
+                stop_signal: LinuxSignal::sigusr2(),
             }
         );
     }
@@ -737,6 +754,38 @@ stop_signal = "SIGUSR2"
     }
 
     #[test]
+    fn arbitrary_non_empty_linux_signal_text_is_allowed() {
+        let mut config = AppConfig::default();
+        config.shortcuts[0].trigger = ShortcutTrigger::LinuxSignal {
+            start_signal: LinuxSignal::new("MY_SIGNAL_A"),
+            stop_signal: LinuxSignal::new("MY_SIGNAL_B"),
+        };
+
+        let normalized = config
+            .normalized()
+            .expect("arbitrary signal text should persist");
+
+        assert_eq!(
+            normalized.default_shortcut().trigger,
+            ShortcutTrigger::LinuxSignal {
+                start_signal: LinuxSignal::new("MY_SIGNAL_A"),
+                stop_signal: LinuxSignal::new("MY_SIGNAL_B"),
+            }
+        );
+    }
+
+    #[test]
+    fn empty_linux_signal_text_is_rejected() {
+        let mut config = AppConfig::default();
+        config.shortcuts[0].trigger = ShortcutTrigger::LinuxSignal {
+            start_signal: LinuxSignal::new(" "),
+            stop_signal: LinuxSignal::sigusr2(),
+        };
+
+        assert_eq!(config.normalized(), Err(ConfigError::EmptySignal));
+    }
+
+    #[test]
     fn same_start_stop_signal_inside_one_shortcut_is_valid_toggle() {
         let mut config = AppConfig::default();
         config.shortcuts[0].trigger = ShortcutTrigger::default_linux_signal();
@@ -746,11 +795,12 @@ stop_signal = "SIGUSR2"
             .expect("same signal on one shortcut should be a valid toggle");
 
         assert!(matches!(
-            normalized.default_shortcut().trigger,
+            &normalized.default_shortcut().trigger,
             ShortcutTrigger::LinuxSignal {
-                start_signal: LinuxSignalName::SigUsr2,
-                stop_signal: LinuxSignalName::SigUsr2,
+                start_signal,
+                stop_signal,
             }
+            if *start_signal == LinuxSignal::sigusr2() && *stop_signal == LinuxSignal::sigusr2()
         ));
     }
 

@@ -9,7 +9,7 @@ use gtk::gio;
 use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
-use shared::{APP_ID, AppConfig, DEFAULT_SHORTCUT_ID, LinuxSignalName, ShortcutTrigger};
+use shared::{APP_ID, AppConfig, DEFAULT_SHORTCUT_ID, ShortcutTrigger};
 use tracing::{debug, error, info, warn};
 
 use crate::audio::{AudioInputDevice, list_input_devices};
@@ -19,10 +19,13 @@ use crate::hotkey::{
     HotkeyBackendHandle, configure_hotkey_backend, configured_backend_name, effective_backend_name,
 };
 use crate::models::{FinishEffect, ModelDownloadManager, ModelRowState, ModelStore};
-use crate::output::{ClipboardCopyOutcome, ClipboardCopySource, OutputScriptResult, OutputService};
+use crate::output::{
+    ClipboardCopyOutcome, ClipboardCopySource, ClipboardPasteOutcome, OutputScriptResult,
+    OutputService,
+};
 use crate::recording::{RecordingPhase, RecordingPipeline, RecordingService};
 use crate::settings::SettingsWindow;
-use crate::signal_trigger::SignalTriggerService;
+use crate::signal_trigger::{SignalTriggerService, resolve_signal_number};
 use crate::transcription::{
     CompiledWhisperBackends, TranscriptionRequest, TranscriptionResult, TranscriptionService,
     TranscriptionStatus, build_transcription_plan,
@@ -120,7 +123,7 @@ impl AppRuntime {
             }
         };
 
-        let signal_trigger_service = SignalTriggerService::spawn(command_tx.clone())?;
+        let signal_trigger_service = SignalTriggerService::spawn(command_tx.clone(), &config)?;
         install_ctrl_c_handler(command_tx.clone());
 
         let runtime = Rc::new(Self {
@@ -207,6 +210,9 @@ impl AppRuntime {
             AppCommand::ClipboardCopyFinished { source, result } => {
                 self.finish_clipboard_copy(source, result)
             }
+            AppCommand::ClipboardPasteFinished { source, result } => {
+                self.finish_clipboard_paste(source, result)
+            }
             AppCommand::AudioInputDevicesRefreshed(devices) => {
                 self.update_audio_input_devices(devices)
             }
@@ -265,10 +271,10 @@ impl AppRuntime {
         }
     }
 
-    fn handle_linux_signal(&self, signal: LinuxSignalName) {
+    fn handle_linux_signal(&self, signal: i32) {
         let Some(action) = self.linux_signal_action(signal) else {
             debug!(
-                signal = signal.as_str(),
+                signal,
                 "Linux signal trigger did not match any enabled shortcut"
             );
             return;
@@ -281,7 +287,7 @@ impl AppRuntime {
         }
     }
 
-    fn linux_signal_action(&self, signal: LinuxSignalName) -> Option<LinuxSignalAction> {
+    fn linux_signal_action(&self, signal: i32) -> Option<LinuxSignalAction> {
         linux_signal_action_for_config(&self.config.borrow(), signal)
     }
 
@@ -500,21 +506,18 @@ impl AppRuntime {
                         .map(|text| text.len())
                         .unwrap_or(0),
                     output_text_delivered = result.output_text.is_some(),
-                    copy_to_clipboard = result.copy_to_clipboard,
+                    copy_to_clipboard = result.output.copy_to_clipboard,
+                    paste_from_clipboard = result.output.paste_from_clipboard,
                     "output script finished"
                 );
                 if let Some(output_text) = result.output_text {
-                    let output_action = shared::OutputAction {
-                        copy_to_clipboard: result.copy_to_clipboard,
-                        script: None,
-                    };
                     if let Some(output_service) = self.output_service.borrow().as_ref() {
                         output_service.copy_final_text_if_requested(
                             ClipboardCopySource::ScriptStdout {
                                 shortcut_id: shortcut_id.to_string(),
                                 script_path: result.script_path.clone(),
                             },
-                            &output_action,
+                            &result.output,
                             &output_text,
                         );
                     } else {
@@ -556,6 +559,33 @@ impl AppRuntime {
                 script = script_path,
                 error,
                 "clipboard copy failed"
+            ),
+        }
+    }
+
+    fn finish_clipboard_paste(
+        &self,
+        source: ClipboardCopySource,
+        result: std::result::Result<ClipboardPasteOutcome, String>,
+    ) {
+        let shortcut_id = source.shortcut_id();
+        let copy_source = source.kind();
+        let script_path = source.script_path().unwrap_or("");
+        match result {
+            Ok(result) => info!(
+                shortcut_id,
+                source = copy_source,
+                script = script_path,
+                clipboard_backend = result.backend.as_str(),
+                paste_shortcut = result.shortcut.label(),
+                "Pasted text from clipboard"
+            ),
+            Err(error) => warn!(
+                shortcut_id,
+                source = copy_source,
+                script = script_path,
+                error,
+                "clipboard paste failed"
             ),
         }
     }
@@ -648,6 +678,16 @@ impl AppRuntime {
         self.hotkey_backend.borrow_mut().take();
         let hotkey_backend = configure_hotkey_backend(self.command_sender(), &config);
         self.hotkey_backend.replace(hotkey_backend);
+        self.signal_trigger_service.borrow_mut().take();
+        match SignalTriggerService::spawn(self.command_sender(), &config) {
+            Ok(service) => {
+                self.signal_trigger_service.replace(Some(service));
+            }
+            Err(error) => {
+                warn!(?error, "failed to reconfigure Linux signal triggers");
+                self.signal_trigger_service.replace(None);
+            }
+        }
         if let Err(error) = self
             .transcription_service
             .set_keep_model_loaded(config.general.keep_model_loaded)
@@ -949,10 +989,7 @@ fn trigger_summary(trigger: &ShortcutTrigger) -> String {
     }
 }
 
-fn linux_signal_action_for_config(
-    config: &AppConfig,
-    signal: LinuxSignalName,
-) -> Option<LinuxSignalAction> {
+fn linux_signal_action_for_config(config: &AppConfig, signal: i32) -> Option<LinuxSignalAction> {
     for shortcut in &config.shortcuts {
         if !shortcut.enabled {
             continue;
@@ -966,13 +1003,20 @@ fn linux_signal_action_for_config(
             continue;
         };
 
-        if start_signal == stop_signal && signal == *start_signal {
+        let (Ok(start_signal_number), Ok(stop_signal_number)) = (
+            resolve_signal_number(start_signal.as_str()),
+            resolve_signal_number(stop_signal.as_str()),
+        ) else {
+            continue;
+        };
+
+        if start_signal_number == stop_signal_number && signal == start_signal_number {
             return Some(LinuxSignalAction::Toggle(shortcut.id.clone()));
         }
-        if signal == *start_signal {
+        if signal == start_signal_number {
             return Some(LinuxSignalAction::Start(shortcut.id.clone()));
         }
-        if signal == *stop_signal {
+        if signal == stop_signal_number {
             return Some(LinuxSignalAction::Stop(shortcut.id.clone()));
         }
     }
@@ -1009,7 +1053,8 @@ fn install_ctrl_c_handler(command_tx: mpsc::Sender<AppCommand>) {
 
 #[cfg(test)]
 mod tests {
-    use shared::{LinuxSignalName, ShortcutTrigger};
+    use shared::{LinuxSignal, ShortcutTrigger};
+    use signal_hook::consts::signal::{SIGUSR1, SIGUSR2};
 
     use super::*;
 
@@ -1019,7 +1064,7 @@ mod tests {
         config.shortcuts[0].trigger = ShortcutTrigger::default_linux_signal();
 
         assert_eq!(
-            linux_signal_action_for_config(&config, LinuxSignalName::SigUsr2),
+            linux_signal_action_for_config(&config, SIGUSR2),
             Some(LinuxSignalAction::Toggle(DEFAULT_SHORTCUT_ID.to_string()))
         );
     }
@@ -1028,16 +1073,16 @@ mod tests {
     fn distinct_linux_signals_start_and_stop_shortcut() {
         let mut config = AppConfig::default();
         config.shortcuts[0].trigger = ShortcutTrigger::LinuxSignal {
-            start_signal: LinuxSignalName::SigUsr1,
-            stop_signal: LinuxSignalName::SigUsr2,
+            start_signal: LinuxSignal::sigusr1(),
+            stop_signal: LinuxSignal::sigusr2(),
         };
 
         assert_eq!(
-            linux_signal_action_for_config(&config, LinuxSignalName::SigUsr1),
+            linux_signal_action_for_config(&config, SIGUSR1),
             Some(LinuxSignalAction::Start(DEFAULT_SHORTCUT_ID.to_string()))
         );
         assert_eq!(
-            linux_signal_action_for_config(&config, LinuxSignalName::SigUsr2),
+            linux_signal_action_for_config(&config, SIGUSR2),
             Some(LinuxSignalAction::Stop(DEFAULT_SHORTCUT_ID.to_string()))
         );
     }
@@ -1046,9 +1091,6 @@ mod tests {
     fn keyboard_shortcuts_ignore_linux_signals() {
         let config = AppConfig::default();
 
-        assert_eq!(
-            linux_signal_action_for_config(&config, LinuxSignalName::SigUsr2),
-            None
-        );
+        assert_eq!(linux_signal_action_for_config(&config, SIGUSR2), None);
     }
 }

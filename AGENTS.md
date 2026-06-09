@@ -92,8 +92,8 @@ indicator, and exits through the same quit path for tray `Quit` and Ctrl-C.
 - `crates/app/src/recording/pipeline.rs`: background CPAL capture worker,
   explicit shutdown, capture start/stop commands, and stream recreation after
   pause failures.
-- `crates/app/src/signal_trigger.rs`: app-owned `SIGUSR1`/`SIGUSR2` listener
-  for external hotkey utilities.
+- `crates/app/src/signal_trigger.rs`: app-owned Linux signal listener for
+  external hotkey utilities.
 - `crates/app/src/transcription/*`: Whisper worker, engine, cache, compute
   selection, skip policy, debug audio writing, request/result types, and plan
   construction.
@@ -153,7 +153,7 @@ The app is the source of truth for user settings. Current app config path:
 Current schema:
 
 ```toml
-schema_version = 8
+schema_version = 9
 
 [general]
 mode = "push_to_talk"
@@ -163,7 +163,7 @@ default_model_id = "large-v3-turbo-q5_0"
 default_language = "auto"
 compute_backend = "auto"
 keep_model_loaded = true
-default_output = { copy_to_clipboard = true }
+default_output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 
 [[shortcuts]]
 id = "default"
@@ -175,16 +175,17 @@ language = "default"
 output = { type = "default" }
 ```
 
-Only schema v8 is supported during development. Do not add old-config
+Only schema v9 is supported during development. Do not add old-config
 migration paths unless explicitly requested. If the schema changes during
 active development, update the current schema and tests directly instead of
-layering legacy compatibility; older schemas, including v7, are discarded and
+layering legacy compatibility; older schemas, including v8, are discarded and
 replaced with the current default config.
 
 Output is one simple pipeline: transcript, optional script transform, final
-text, optional clipboard copy. If script is enabled, its stdout is the final
-text and the original transcript must not be copied as a fallback. Auto-paste
-is not implemented.
+text, optional clipboard copy/transport, optional paste shortcut. If script is
+enabled, its stdout is the final text and the original transcript must not be
+copied as a fallback. Paste from clipboard uses the external clipboard as
+transport and then sends a configured `xdotool` or `ydotool` shortcut.
 
 If a local development config is from an older schema, remove
 `~/.config/myapp/config.toml` and restart the app to generate the current
@@ -329,9 +330,10 @@ X11 capture lives in the app and uses passive X11 grabs. The X11 backend sends
 the required chord is no longer pressed.
 
 Wayland capture is external to MyApp. Configure shortcut profiles as
-`linux_signal`, then use an external utility such as `swhkd` to send `SIGUSR1`
-or `SIGUSR2` to the `myapp` process. MyApp listens for those signals in
-`signal_trigger.rs`.
+`linux_signal`, then use an external utility such as `swhkd` to send Linux
+signals to the `myapp` process. Signal fields are text fields; MyApp saves
+arbitrary non-empty text, resolves common aliases and numeric signal values in
+`signal_trigger.rs`, and logs unsupported values without failing startup.
 
 Example external trigger commands:
 
@@ -360,15 +362,16 @@ System dependencies for the full app build on Debian/Ubuntu-style systems:
 sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libpulse-dev libpipewire-0.3-dev libgtk-4-dev libadwaita-1-dev
 ```
 
-Runtime clipboard output also needs external clipboard tools:
+Runtime clipboard output and paste shortcuts also need external tools:
 
 ```sh
-sudo apt install wl-clipboard xclip
+sudo apt install wl-clipboard xclip xdotool ydotool
 ```
 
 The app must not invoke package managers or auto-install these tools; if a
-required tool is missing, log a clear `clipboard copy failed` message with the
-package hint.
+required tool is missing, log a clear output failure message with the package
+hint. `xdotool` handles X11 paste shortcuts. `ydotool` handles Wayland paste
+shortcuts and may require its own daemon/permissions outside MyApp.
 
 Run commands:
 
@@ -403,14 +406,19 @@ away from GTK4/libadwaita.
 - Clipboard output runs through the output worker. On Linux, use `wl-copy` /
   `wl-paste` for Wayland and `xclip` for X11, and log success only after an
   external readback verifies the expected text.
+- Paste from clipboard runs through the output worker after successful clipboard
+  verification. Use `xdotool key --clearmodifiers ...` on X11 and
+  `ydotool key ...` raw key events on Wayland. Do not restore the in-repo daemon
+  or uinput worker for paste.
 - Wayland clipboard commands should explicitly offer/request a text MIME type
   such as `text/plain;charset=utf-8`.
 - Do not use GTK/GDK clipboard self-readback as success proof on Wayland.
 - Copy-to-clipboard leaves the final output text in the clipboard. Do not
   restore the previous clipboard value for the copy action.
 - Use XDG/directories helpers instead of hardcoded user paths.
-- Keep incomplete output integrations honest: clipboard and script output are
-  real; auto-paste and direct text insertion are not implemented.
+- Keep incomplete output integrations honest: clipboard, script output, and
+  external-tool paste shortcuts are real; direct text insertion is not
+  implemented.
 - Treat existing user changes as intentional. Do not revert unrelated work.
 - During this development phase, do not preserve legacy config compatibility
   unless the user explicitly asks for it.

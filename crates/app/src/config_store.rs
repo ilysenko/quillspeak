@@ -163,6 +163,53 @@ output = { type = "custom", copy_to_clipboard = false, auto_paste = true, script
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn schema_v8_config_is_discarded_instead_of_migrated() {
+        let root = temp_config_root();
+        let path = root.join("config.toml");
+        fs::create_dir_all(&root).expect("test config dir should be writable");
+        fs::write(
+            &path,
+            r#"
+schema_version = 8
+
+[general]
+mode = "push_to_talk"
+hotkey_backend = "auto"
+default_input = { type = "system_default" }
+default_model_id = "large-v3-turbo-q5_0"
+default_language = "auto"
+compute_backend = "auto"
+keep_model_loaded = true
+default_output = { copy_to_clipboard = false }
+
+[[shortcuts]]
+id = "default"
+name = "Default"
+enabled = true
+trigger = { type = "linux_signal", start_signal = "SIGUSR1", stop_signal = "SIGUSR2" }
+model_id = "default"
+language = "default"
+output = { type = "default" }
+"#,
+        )
+        .expect("v8 config should be writable");
+        let store = ConfigStore::for_path(path.clone());
+
+        let config = store
+            .load_or_create_default()
+            .expect("v8 config should be discarded");
+        let contents = fs::read_to_string(&path).expect("replacement config should be readable");
+
+        assert_eq!(config, AppConfig::default());
+        assert_eq!(
+            config_schema_version(&contents),
+            Some(CONFIG_SCHEMA_VERSION)
+        );
+        assert!(!contents.contains("linux_signal"));
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn temp_config_root() -> PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
