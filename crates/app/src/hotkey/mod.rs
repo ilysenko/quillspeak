@@ -14,6 +14,18 @@ use tracing::{info, warn};
 
 use crate::command::AppCommand;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShortcutTriggerCapabilities {
+    KeyboardAndSignals,
+    SignalsOnly,
+}
+
+impl ShortcutTriggerCapabilities {
+    pub const fn keyboard_available(self) -> bool {
+        matches!(self, Self::KeyboardAndSignals)
+    }
+}
+
 pub trait HotkeyBackend {
     fn name(&self) -> &'static str;
     fn configure(&self, config: &AppConfig) -> Result<Option<HotkeyBackendHandle>>;
@@ -133,17 +145,37 @@ pub fn resolve_backend_kind(configured: HotkeyBackendKind) -> HotkeyBackendKind 
     resolve_backend_kind_with_env(configured, |name| env::var_os(name).is_some())
 }
 
+pub fn shortcut_trigger_capabilities() -> ShortcutTriggerCapabilities {
+    shortcut_trigger_capabilities_with_env(|name| env::var_os(name).is_some())
+}
+
 fn resolve_backend_kind_with_env<F>(configured: HotkeyBackendKind, has_env: F) -> HotkeyBackendKind
 where
     F: Fn(&str) -> bool,
 {
     match configured {
-        HotkeyBackendKind::Auto if has_env("DISPLAY") && !has_env("WAYLAND_DISPLAY") => {
-            HotkeyBackendKind::X11
-        }
+        HotkeyBackendKind::Auto if x11_keyboard_available(&has_env) => HotkeyBackendKind::X11,
         HotkeyBackendKind::Auto => HotkeyBackendKind::Disabled,
         other => other,
     }
+}
+
+fn shortcut_trigger_capabilities_with_env<F>(has_env: F) -> ShortcutTriggerCapabilities
+where
+    F: Fn(&str) -> bool,
+{
+    if x11_keyboard_available(&has_env) {
+        ShortcutTriggerCapabilities::KeyboardAndSignals
+    } else {
+        ShortcutTriggerCapabilities::SignalsOnly
+    }
+}
+
+fn x11_keyboard_available<F>(has_env: &F) -> bool
+where
+    F: Fn(&str) -> bool,
+{
+    has_env("DISPLAY") && !has_env("WAYLAND_DISPLAY")
 }
 
 #[cfg(test)]
@@ -182,6 +214,24 @@ mod tests {
         let backend = resolve_backend_kind_with_env(HotkeyBackendKind::Auto, |_| false);
 
         assert_eq!(backend, HotkeyBackendKind::Disabled);
+    }
+
+    #[test]
+    fn trigger_capabilities_match_display_server() {
+        assert_eq!(
+            shortcut_trigger_capabilities_with_env(|name| matches!(name, "DISPLAY")),
+            ShortcutTriggerCapabilities::KeyboardAndSignals
+        );
+        assert_eq!(
+            shortcut_trigger_capabilities_with_env(|name| {
+                matches!(name, "DISPLAY" | "WAYLAND_DISPLAY")
+            }),
+            ShortcutTriggerCapabilities::SignalsOnly
+        );
+        assert_eq!(
+            shortcut_trigger_capabilities_with_env(|_| false),
+            ShortcutTriggerCapabilities::SignalsOnly
+        );
     }
 
     #[test]

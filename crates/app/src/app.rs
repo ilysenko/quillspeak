@@ -17,6 +17,7 @@ use crate::command::{AppCommand, DownloadId, ModelDownloadOutcome};
 use crate::config_store::ConfigStore;
 use crate::hotkey::{
     HotkeyBackendHandle, configure_hotkey_backend, configured_backend_name, effective_backend_name,
+    shortcut_trigger_capabilities,
 };
 use crate::models::{FinishEffect, ModelDownloadManager, ModelRowState, ModelStore};
 use crate::output::{
@@ -25,7 +26,10 @@ use crate::output::{
 };
 use crate::recording::{RecordingPhase, RecordingPipeline, RecordingService};
 use crate::settings::SettingsWindow;
-use crate::signal_trigger::{SignalTriggerService, resolve_signal_number};
+use crate::signal_trigger::{
+    LinuxSignalAction, SignalTriggerService, linux_signal_action_for_recording_state,
+    linux_signal_match_for_config, signal_name,
+};
 use crate::transcription::{
     CompiledWhisperBackends, TranscriptionRequest, TranscriptionResult, TranscriptionService,
     TranscriptionStatus, build_transcription_plan,
@@ -81,13 +85,6 @@ struct AppRuntime {
     tray: RefCell<Option<Tray>>,
     hotkey_backend: RefCell<Option<HotkeyBackendHandle>>,
     signal_trigger_service: RefCell<Option<SignalTriggerService>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum LinuxSignalAction {
-    Toggle(String),
-    Start(String),
-    Stop(String),
 }
 
 impl AppRuntime {
@@ -272,23 +269,45 @@ impl AppRuntime {
     }
 
     fn handle_linux_signal(&self, signal: i32) {
-        let Some(action) = self.linux_signal_action(signal) else {
+        let signal_match = {
+            let config = self.config.borrow();
+            linux_signal_match_for_config(&config, signal)
+        };
+        let Some(signal_match) = signal_match else {
             debug!(
                 signal,
-                "Linux signal trigger did not match any enabled shortcut"
+                signal_name = signal_name(signal).unwrap_or("unknown"),
+                "Linux signal trigger ignored because no enabled shortcut uses this signal"
+            );
+            return;
+        };
+
+        let (phase, active_shortcut_id) = {
+            let recording = self.recording.borrow();
+            (
+                recording.phase(),
+                recording.active_shortcut_id().map(str::to_string),
+            )
+        };
+        let Some(action) = linux_signal_action_for_recording_state(
+            signal_match,
+            phase,
+            active_shortcut_id.as_deref(),
+        ) else {
+            debug!(
+                signal,
+                signal_name = signal_name(signal).unwrap_or("unknown"),
+                ?phase,
+                active_shortcut_id = active_shortcut_id.as_deref().unwrap_or("none"),
+                "Linux signal trigger ignored for current recording state"
             );
             return;
         };
 
         match action {
-            LinuxSignalAction::Toggle(shortcut_id) => self.toggle_recording_for(&shortcut_id),
             LinuxSignalAction::Start(shortcut_id) => self.start_recording(&shortcut_id),
             LinuxSignalAction::Stop(shortcut_id) => self.stop_recording(&shortcut_id),
         }
-    }
-
-    fn linux_signal_action(&self, signal: i32) -> Option<LinuxSignalAction> {
-        linux_signal_action_for_config(&self.config.borrow(), signal)
     }
 
     fn start_recording(&self, shortcut_id: &str) {
@@ -646,6 +665,7 @@ impl AppRuntime {
                 self.audio_input_devices.borrow().clone(),
                 self.model_row_states(),
                 self.model_store.ready_model_ids(),
+                shortcut_trigger_capabilities(),
                 self.command_sender(),
             );
             self.settings_window.replace(Some(window));
@@ -991,47 +1011,14 @@ fn trigger_summary(trigger: &ShortcutTrigger) -> String {
         ShortcutTrigger::LinuxSignal {
             start_signal,
             stop_signal,
-        } if start_signal == stop_signal => format!("signal:{}:toggle", start_signal.as_str()),
+        } if start_signal == stop_signal => {
+            format!("signal:{}:start-stop", start_signal.as_str())
+        }
         ShortcutTrigger::LinuxSignal {
             start_signal,
             stop_signal,
         } => format!("signal:{}->{}", start_signal.as_str(), stop_signal.as_str()),
     }
-}
-
-fn linux_signal_action_for_config(config: &AppConfig, signal: i32) -> Option<LinuxSignalAction> {
-    for shortcut in &config.shortcuts {
-        if !shortcut.enabled {
-            continue;
-        }
-
-        let ShortcutTrigger::LinuxSignal {
-            start_signal,
-            stop_signal,
-        } = &shortcut.trigger
-        else {
-            continue;
-        };
-
-        let (Ok(start_signal_number), Ok(stop_signal_number)) = (
-            resolve_signal_number(start_signal.as_str()),
-            resolve_signal_number(stop_signal.as_str()),
-        ) else {
-            continue;
-        };
-
-        if start_signal_number == stop_signal_number && signal == start_signal_number {
-            return Some(LinuxSignalAction::Toggle(shortcut.id.clone()));
-        }
-        if signal == start_signal_number {
-            return Some(LinuxSignalAction::Start(shortcut.id.clone()));
-        }
-        if signal == stop_signal_number {
-            return Some(LinuxSignalAction::Stop(shortcut.id.clone()));
-        }
-    }
-
-    None
 }
 
 fn log_recognized_text(shortcut_id: &str, result: &TranscriptionResult) {
@@ -1058,49 +1045,5 @@ fn install_ctrl_c_handler(command_tx: mpsc::Sender<AppCommand>) {
         let _ = command_tx.send(AppCommand::Quit);
     }) {
         warn!(?error, "failed to install Ctrl-C handler");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use shared::{LinuxSignal, ShortcutTrigger};
-    use signal_hook::consts::signal::{SIGUSR1, SIGUSR2};
-
-    use super::*;
-
-    #[test]
-    fn same_start_stop_linux_signal_toggles_shortcut() {
-        let mut config = AppConfig::default();
-        config.shortcuts[0].trigger = ShortcutTrigger::default_linux_signal();
-
-        assert_eq!(
-            linux_signal_action_for_config(&config, SIGUSR2),
-            Some(LinuxSignalAction::Toggle(DEFAULT_SHORTCUT_ID.to_string()))
-        );
-    }
-
-    #[test]
-    fn distinct_linux_signals_start_and_stop_shortcut() {
-        let mut config = AppConfig::default();
-        config.shortcuts[0].trigger = ShortcutTrigger::LinuxSignal {
-            start_signal: LinuxSignal::sigusr1(),
-            stop_signal: LinuxSignal::sigusr2(),
-        };
-
-        assert_eq!(
-            linux_signal_action_for_config(&config, SIGUSR1),
-            Some(LinuxSignalAction::Start(DEFAULT_SHORTCUT_ID.to_string()))
-        );
-        assert_eq!(
-            linux_signal_action_for_config(&config, SIGUSR2),
-            Some(LinuxSignalAction::Stop(DEFAULT_SHORTCUT_ID.to_string()))
-        );
-    }
-
-    #[test]
-    fn keyboard_shortcuts_ignore_linux_signals() {
-        let config = AppConfig::default();
-
-        assert_eq!(linux_signal_action_for_config(&config, SIGUSR2), None);
     }
 }

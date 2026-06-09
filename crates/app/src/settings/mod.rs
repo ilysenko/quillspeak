@@ -10,6 +10,7 @@ use shared::{AppConfig, DEFAULT_SHORTCUT_ID};
 
 use crate::audio::AudioInputDevice;
 use crate::command::AppCommand;
+use crate::hotkey::ShortcutTriggerCapabilities;
 use crate::models::ModelRowState;
 
 mod draft;
@@ -26,6 +27,7 @@ pub struct SettingsState {
     audio_input_devices: Rc<RefCell<Vec<AudioInputDevice>>>,
     model_states: Rc<RefCell<Vec<ModelRowState>>>,
     ready_model_ids: Rc<RefCell<HashSet<String>>>,
+    shortcut_trigger_capabilities: ShortcutTriggerCapabilities,
     command_tx: mpsc::Sender<AppCommand>,
 }
 
@@ -46,13 +48,17 @@ impl SettingsWindow {
         audio_input_devices: Vec<AudioInputDevice>,
         model_states: Vec<ModelRowState>,
         ready_model_ids: HashSet<String>,
+        shortcut_trigger_capabilities: ShortcutTriggerCapabilities,
         command_tx: mpsc::Sender<AppCommand>,
     ) -> Self {
+        let draft = SettingsDraft::new(config.clone());
+        draft.coerce_trigger_capabilities(shortcut_trigger_capabilities);
         let state = SettingsState {
-            draft: SettingsDraft::new(config.clone()),
+            draft,
             audio_input_devices: Rc::new(RefCell::new(audio_input_devices)),
             model_states: Rc::new(RefCell::new(model_states)),
             ready_model_ids: Rc::new(RefCell::new(ready_model_ids)),
+            shortcut_trigger_capabilities,
             command_tx: command_tx.clone(),
         };
 
@@ -127,6 +133,9 @@ impl SettingsWindow {
     pub fn update_config(&self, config: &AppConfig) {
         let visible = self.stack.visible_child_name().map(|name| name.to_string());
         self.state.draft.replace(config.clone());
+        self.state
+            .draft
+            .coerce_trigger_capabilities(self.state.shortcut_trigger_capabilities);
         self.render(visible);
     }
 
@@ -276,6 +285,7 @@ fn render_stack(
             shortcut,
             ready_model_ids.clone(),
             state.draft.clone(),
+            state.shortcut_trigger_capabilities,
             Rc::clone(&render_request),
         );
         stack.add_titled(
@@ -292,6 +302,7 @@ fn render_stack(
     let add_shortcut_page = pages::add_shortcut::build(
         state.draft.clone(),
         ready_model_ids,
+        state.shortcut_trigger_capabilities,
         Rc::clone(&render_request),
     );
     stack.add_titled(

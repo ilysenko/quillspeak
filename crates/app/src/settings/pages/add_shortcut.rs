@@ -5,12 +5,14 @@ use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
 
+use crate::hotkey::ShortcutTriggerCapabilities;
 use crate::settings::widgets::preferences_page;
 use crate::settings::{SettingsDraft, shortcut_page_name};
 
 pub fn build(
     draft: SettingsDraft,
     _ready_model_ids: HashSet<String>,
+    capabilities: ShortcutTriggerCapabilities,
     request_render: Rc<dyn Fn(Option<String>)>,
 ) -> adw::PreferencesPage {
     let page = preferences_page("Add New");
@@ -24,7 +26,7 @@ pub fn build(
         .valign(gtk::Align::Center)
         .build();
     button.connect_clicked(move |_| {
-        let shortcut = draft.add_shortcut();
+        let shortcut = draft.add_shortcut(capabilities);
         request_render(Some(shortcut_page_name(&shortcut.id)));
     });
     row.add_suffix(&button);

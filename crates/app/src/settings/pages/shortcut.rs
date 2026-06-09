@@ -9,6 +9,7 @@ use shared::{
     model_catalog_entry,
 };
 
+use crate::hotkey::ShortcutTriggerCapabilities;
 use crate::settings::SettingsDraft;
 use crate::settings::pages::output_controls::add_shortcut_output_controls;
 use crate::settings::shortcut_recorder::connect_record_button;
@@ -20,11 +21,13 @@ pub fn build(
     shortcut: &ShortcutProfile,
     ready_model_ids: HashSet<String>,
     draft: SettingsDraft,
+    capabilities: ShortcutTriggerCapabilities,
     request_render: Rc<dyn Fn(Option<String>)>,
 ) -> adw::PreferencesPage {
     let shortcut_id = shortcut.id.clone();
     let page = preferences_page(&shortcut.name);
     let group = adw::PreferencesGroup::builder().title("Shortcut").build();
+    let keyboard_available = capabilities.keyboard_available();
 
     let name_row = adw::EntryRow::builder()
         .title("Name")
@@ -42,13 +45,16 @@ pub fn build(
     });
     group.add(&name_row);
 
-    let trigger_is_keyboard = matches!(shortcut.trigger, ShortcutTrigger::Keyboard { .. });
+    let trigger_is_keyboard =
+        keyboard_available && matches!(shortcut.trigger, ShortcutTrigger::Keyboard { .. });
     let trigger = dropdown_row(
         "Trigger",
         &["Keyboard shortcut", "Linux signal"],
         if trigger_is_keyboard { 0 } else { 1 },
     );
-    group.add(&trigger.row);
+    if keyboard_available {
+        group.add(&trigger.row);
+    }
 
     let shortcut_entry = adw::EntryRow::builder()
         .title("Shortcut")
@@ -124,7 +130,7 @@ pub fn build(
             start_signal_row.set_visible(!is_keyboard);
             stop_signal_row.set_visible(!is_keyboard);
             if !is_keyboard {
-                start_signal_row.set_text("SIGUSR2");
+                start_signal_row.set_text("SIGUSR1");
                 stop_signal_row.set_text("SIGUSR2");
             }
             draft.update_shortcut(&shortcut_id, |shortcut| {
@@ -221,7 +227,7 @@ fn shortcut_signal_pair(shortcut: &ShortcutProfile) -> (LinuxSignal, LinuxSignal
             start_signal,
             stop_signal,
         } => (start_signal.clone(), stop_signal.clone()),
-        ShortcutTrigger::Keyboard { .. } => (LinuxSignal::sigusr2(), LinuxSignal::sigusr2()),
+        ShortcutTrigger::Keyboard { .. } => (LinuxSignal::sigusr1(), LinuxSignal::sigusr2()),
     }
 }
 

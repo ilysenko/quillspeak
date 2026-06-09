@@ -20,7 +20,7 @@ pub use shortcut::{
     ShortcutModifiers, ShortcutProfile, ShortcutTrigger, next_shortcut_id, normalize_accelerator,
 };
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 10;
+pub const CONFIG_SCHEMA_VERSION: u32 = 11;
 pub const INHERIT_VALUE: &str = "default";
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -435,7 +435,7 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_schema_without_default_input() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 10
+schema_version = 11
 
 [general]
 mode = "push_to_talk"
@@ -464,7 +464,7 @@ output = { type = "default" }
     fn rejects_schema_without_keep_model_loaded() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 10
+schema_version = 11
 
 [general]
 mode = "push_to_talk"
@@ -525,7 +525,7 @@ output = { type = "default" }
     fn rejects_removed_daemon_backend() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 10
+schema_version = 11
 
 [general]
 mode = "push_to_talk"
@@ -556,7 +556,7 @@ output = { type = "default" }
     fn rejects_removed_portal_backend() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 10
+schema_version = 11
 
 [general]
 mode = "push_to_talk"
@@ -731,6 +731,17 @@ stop_signal = "SIGUSR2"
     }
 
     #[test]
+    fn default_linux_signal_is_push_to_talk_pair() {
+        assert_eq!(
+            ShortcutTrigger::default_linux_signal(),
+            ShortcutTrigger::LinuxSignal {
+                start_signal: LinuxSignal::sigusr1(),
+                stop_signal: LinuxSignal::sigusr2(),
+            }
+        );
+    }
+
+    #[test]
     fn duplicate_linux_signals_across_shortcuts_are_rejected() {
         let mut config = AppConfig::default();
         config.shortcuts[0].trigger = ShortcutTrigger::default_linux_signal();
@@ -746,7 +757,7 @@ stop_signal = "SIGUSR2"
 
         assert_eq!(
             config.normalized(),
-            Err(ConfigError::DuplicateSignal("SIGUSR2".to_string()))
+            Err(ConfigError::DuplicateSignal("SIGUSR1".to_string()))
         );
     }
 
@@ -785,7 +796,10 @@ stop_signal = "SIGUSR2"
     #[test]
     fn same_start_stop_signal_inside_one_shortcut_is_valid_toggle() {
         let mut config = AppConfig::default();
-        config.shortcuts[0].trigger = ShortcutTrigger::default_linux_signal();
+        config.shortcuts[0].trigger = ShortcutTrigger::LinuxSignal {
+            start_signal: LinuxSignal::sigusr2(),
+            stop_signal: LinuxSignal::sigusr2(),
+        };
 
         let normalized = config
             .normalized()

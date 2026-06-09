@@ -66,8 +66,8 @@ indicator, and exits through the same quit path for tray `Quit` and Ctrl-C.
 - `crates/app/src/main.rs`: app module wiring and tracing setup.
 - `crates/app/src/app.rs`: app runtime, command pump, lifecycle hold, Ctrl-C,
   tray/settings startup, config apply/save, model commands,
-  recording/audio/transcription orchestration, Linux signal handling, and quit
-  path.
+  recording/audio/transcription orchestration, Linux signal command handling, and
+  quit path.
 - `crates/app/src/audio/*`: CPAL input device enumeration, capture stream
   management, mono conversion, and 16 kHz resampling for Whisper.
 - `crates/app/src/command.rs`: `AppCommand`, download IDs, and model download
@@ -93,7 +93,8 @@ indicator, and exits through the same quit path for tray `Quit` and Ctrl-C.
   explicit shutdown, capture start/stop commands, and stream recreation after
   pause failures.
 - `crates/app/src/signal_trigger.rs`: app-owned Linux signal listener for
-  external hotkey utilities.
+  external hotkey utilities, registered signal calculation, signal name
+  resolution, and pure signal-to-recording action policy.
 - `crates/app/src/transcription/*`: Whisper worker, engine, cache, compute
   selection, skip policy, debug audio writing, request/result types, and plan
   construction.
@@ -111,6 +112,9 @@ indicator, and exits through the same quit path for tray `Quit` and Ctrl-C.
 - Keep GTK/libadwaita object access on the GTK main thread.
 - Worker threads should send commands, not mutate GTK objects or app runtime
   fields directly.
+- Keep Linux signal matching and same-signal start/stop decisions as pure logic
+  in `signal_trigger.rs`; `AppRuntime` should only log and dispatch the selected
+  start/stop action.
 
 ## Tray And Recording State
 
@@ -130,8 +134,9 @@ Recording action labels are stateful:
 
 Manual tray recording uses `AppCommand::ToggleRecording`. Hotkey backends must
 not use the toggle because push-to-talk requires explicit key down/up
-semantics. Linux signal triggers may intentionally toggle when the configured
-start and stop signal are the same.
+semantics. Linux signal triggers may use the same configured start and stop
+signal; the runtime must handle one received signal once, starting when idle and
+stopping when the same shortcut is active.
 
 Hotkey down snapshots the shortcut model/language/output/input settings and
 requests CPAL audio capture for a shortcut id. Hotkey up stops that same
@@ -150,10 +155,11 @@ The app is the source of truth for user settings. Current app config path:
 ~/.config/myapp/config.toml
 ```
 
-Current schema:
+Current schema. Generated defaults are display-aware; on X11-capable sessions
+the app creates the keyboard default plus a signal shortcut:
 
 ```toml
-schema_version = 10
+schema_version = 11
 
 [general]
 mode = "push_to_talk"
@@ -173,12 +179,25 @@ trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
 model_id = "default"
 language = "default"
 output = { type = "default" }
+
+[[shortcuts]]
+id = "signal"
+name = "Signal"
+enabled = true
+trigger = { type = "linux_signal", start_signal = "SIGUSR1", stop_signal = "SIGUSR2" }
+model_id = "default"
+language = "default"
+output = { type = "default" }
 ```
 
-Only schema v10 is supported during development. Do not add old-config
+On Wayland or mixed Wayland/X11 sessions, generated defaults use
+`linux_signal` on the permanent `Default` shortcut and Settings shows only
+signal trigger controls.
+
+Only schema v11 is supported during development. Do not add old-config
 migration paths unless explicitly requested. If the schema changes during
 active development, update the current schema and tests directly instead of
-layering legacy compatibility; older schemas, including v9, are discarded and
+layering legacy compatibility; older schemas, including v10, are discarded and
 replaced with the current default config.
 
 Supported `compute_backend` values are `auto`, `cpu`, `vulkan`, `cuda`, and
@@ -210,6 +229,16 @@ Current pages:
 
 `SettingsDraft` owns the unsaved mutable copy of config. Saving remains
 explicit through the `Save` button. Do not write config on every UI change.
+
+On X11, shortcut pages show both keyboard and Linux signal trigger options. On
+Wayland or mixed Wayland/X11 sessions, shortcut pages show only Linux signal
+trigger controls and new shortcut profiles default to `SIGUSR1` start and
+`SIGUSR2` stop.
+
+Display capability coercion belongs in `SettingsDraft` before rendering pages.
+Do not mutate the draft from a page builder just because a widget is being
+rendered; page builders should reflect the current draft and update it only from
+explicit user interactions.
 
 Shortcut pages should show only ready models plus `Default` inheritance. If a
 selected model is missing, the UI may show a missing marker so the user can fix
@@ -336,6 +365,11 @@ Configured backend values:
   triggers still work,
 - `x11`: force app-side X11 passive grabs.
 
+Shortcut trigger capabilities are display-derived, not config-derived: only
+`DISPLAY` without `WAYLAND_DISPLAY` is considered keyboard-capable. X11 sessions
+show keyboard and signal trigger controls. Wayland or mixed Wayland/X11 sessions
+show signal trigger controls only.
+
 X11 capture lives in the app and uses passive X11 grabs. The X11 backend sends
 `StartRecording(shortcut_id)` on key down and `StopRecording(shortcut_id)` when
 the required chord is no longer pressed.
@@ -345,6 +379,14 @@ Wayland capture is external to MyApp. Configure shortcut profiles as
 signals to the `myapp` process. Signal fields are text fields; MyApp saves
 arbitrary non-empty text, resolves common aliases and numeric signal values in
 `signal_trigger.rs`, and logs unsupported values without failing startup.
+`SIGUSR1` and `SIGUSR2` are always registered as guard signals; if either signal
+does not match an enabled shortcut, MyApp logs the received signal at debug
+level and continues running.
+
+When a shortcut uses the same start and stop signal, each received signal is
+handled once. If the app is idle it starts that shortcut. If that same shortcut
+is arming or recording, the next received signal stops it. Signals for inactive
+shortcuts or processing state are ignored with debug logging.
 
 Example external trigger commands:
 
@@ -446,6 +488,17 @@ The intended verification set is:
 
 `cargo test --workspace` should pass with the default parallel test runner.
 Serial `-- --test-threads=1` runs are only for debugging.
+
+For signal changes, also smoke-test the running app manually:
+
+```sh
+pkill -USR1 -x myapp
+pkill -USR2 -x myapp
+```
+
+For a same-signal shortcut, send the same signal twice: the first signal should
+start recording and the second should stop the active recording without exiting
+the app.
 
 If these fail because system GTK/libadwaita development packages are missing,
 report that accurately. If they fail because of Rust code, fix the code or

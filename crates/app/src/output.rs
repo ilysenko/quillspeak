@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,8 +15,11 @@ use crate::transcription::{TranscriptionResult, TranscriptionStatus};
 
 const SCRIPT_TIMEOUT: Duration = Duration::from_secs(30);
 const SCRIPT_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const SCRIPT_SPAWN_RETRY_DELAY: Duration = Duration::from_millis(10);
+const SCRIPT_SPAWN_ATTEMPTS: usize = 3;
 const CLIPBOARD_TIMEOUT: Duration = Duration::from_secs(3);
 const WAYLAND_TEXT_MIME: &str = "text/plain;charset=utf-8";
+const TEXT_FILE_BUSY_OS_ERROR: i32 = 26;
 
 pub struct OutputService {
     worker_tx: mpsc::Sender<OutputWorkerCommand>,
@@ -674,17 +677,7 @@ fn run_script_with_timeout(
     text: &str,
     capture_stdout: bool,
 ) -> Result<std::process::Output> {
-    let stdout = if capture_stdout {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    };
-    let mut child = Command::new(script_path)
-        .arg(text)
-        .stdin(Stdio::null())
-        .stdout(stdout)
-        .stderr(Stdio::piped())
-        .spawn()
+    let mut child = spawn_script_with_retry(script_path, text, capture_stdout)
         .with_context(|| format!("failed to spawn output script {script_path}"))?;
 
     let started_at = Instant::now();
@@ -703,6 +696,41 @@ fn run_script_with_timeout(
 
         thread::sleep(SCRIPT_POLL_INTERVAL);
     }
+}
+
+fn spawn_script_with_retry(script_path: &str, text: &str, capture_stdout: bool) -> Result<Child> {
+    for attempt in 0..SCRIPT_SPAWN_ATTEMPTS {
+        match spawn_script_once(script_path, text, capture_stdout) {
+            Ok(child) => return Ok(child),
+            Err(error)
+                if error.raw_os_error() == Some(TEXT_FILE_BUSY_OS_ERROR)
+                    && attempt + 1 < SCRIPT_SPAWN_ATTEMPTS =>
+            {
+                thread::sleep(SCRIPT_SPAWN_RETRY_DELAY);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    unreachable!("script spawn retry loop should return on success or final error")
+}
+
+fn spawn_script_once(
+    script_path: &str,
+    text: &str,
+    capture_stdout: bool,
+) -> std::io::Result<Child> {
+    let stdout = if capture_stdout {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    };
+    Command::new(script_path)
+        .arg(text)
+        .stdin(Stdio::null())
+        .stdout(stdout)
+        .stderr(Stdio::piped())
+        .spawn()
 }
 
 #[cfg(test)]
@@ -1043,8 +1071,12 @@ mod tests {
 
     static TEST_SCRIPT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    fn unique_test_suffix() -> u64 {
-        TEST_SCRIPT_COUNTER.fetch_add(1, Ordering::Relaxed)
+    fn unique_test_suffix() -> String {
+        format!(
+            "{}-{}",
+            std::process::id(),
+            TEST_SCRIPT_COUNTER.fetch_add(1, Ordering::Relaxed)
+        )
     }
 
     struct TestScript {

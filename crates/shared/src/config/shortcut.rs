@@ -83,7 +83,7 @@ impl ShortcutTrigger {
 
     pub fn default_linux_signal() -> Self {
         Self::LinuxSignal {
-            start_signal: LinuxSignal::sigusr2(),
+            start_signal: LinuxSignal::sigusr1(),
             stop_signal: LinuxSignal::sigusr2(),
         }
     }

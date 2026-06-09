@@ -1,7 +1,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use shared::{AppConfig, ConfigError, DEFAULT_SHORTCUT_ID, ShortcutProfile, next_shortcut_id};
+use shared::{
+    AppConfig, ConfigError, DEFAULT_SHORTCUT_ID, ShortcutProfile, ShortcutTrigger, next_shortcut_id,
+};
+
+use crate::hotkey::ShortcutTriggerCapabilities;
 
 #[derive(Clone)]
 pub struct SettingsDraft {
@@ -17,6 +21,19 @@ impl SettingsDraft {
 
     pub fn replace(&self, config: AppConfig) {
         self.config.replace(config);
+    }
+
+    pub fn coerce_trigger_capabilities(&self, capabilities: ShortcutTriggerCapabilities) {
+        if capabilities.keyboard_available() {
+            return;
+        }
+
+        for shortcut in &mut self.config.borrow_mut().shortcuts {
+            if matches!(shortcut.trigger, ShortcutTrigger::Keyboard { .. }) {
+                shortcut.trigger = ShortcutTrigger::default_linux_signal();
+                shortcut.enabled = true;
+            }
+        }
     }
 
     pub fn snapshot(&self) -> AppConfig {
@@ -49,11 +66,14 @@ impl SettingsDraft {
         }
     }
 
-    pub fn add_shortcut(&self) -> ShortcutProfile {
+    pub fn add_shortcut(&self, capabilities: ShortcutTriggerCapabilities) -> ShortcutProfile {
         let mut config = self.config.borrow_mut();
         let id = next_shortcut_id(&config.shortcuts);
         let name = format!("Shortcut {}", config.shortcuts.len() + 1);
-        let shortcut = ShortcutProfile::new_profile(id, name);
+        let mut shortcut = ShortcutProfile::new_profile(id, name);
+        if !capabilities.keyboard_available() {
+            shortcut.trigger = ShortcutTrigger::default_linux_signal();
+        }
         config.shortcuts.push(shortcut.clone());
         shortcut
     }
@@ -80,8 +100,8 @@ mod tests {
     #[test]
     fn updates_shortcut_by_id_after_removing_another_shortcut() {
         let draft = SettingsDraft::new(AppConfig::default());
-        let first = draft.add_shortcut();
-        let second = draft.add_shortcut();
+        let first = draft.add_shortcut(ShortcutTriggerCapabilities::KeyboardAndSignals);
+        let second = draft.add_shortcut(ShortcutTriggerCapabilities::KeyboardAndSignals);
 
         assert!(draft.remove_shortcut(&first.id));
         draft.update_shortcut(&second.id, |shortcut| {
@@ -104,5 +124,38 @@ mod tests {
 
         assert!(!draft.remove_shortcut(DEFAULT_SHORTCUT_ID));
         assert_eq!(draft.snapshot().shortcuts.len(), 1);
+    }
+
+    #[test]
+    fn added_shortcut_uses_signals_when_keyboard_is_unavailable() {
+        let draft = SettingsDraft::new(AppConfig::default());
+
+        let shortcut = draft.add_shortcut(ShortcutTriggerCapabilities::SignalsOnly);
+
+        assert_eq!(shortcut.trigger, ShortcutTrigger::default_linux_signal());
+    }
+
+    #[test]
+    fn coerces_keyboard_shortcuts_to_signals_when_keyboard_is_unavailable() {
+        let draft = SettingsDraft::new(AppConfig::default());
+
+        draft.coerce_trigger_capabilities(ShortcutTriggerCapabilities::SignalsOnly);
+
+        assert_eq!(
+            draft.snapshot().shortcuts[0].trigger,
+            ShortcutTrigger::default_linux_signal()
+        );
+    }
+
+    #[test]
+    fn keeps_keyboard_shortcuts_when_keyboard_is_available() {
+        let draft = SettingsDraft::new(AppConfig::default());
+
+        draft.coerce_trigger_capabilities(ShortcutTriggerCapabilities::KeyboardAndSignals);
+
+        assert_eq!(
+            draft.snapshot().shortcuts[0].trigger,
+            ShortcutTrigger::default_keyboard()
+        );
     }
 }

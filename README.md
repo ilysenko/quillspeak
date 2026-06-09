@@ -116,9 +116,15 @@ The tray icon reflects the recording phase:
 The app has two supported trigger paths:
 
 - X11: `hotkey_backend = "auto"` or `"x11"` lets the app capture configured
-  keyboard shortcuts directly with X11 passive grabs.
-- Wayland: configure shortcut profiles as Linux signal triggers and use an
-  external hotkey utility such as `swhkd` to send Linux signals to `myapp`.
+  keyboard shortcuts directly with X11 passive grabs; signal shortcuts are also
+  available.
+- Wayland: shortcut profiles use Linux signal triggers and an external hotkey
+  utility such as `swhkd` sends Linux signals to `myapp`.
+
+Settings follows the same display split. On X11 it shows both keyboard shortcut
+and Linux signal trigger controls. On Wayland, or in mixed Wayland/X11 sessions,
+it shows only signal trigger controls so saved shortcuts match the trigger path
+the app can actually receive.
 
 Backend values:
 
@@ -132,13 +138,16 @@ Linux signal triggers are text fields. Common aliases such as `usr1`, `User 1`,
 and `SIGUSR1` resolve to `SIGUSR1`; arbitrary non-empty text is saved, and if it
 cannot be resolved to a Linux signal at runtime the app logs a diagnostic and
 skips that binding. Using the same signal for start and stop makes that signal a
-toggle.
+state-aware start/stop trigger: idle starts, the active shortcut stops. Each
+received signal is handled once. `SIGUSR1` and `SIGUSR2` are always registered
+as safe guard signals, so an unmatched external signal is logged at debug level
+and ignored instead of terminating the app.
 
 Signal examples:
 
 ```sh
-pkill -USR2 -x myapp
 pkill -USR1 -x myapp
+pkill -USR2 -x myapp
 ```
 
 Example `~/.config/swhkd/swhkdrc` entries for Wayland:
@@ -157,10 +166,22 @@ ctrl + shift + @space
     pkill -USR2 -x myapp
 ```
 
-If a shortcut uses the same start and stop signal, pressing the hotkey once
-starts recording and pressing it again stops recording. If a shortcut uses
-distinct start and stop signals, the external utility must send the matching
-signal for each edge.
+If a shortcut uses the same start and stop signal, the first received signal
+starts recording and the next received signal for the active shortcut stops it.
+If a shortcut uses distinct start and stop signals, the external utility must
+send the matching signal for each edge.
+
+For a quick manual check while the app is running, send the default start and
+stop pair:
+
+```sh
+pkill -USR1 -x myapp
+pkill -USR2 -x myapp
+```
+
+For a same-signal shortcut, send the same command twice. The first signal should
+start recording, and the second should stop the active recording. Unmatched guard
+signals are reported in debug logs and ignored; the app should continue running.
 
 ## Audio And Transcription
 
@@ -250,10 +271,11 @@ The app owns user settings and writes TOML to:
 ~/.config/myapp/config.toml
 ```
 
-Default config:
+Generated defaults are display-aware. On X11-capable sessions the app creates
+the keyboard default plus a signal shortcut:
 
 ```toml
-schema_version = 10
+schema_version = 11
 
 [general]
 mode = "push_to_talk"
@@ -273,10 +295,28 @@ trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
 model_id = "default"
 language = "default"
 output = { type = "default" }
+
+[[shortcuts]]
+id = "signal"
+name = "Signal"
+enabled = true
+trigger = { type = "linux_signal", start_signal = "SIGUSR1", stop_signal = "SIGUSR2" }
+model_id = "default"
+language = "default"
+output = { type = "default" }
 ```
 
+On Wayland or mixed Wayland/X11 sessions, the generated default shortcut uses
+the same `SIGUSR1` start and `SIGUSR2` stop signal trigger, and Settings shows
+only signal trigger controls.
+
+If an existing draft contains keyboard triggers while the current session is not
+keyboard-capable, Settings converts those draft triggers to the default Linux
+signal pair before rendering. The conversion is still saved only when you press
+`Save`.
+
 During development only the current schema is supported. If the app sees an
-older local config schema, including v9, it replaces it with a fresh default
+older local config schema, including v10, it replaces it with a fresh default
 config instead of migrating it.
 
 Supported `compute_backend` values are `auto`, `cpu`, `vulkan`, `cuda`, and
