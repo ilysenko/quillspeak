@@ -17,6 +17,7 @@ use crate::recording::RecordingPhase;
 pub struct SignalTriggerService {
     handle: SignalHandle,
     join_handle: Option<thread::JoinHandle<()>>,
+    closed: bool,
 }
 
 impl SignalTriggerService {
@@ -47,11 +48,15 @@ impl SignalTriggerService {
         Ok(Self {
             handle,
             join_handle: Some(join_handle),
+            closed: false,
         })
     }
 
-    pub fn shutdown(mut self) {
-        self.handle.close();
+    pub fn shutdown(&mut self) {
+        if !self.closed {
+            self.handle.close();
+            self.closed = true;
+        }
         if let Some(join_handle) = self.join_handle.take()
             && let Err(error) = join_handle.join()
         {
@@ -60,6 +65,12 @@ impl SignalTriggerService {
                 "Linux signal trigger thread panicked during shutdown"
             );
         }
+    }
+}
+
+impl Drop for SignalTriggerService {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 

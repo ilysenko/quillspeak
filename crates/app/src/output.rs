@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -362,7 +362,7 @@ fn copy_text_to_wayland_clipboard(text: &str, cancel_requested: &AtomicBool) -> 
     ensure_command_in_path(commands.copy, commands.package_hint)?;
     let mut command = Command::new(commands.copy);
     command.args(wayland_copy_args());
-    run_status_with_stdin(
+    run_clipboard_status_with_stdin(
         &mut command,
         text,
         CLIPBOARD_TIMEOUT,
@@ -376,7 +376,7 @@ fn copy_text_to_x11_clipboard(text: &str, cancel_requested: &AtomicBool) -> Resu
     ensure_command_in_path(commands.copy, commands.package_hint)?;
     let mut command = Command::new(commands.copy);
     command.args(["-selection", "clipboard", "-in"]);
-    run_status_with_stdin(
+    run_clipboard_status_with_stdin(
         &mut command,
         text,
         CLIPBOARD_TIMEOUT,
@@ -573,17 +573,19 @@ fn wayland_paste_args() -> [&'static str; 3] {
     ["--no-newline", "--type", WAYLAND_TEXT_MIME]
 }
 
-fn run_status_with_stdin(
+fn run_clipboard_status_with_stdin(
     command: &mut Command,
     text: &str,
     timeout: Duration,
     description: &str,
     cancel_requested: &AtomicBool,
 ) -> Result<()> {
+    // Clipboard owners such as wl-copy and xclip may fork and keep inherited
+    // pipes open, so wait only for the launcher status and discard its output.
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
         .with_context(|| format!("failed to spawn {description}"))?;
 
@@ -596,15 +598,11 @@ fn run_status_with_stdin(
             return Err(error);
         }
     };
-    let output_result = wait_for_child_output(child, timeout, description, cancel_requested);
+    let status_result = wait_for_child_status(child, timeout, description, cancel_requested);
     let write_result = join_stdin_writer(writer, description);
-    let output = output_result?;
-    if !output.status.success() {
-        bail!(
-            "{description} exited with status {}; stderr: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+    let status = status_result?;
+    if !status.success() {
+        bail!("{description} exited with status {status}");
     }
     write_result?;
 
@@ -642,6 +640,34 @@ fn run_output_with_timeout(
         .spawn()
         .with_context(|| format!("failed to spawn {description}"))?;
     wait_for_child_output(child, timeout, description, cancel_requested)
+}
+
+fn wait_for_child_status(
+    mut child: Child,
+    timeout: Duration,
+    description: &str,
+    cancel_requested: &AtomicBool,
+) -> Result<ExitStatus> {
+    let started_at = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+
+        if cancel_requested.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("{description} canceled during shutdown");
+        }
+
+        if started_at.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("{description} timed out after {timeout:?}");
+        }
+
+        thread::sleep(SCRIPT_POLL_INTERVAL);
+    }
 }
 
 fn wait_for_child_output(
@@ -1077,6 +1103,27 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_stdin_runner_does_not_wait_for_backgrounded_streams() {
+        let script = TestScript::new("background-copy", "cat >/dev/null\nsleep 1 &\nexit 0\n");
+        let mut command = Command::new(script.path_str());
+        let started_at = std::time::Instant::now();
+
+        run_clipboard_status_with_stdin(
+            &mut command,
+            "hello clipboard",
+            Duration::from_millis(300),
+            "fake clipboard copy",
+            never_cancel(),
+        )
+        .expect("clipboard copy runner should return after the launcher exits");
+
+        assert!(
+            started_at.elapsed() < Duration::from_millis(800),
+            "clipboard copy runner waited for a background child"
+        );
+    }
+
+    #[test]
     fn wayland_env_selects_wl_clipboard_backend() {
         let backend =
             detect_clipboard_backend_from_env(test_env(&[("WAYLAND_DISPLAY", "wayland-0")]))
@@ -1183,6 +1230,7 @@ mod tests {
     #[ignore = "requires a real Wayland session and mutates the system clipboard"]
     fn wayland_clipboard_copy_round_trips_text() {
         let text = format!("myapp clipboard smoke {}", unique_test_suffix());
+        let second_text = format!("myapp clipboard smoke second {}", unique_test_suffix());
         let _restore_guard = ClipboardRestoreGuard::new(
             read_external_clipboard(ClipboardBackend::Wayland, never_cancel()).ok(),
         );
@@ -1197,6 +1245,13 @@ mod tests {
         let actual = read_external_clipboard(backend, never_cancel())
             .expect("clipboard text should be readable");
         assert_eq!(actual, text);
+
+        copy_text_to_external_clipboard(&second_text, never_cancel())
+            .expect("second external clipboard copy should succeed");
+
+        let actual = read_external_clipboard(backend, never_cancel())
+            .expect("second clipboard text should be readable");
+        assert_eq!(actual, second_text);
     }
 
     struct ClipboardRestoreGuard {

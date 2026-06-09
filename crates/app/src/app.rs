@@ -107,7 +107,7 @@ impl ShutdownServices {
         } = self;
 
         drop(hotkey_backend);
-        if let Some(signal_trigger_service) = signal_trigger_service {
+        if let Some(mut signal_trigger_service) = signal_trigger_service {
             signal_trigger_service.shutdown();
         }
         if let Some(pipeline) = recording_pipeline {
@@ -746,7 +746,9 @@ impl AppRuntime {
         self.hotkey_backend.borrow_mut().take();
         let hotkey_backend = configure_hotkey_backend(self.command_sender(), &config);
         self.hotkey_backend.replace(hotkey_backend);
-        self.signal_trigger_service.borrow_mut().take();
+        if let Some(mut signal_trigger_service) = self.signal_trigger_service.borrow_mut().take() {
+            signal_trigger_service.shutdown();
+        }
         match SignalTriggerService::spawn(self.command_sender(), &config) {
             Ok(service) => {
                 self.signal_trigger_service.replace(Some(service));
