@@ -14,6 +14,8 @@ use crate::settings::widgets::{
     compute_from_index, compute_index, dropdown_row, language_dropdown_row, model_dropdown_row,
     output_tools_status, property_row,
 };
+use crate::system_audio::speaker_mute_tools_status;
+use crate::transcription::WhisperRuntimeStatus;
 
 const GENERAL_MAX_WIDTH: i32 = 740;
 const GENERAL_TIGHTENING_WIDTH: i32 = 600;
@@ -33,6 +35,7 @@ pub fn build(
     config: &AppConfig,
     audio_input_devices: Vec<AudioInputDevice>,
     ready_model_ids: HashSet<String>,
+    whisper_runtime_status: WhisperRuntimeStatus,
     draft: SettingsDraft,
 ) -> GeneralPage {
     let content = gtk::Box::builder()
@@ -55,6 +58,12 @@ pub fn build(
     let output_tools = output_tools_status();
     let output_tools_row = property_row("Output tools", &output_tools);
     status_group.add(&output_tools_row);
+    let speaker_mute_tools = speaker_mute_tools_status();
+    let speaker_mute_tools_row = property_row("Audio mute tools", &speaker_mute_tools);
+    status_group.add(&speaker_mute_tools_row);
+    let whisper_compute = whisper_runtime_status.summary();
+    let whisper_compute_row = property_row("Whisper compute", &whisper_compute);
+    status_group.add(&whisper_compute_row);
 
     let general_group = adw::PreferencesGroup::builder()
         .title("Configuration")
@@ -122,6 +131,26 @@ pub fn build(
         }
     });
     general_group.add(&keep_model_loaded_row);
+
+    let mute_output = gtk::Switch::builder()
+        .active(config.general.mute_output_while_recording)
+        .valign(gtk::Align::Center)
+        .build();
+    let mute_output_row = adw::ActionRow::builder()
+        .title("Mute speakers while recording")
+        .subtitle("Temporarily mute the default system output while microphone capture is active")
+        .build();
+    mute_output_row.add_suffix(&mute_output);
+    mute_output_row.set_activatable_widget(Some(&mute_output));
+    mute_output.connect_active_notify({
+        let draft = draft.clone();
+        move |switch| {
+            draft.update(|config| {
+                config.general.mute_output_while_recording = switch.is_active();
+            });
+        }
+    });
+    general_group.add(&mute_output_row);
 
     let model_entries = all_model_entries()
         .into_iter()

@@ -8,6 +8,7 @@ mod output;
 mod recording;
 mod settings;
 mod signal_trigger;
+mod system_audio;
 mod transcription;
 mod tray;
 

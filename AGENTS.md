@@ -159,7 +159,7 @@ Current schema. Generated defaults are display-aware; on X11-capable sessions
 the app creates the keyboard default plus a signal shortcut:
 
 ```toml
-schema_version = 11
+schema_version = 12
 
 [general]
 mode = "push_to_talk"
@@ -169,6 +169,7 @@ default_model_id = "large-v3-turbo-q5_0"
 default_language = "auto"
 compute_backend = "auto"
 keep_model_loaded = true
+mute_output_while_recording = false
 default_output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 
 [[shortcuts]]
@@ -178,6 +179,7 @@ enabled = true
 trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
 model_id = "default"
 language = "default"
+mute_output = { type = "default" }
 output = { type = "default" }
 
 [[shortcuts]]
@@ -187,6 +189,7 @@ enabled = true
 trigger = { type = "linux_signal", start_signal = "SIGUSR1", stop_signal = "SIGUSR2" }
 model_id = "default"
 language = "default"
+mute_output = { type = "default" }
 output = { type = "default" }
 ```
 
@@ -194,7 +197,7 @@ On Wayland or mixed Wayland/X11 sessions, generated defaults use
 `linux_signal` on the permanent `Default` shortcut and Settings shows only
 signal trigger controls.
 
-Only schema v11 is supported during development. Do not add old-config
+Only schema v12 is supported during development. Do not add old-config
 migration paths unless explicitly requested. If the schema changes during
 active development, update the current schema and tests directly instead of
 layering legacy compatibility; older schemas, including v10, are discarded and

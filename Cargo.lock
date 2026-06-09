@@ -78,6 +78,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "whisper-rs",
+ "whisper-rs-sys",
  "x11rb",
 ]
 

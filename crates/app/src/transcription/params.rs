@@ -6,9 +6,15 @@ use tracing::{info, warn};
 use whisper_rs::WhisperContext;
 
 use crate::transcription::compute::{CompiledWhisperBackends, context_params, cpu_context_params};
+use crate::transcription::status::WhisperRuntimeStatus;
 use crate::transcription::types::TranscriptionRequest;
 
-pub(super) fn load_context(request: &TranscriptionRequest) -> Result<WhisperContext> {
+pub(super) struct LoadedWhisperContext {
+    pub(super) context: WhisperContext,
+    pub(super) runtime_status: WhisperRuntimeStatus,
+}
+
+pub(super) fn load_context(request: &TranscriptionRequest) -> Result<LoadedWhisperContext> {
     let compiled_backends = CompiledWhisperBackends::current();
     if request.compute_backend == ComputeBackend::Auto && compiled_backends.has_gpu() {
         let params = context_params(request.compute_backend)?;
@@ -47,7 +53,7 @@ fn load_context_with_params(
     request: &TranscriptionRequest,
     params: whisper_rs::WhisperContextParameters<'static>,
     effective_compute: &str,
-) -> Result<WhisperContext> {
+) -> Result<LoadedWhisperContext> {
     let model_path = request.model_path.to_str().with_context(|| {
         format!(
             "model path is not valid UTF-8: {}",
@@ -83,5 +89,13 @@ fn load_context_with_params(
         load_duration_ms = load_started.elapsed().as_millis(),
         "loaded whisper model"
     );
-    Ok(context)
+    Ok(LoadedWhisperContext {
+        context,
+        runtime_status: WhisperRuntimeStatus::loaded(
+            request.compute_backend,
+            request.model_id.clone(),
+            effective_compute,
+            whisper_gpu_requested,
+        ),
+    })
 }

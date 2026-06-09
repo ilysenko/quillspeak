@@ -8,7 +8,7 @@ pub use config::{
     ConfigError, DEFAULT_MODEL_ID, DEFAULT_SHORTCUT_ID, DEFAULT_SHORTCUT_NAME, GeneralConfig,
     HotkeyBackend, HotkeyMode, INHERIT_VALUE, LinuxSignal, MODEL_CATALOG, ModelCatalogEntry,
     OutputAction, PasteShortcut, ResolvedOutput, SUPPORTED_LANGUAGES, ScriptOutput, ShortcutChord,
-    ShortcutKey, ShortcutModifiers, ShortcutOutput, ShortcutProfile, ShortcutTrigger,
-    SupportedLanguage, model_catalog_entry, next_shortcut_id, normalize_accelerator,
-    supported_language_label,
+    ShortcutKey, ShortcutModifiers, ShortcutMuteOutput, ShortcutOutput, ShortcutProfile,
+    ShortcutTrigger, SupportedLanguage, model_catalog_entry, next_shortcut_id,
+    normalize_accelerator, supported_language_label,
 };

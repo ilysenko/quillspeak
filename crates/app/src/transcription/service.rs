@@ -6,6 +6,7 @@ use tracing::warn;
 
 use crate::command::AppCommand;
 use crate::transcription::engine::WhisperEngine;
+use crate::transcription::status::WhisperRuntimeStatus;
 use crate::transcription::types::TranscriptionRequest;
 
 pub struct TranscriptionService {
@@ -91,12 +92,20 @@ fn transcription_worker_loop(
     for command in worker_rx {
         match command {
             TranscriptionWorkerCommand::Transcribe(request) => {
+                let request = *request;
                 let recording_id = request.recording_id;
                 let shortcut_id = request.shortcut_id.clone();
-                let result = engine
-                    .transcribe(*request)
-                    .map(Box::new)
-                    .map_err(|error| format!("{error:#}"));
+                let configured_compute = request.compute_backend;
+                let result = engine.transcribe(request);
+                let runtime_status = engine.take_runtime_status_update().or_else(|| {
+                    result.as_ref().err().map(|error| {
+                        WhisperRuntimeStatus::failed(configured_compute, format!("{error:#}"))
+                    })
+                });
+                if let Some(status) = runtime_status {
+                    let _ = command_tx.send(AppCommand::WhisperRuntimeStatusChanged(status));
+                }
+                let result = result.map(Box::new).map_err(|error| format!("{error:#}"));
                 let _ = command_tx.send(AppCommand::TranscriptionFinished {
                     recording_id,
                     shortcut_id,

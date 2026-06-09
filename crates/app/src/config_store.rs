@@ -5,8 +5,8 @@ use anyhow::{Context, Result};
 use directories::BaseDirs;
 use shared::persistence::atomic_write_text;
 use shared::{
-    AppConfig, CONFIG_SCHEMA_VERSION, INHERIT_VALUE, ShortcutOutput, ShortcutProfile,
-    ShortcutTrigger,
+    AppConfig, CONFIG_SCHEMA_VERSION, INHERIT_VALUE, ShortcutMuteOutput, ShortcutOutput,
+    ShortcutProfile, ShortcutTrigger,
 };
 use tracing::warn;
 
@@ -116,6 +116,7 @@ fn default_signal_shortcut_profile() -> ShortcutProfile {
         trigger: ShortcutTrigger::default_linux_signal(),
         model_id: INHERIT_VALUE.to_string(),
         language: INHERIT_VALUE.to_string(),
+        mute_output: ShortcutMuteOutput::Default,
         output: ShortcutOutput::Default,
     }
 }

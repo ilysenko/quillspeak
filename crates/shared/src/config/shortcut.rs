@@ -15,6 +15,7 @@ pub struct ShortcutProfile {
     pub trigger: ShortcutTrigger,
     pub model_id: String,
     pub language: String,
+    pub mute_output: ShortcutMuteOutput,
     pub output: ShortcutOutput,
 }
 
@@ -27,6 +28,7 @@ impl ShortcutProfile {
             trigger: ShortcutTrigger::default_keyboard(),
             model_id: inherit_value(),
             language: inherit_value(),
+            mute_output: ShortcutMuteOutput::Default,
             output: ShortcutOutput::Default,
         }
     }
@@ -41,6 +43,7 @@ impl ShortcutProfile {
             },
             model_id: inherit_value(),
             language: inherit_value(),
+            mute_output: ShortcutMuteOutput::Default,
             output: ShortcutOutput::Default,
         }
     }
@@ -57,9 +60,28 @@ impl ShortcutProfile {
         self.trigger = self.trigger.normalized(self.enabled)?;
         self.model_id = normalize_model_ref(&self.model_id)?;
         self.language = normalize_language_ref(&self.language, true)?;
+        self.mute_output.validate();
         self.output.validate()?;
         Ok(self)
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ShortcutMuteOutput {
+    #[default]
+    Default,
+    Custom {
+        enabled: bool,
+    },
+}
+
+impl ShortcutMuteOutput {
+    pub const fn custom(enabled: bool) -> Self {
+        Self::Custom { enabled }
+    }
+
+    pub(crate) const fn validate(self) {}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -12,6 +12,7 @@ use crate::audio::AudioInputDevice;
 use crate::command::AppCommand;
 use crate::hotkey::ShortcutTriggerCapabilities;
 use crate::models::ModelRowState;
+use crate::transcription::WhisperRuntimeStatus;
 
 mod draft;
 mod pages;
@@ -27,6 +28,7 @@ pub struct SettingsState {
     audio_input_devices: Rc<RefCell<Vec<AudioInputDevice>>>,
     model_states: Rc<RefCell<Vec<ModelRowState>>>,
     ready_model_ids: Rc<RefCell<HashSet<String>>>,
+    whisper_runtime_status: Rc<RefCell<WhisperRuntimeStatus>>,
     shortcut_trigger_capabilities: ShortcutTriggerCapabilities,
     command_tx: mpsc::Sender<AppCommand>,
 }
@@ -41,23 +43,35 @@ pub struct SettingsWindow {
     models_page: Rc<RefCell<Option<pages::models::ModelsPage>>>,
 }
 
+pub struct SettingsWindowInit {
+    pub config: AppConfig,
+    pub audio_input_devices: Vec<AudioInputDevice>,
+    pub model_states: Vec<ModelRowState>,
+    pub ready_model_ids: HashSet<String>,
+    pub whisper_runtime_status: WhisperRuntimeStatus,
+    pub shortcut_trigger_capabilities: ShortcutTriggerCapabilities,
+    pub command_tx: mpsc::Sender<AppCommand>,
+}
+
 impl SettingsWindow {
-    pub fn new(
-        application: &adw::Application,
-        config: &AppConfig,
-        audio_input_devices: Vec<AudioInputDevice>,
-        model_states: Vec<ModelRowState>,
-        ready_model_ids: HashSet<String>,
-        shortcut_trigger_capabilities: ShortcutTriggerCapabilities,
-        command_tx: mpsc::Sender<AppCommand>,
-    ) -> Self {
-        let draft = SettingsDraft::new(config.clone());
+    pub fn new(application: &adw::Application, init: SettingsWindowInit) -> Self {
+        let SettingsWindowInit {
+            config,
+            audio_input_devices,
+            model_states,
+            ready_model_ids,
+            whisper_runtime_status,
+            shortcut_trigger_capabilities,
+            command_tx,
+        } = init;
+        let draft = SettingsDraft::new(config);
         draft.coerce_trigger_capabilities(shortcut_trigger_capabilities);
         let state = SettingsState {
             draft,
             audio_input_devices: Rc::new(RefCell::new(audio_input_devices)),
             model_states: Rc::new(RefCell::new(model_states)),
             ready_model_ids: Rc::new(RefCell::new(ready_model_ids)),
+            whisper_runtime_status: Rc::new(RefCell::new(whisper_runtime_status)),
             shortcut_trigger_capabilities,
             command_tx: command_tx.clone(),
         };
@@ -171,6 +185,12 @@ impl SettingsWindow {
         self.render(visible);
     }
 
+    pub fn update_whisper_runtime_status(&self, status: WhisperRuntimeStatus) {
+        let visible = self.stack.visible_child_name().map(|name| name.to_string());
+        self.state.whisper_runtime_status.replace(status);
+        self.render(visible);
+    }
+
     pub fn update_model_inventory(
         &self,
         model_states: Vec<ModelRowState>,
@@ -260,6 +280,7 @@ fn render_stack(
         &config,
         state.audio_input_devices.borrow().clone(),
         ready_model_ids.clone(),
+        state.whisper_runtime_status.borrow().clone(),
         state.draft.clone(),
     );
     stack.add_titled(general_page.widget(), Some("general"), "General");

@@ -5,8 +5,8 @@ use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use shared::{
-    DEFAULT_SHORTCUT_ID, LinuxSignal, MODEL_CATALOG, ShortcutProfile, ShortcutTrigger,
-    model_catalog_entry,
+    DEFAULT_SHORTCUT_ID, LinuxSignal, MODEL_CATALOG, ShortcutMuteOutput, ShortcutProfile,
+    ShortcutTrigger, model_catalog_entry,
 };
 
 use crate::hotkey::ShortcutTriggerCapabilities;
@@ -209,6 +209,22 @@ pub fn build(
     });
     group.add(&language.row);
 
+    let mute_output = dropdown_row(
+        "Speaker mute",
+        &["Default", "Mute", "Do not mute"],
+        mute_output_index(shortcut.mute_output),
+    );
+    mute_output.dropdown.connect_selected_notify({
+        let draft = draft.clone();
+        let shortcut_id = shortcut_id.clone();
+        move |dropdown| {
+            draft.update_shortcut(&shortcut_id, |shortcut| {
+                shortcut.mute_output = mute_output_from_index(dropdown.selected());
+            });
+        }
+    });
+    group.add(&mute_output.row);
+
     add_shortcut_output_controls(&group, &shortcut_id, &shortcut.output, draft.clone());
 
     if shortcut.id != DEFAULT_SHORTCUT_ID {
@@ -262,4 +278,20 @@ fn signal_entry_row(title: &str, text: &str, visible: bool) -> adw::EntryRow {
     let row = adw::EntryRow::builder().title(title).text(text).build();
     row.set_visible(visible);
     row
+}
+
+fn mute_output_index(mute_output: ShortcutMuteOutput) -> u32 {
+    match mute_output {
+        ShortcutMuteOutput::Default => 0,
+        ShortcutMuteOutput::Custom { enabled: true } => 1,
+        ShortcutMuteOutput::Custom { enabled: false } => 2,
+    }
+}
+
+fn mute_output_from_index(index: u32) -> ShortcutMuteOutput {
+    match index {
+        1 => ShortcutMuteOutput::custom(true),
+        2 => ShortcutMuteOutput::custom(false),
+        _ => ShortcutMuteOutput::Default,
+    }
 }

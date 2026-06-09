@@ -39,6 +39,7 @@ pub fn build_transcription_plan(
         model_path,
         language: config.resolved_language(shortcut).to_string(),
         compute_backend: config.general.compute_backend,
+        mute_output_while_recording: config.resolved_mute_output_while_recording(shortcut),
         output,
         input: config.general.default_input.clone(),
     })
@@ -97,7 +98,29 @@ mod tests {
         assert_eq!(plan.model_id, DEFAULT_MODEL_ID);
         assert_eq!(plan.model_path, model_path);
         assert_eq!(plan.input, config.general.default_input);
+        assert!(!plan.mute_output_while_recording);
 
+        let _ = fs::remove_file(plan.model_path);
+    }
+
+    #[test]
+    fn plan_snapshots_resolved_mute_output() {
+        let mut config = AppConfig::default();
+        config.general.mute_output_while_recording = true;
+        let ready_model_ids = HashSet::from([DEFAULT_MODEL_ID.to_string()]);
+        let model_path = temp_model_path();
+        fs::write(&model_path, b"model").expect("test model file should be writable");
+
+        let plan = build_transcription_plan(
+            &config,
+            &ready_model_ids,
+            |_| model_path.clone(),
+            8,
+            DEFAULT_SHORTCUT_ID,
+        )
+        .expect("ready model should build a plan");
+
+        assert!(plan.mute_output_while_recording);
         let _ = fs::remove_file(plan.model_path);
     }
 

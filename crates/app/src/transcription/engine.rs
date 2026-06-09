@@ -9,18 +9,20 @@ use crate::audio::{PreparedAudio, prepare_whisper_audio};
 use crate::transcription::cache::{ModelCacheKey, SingleModelCache};
 use crate::transcription::compute::{default_thread_count, whisper_language};
 use crate::transcription::debug_audio::maybe_write_debug_audio;
-use crate::transcription::params::load_context;
+use crate::transcription::params::{LoadedWhisperContext, load_context};
 use crate::transcription::skip::{
     pad_short_whisper_audio, skip_transcription_reason, skipped_transcription_result,
 };
+use crate::transcription::status::WhisperRuntimeStatus;
 use crate::transcription::types::{
     TranscriptionDebugInfo, TranscriptionRequest, TranscriptionResult, TranscriptionSegment,
     TranscriptionStatus,
 };
 
 pub(super) struct WhisperEngine {
-    cached_context: SingleModelCache<WhisperContext>,
+    cached_context: SingleModelCache<LoadedWhisperContext>,
     keep_model_loaded: bool,
+    pending_runtime_status: Option<WhisperRuntimeStatus>,
 }
 
 impl WhisperEngine {
@@ -28,6 +30,7 @@ impl WhisperEngine {
         Self {
             cached_context: SingleModelCache::default(),
             keep_model_loaded,
+            pending_runtime_status: None,
         }
     }
 
@@ -129,8 +132,9 @@ impl WhisperEngine {
             let model_id = request.model_id.clone();
             let model_path = request.model_path.clone();
             let compute_backend = request.compute_backend;
-            let context = load_context(&request)?;
-            let result = Self::run_transcription(&context, request, prepared);
+            let loaded = load_context(&request)?;
+            self.pending_runtime_status = Some(loaded.runtime_status.clone());
+            let result = Self::run_transcription(&loaded.context, request, prepared);
             info!(
                 model_id = %model_id,
                 model_path = %model_path.display(),
@@ -145,12 +149,16 @@ impl WhisperEngine {
         self.clear_cached_context(reason);
     }
 
+    pub(super) fn take_runtime_status_update(&mut self) -> Option<WhisperRuntimeStatus> {
+        self.pending_runtime_status.take()
+    }
+
     fn cached_context(
         &mut self,
         request: &TranscriptionRequest,
         key: ModelCacheKey,
     ) -> Result<&WhisperContext> {
-        if self.cached_context.get(&key).is_some() {
+        if let Some(cached) = self.cached_context.get(&key) {
             info!(
                 shortcut_id = %request.shortcut_id,
                 model_id = %request.model_id,
@@ -158,9 +166,11 @@ impl WhisperEngine {
                 compute_backend = %request.compute_backend.as_str(),
                 "using cached whisper model"
             );
+            self.pending_runtime_status = Some(cached.runtime_status.clone());
             return Ok(self
                 .cached_context
                 .get(&key)
+                .map(|cached| &cached.context)
                 .expect("cached key was checked before returning"));
         }
 
@@ -173,10 +183,12 @@ impl WhisperEngine {
         }
 
         let context = load_context(request)?;
+        self.pending_runtime_status = Some(context.runtime_status.clone());
         self.cached_context.replace(key.clone(), context);
         Ok(self
             .cached_context
             .get(&key)
+            .map(|cached| &cached.context)
             .expect("cached context was inserted before returning"))
     }
 

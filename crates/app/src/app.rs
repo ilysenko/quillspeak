@@ -25,14 +25,15 @@ use crate::output::{
     OutputService,
 };
 use crate::recording::{RecordingPhase, RecordingPipeline, RecordingService};
-use crate::settings::SettingsWindow;
+use crate::settings::{SettingsWindow, SettingsWindowInit};
 use crate::signal_trigger::{
     LinuxSignalAction, SignalTriggerService, linux_signal_action_for_recording_state,
     linux_signal_match_for_config, signal_name,
 };
+use crate::system_audio::SpeakerMuteService;
 use crate::transcription::{
-    CompiledWhisperBackends, TranscriptionRequest, TranscriptionResult, TranscriptionService,
-    TranscriptionStatus, build_transcription_plan,
+    CompiledWhisperBackends, TranscriptionPlan, TranscriptionRequest, TranscriptionResult,
+    TranscriptionService, TranscriptionStatus, WhisperRuntimeStatus, build_transcription_plan,
 };
 use crate::tray::Tray;
 
@@ -75,9 +76,11 @@ struct AppRuntime {
     download_manager: RefCell<ModelDownloadManager>,
     audio_input_devices: RefCell<Vec<AudioInputDevice>>,
     recording_pipeline: RefCell<Option<RecordingPipeline>>,
+    speaker_mute_service: RefCell<Option<SpeakerMuteService>>,
     transcription_service: RefCell<Option<TranscriptionService>>,
     output_service: RefCell<Option<OutputService>>,
     config: RefCell<AppConfig>,
+    whisper_runtime_status: RefCell<WhisperRuntimeStatus>,
     recording: RefCell<RecordingService>,
     recording_phase: Cell<RecordingPhase>,
     next_recording_id: Cell<u64>,
@@ -90,6 +93,7 @@ struct AppRuntime {
 
 struct ShutdownServices {
     recording_pipeline: Option<RecordingPipeline>,
+    speaker_mute_service: Option<SpeakerMuteService>,
     output_service: Option<OutputService>,
     signal_trigger_service: Option<SignalTriggerService>,
     transcription_service: Option<TranscriptionService>,
@@ -100,6 +104,7 @@ impl ShutdownServices {
     fn shutdown(self) {
         let Self {
             recording_pipeline,
+            speaker_mute_service,
             output_service,
             signal_trigger_service,
             transcription_service,
@@ -112,6 +117,9 @@ impl ShutdownServices {
         }
         if let Some(pipeline) = recording_pipeline {
             pipeline.shutdown();
+        }
+        if let Some(speaker_mute_service) = speaker_mute_service {
+            speaker_mute_service.shutdown();
         }
         if let Some(output_service) = output_service {
             output_service.shutdown();
@@ -139,7 +147,9 @@ impl AppRuntime {
 
         let transcription_service =
             TranscriptionService::spawn(command_tx.clone(), config.general.keep_model_loaded)?;
+        let whisper_runtime_status = WhisperRuntimeStatus::initial(config.general.compute_backend);
         let recording_pipeline = RecordingPipeline::spawn(command_tx.clone())?;
+        let speaker_mute_service = SpeakerMuteService::spawn()?;
         let output_service = OutputService::spawn(command_tx.clone())?;
 
         let hotkey_backend = configure_hotkey_backend(command_tx.clone(), &config);
@@ -167,8 +177,10 @@ impl AppRuntime {
             download_manager: RefCell::new(ModelDownloadManager::default()),
             audio_input_devices: RefCell::new(audio_input_devices),
             recording_pipeline: RefCell::new(Some(recording_pipeline)),
+            speaker_mute_service: RefCell::new(Some(speaker_mute_service)),
             transcription_service: RefCell::new(Some(transcription_service)),
             output_service: RefCell::new(Some(output_service)),
+            whisper_runtime_status: RefCell::new(whisper_runtime_status),
             config: RefCell::new(config),
             recording: RefCell::new(RecordingService::default()),
             recording_phase: Cell::new(RecordingPhase::Idle),
@@ -241,6 +253,9 @@ impl AppRuntime {
                 shortcut_id,
                 result,
             } => self.finish_transcription(recording_id, &shortcut_id, result),
+            AppCommand::WhisperRuntimeStatusChanged(status) => {
+                self.update_whisper_runtime_status(status)
+            }
             AppCommand::RefreshTrayRecordingPhase => self.force_refresh_recording_phase(),
             AppCommand::OutputScriptFinished {
                 shortcut_id,
@@ -380,6 +395,7 @@ impl AppRuntime {
             .borrow_mut()
             .start_recording(recording_id, shortcut_id);
         self.set_recording_phase(phase);
+        self.mute_speakers_for_plan(&plan);
 
         let start_result = self
             .recording_pipeline
@@ -401,6 +417,7 @@ impl AppRuntime {
                 .borrow_mut()
                 .start_failed(recording_id, shortcut_id);
             self.set_recording_phase(phase);
+            self.restore_speakers_for_recording(recording_id, shortcut_id);
             return;
         }
         info!(
@@ -439,6 +456,7 @@ impl AppRuntime {
                     shortcut_id: shortcut_id.to_string(),
                     result: Err(format!("{error:#}")),
                 });
+            self.restore_speakers_for_recording(recording_id, shortcut_id);
         }
     }
 
@@ -475,6 +493,7 @@ impl AppRuntime {
             .borrow_mut()
             .start_failed(recording_id, shortcut_id);
         self.set_recording_phase(phase);
+        self.restore_speakers_for_recording(recording_id, shortcut_id);
     }
 
     fn audio_capture_stopped(
@@ -483,6 +502,7 @@ impl AppRuntime {
         shortcut_id: &str,
         result: std::result::Result<Box<TranscriptionRequest>, String>,
     ) {
+        self.restore_speakers_for_recording(recording_id, shortcut_id);
         if !self
             .recording
             .borrow()
@@ -548,6 +568,41 @@ impl AppRuntime {
     fn apply_transcription_output(&self, shortcut_id: &str, result: &TranscriptionResult) {
         if let Some(output_service) = self.output_service.borrow().as_ref() {
             output_service.apply(shortcut_id, result);
+        }
+    }
+
+    fn mute_speakers_for_plan(&self, plan: &TranscriptionPlan) {
+        if !plan.mute_output_while_recording {
+            return;
+        }
+        let result = self
+            .speaker_mute_service
+            .borrow()
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("speaker mute worker is shut down"))
+            .and_then(|service| service.mute_for_recording(plan.recording_id, &plan.shortcut_id));
+        if let Err(error) = result {
+            warn!(
+                ?error,
+                recording_id = plan.recording_id,
+                shortcut_id = %plan.shortcut_id,
+                "failed to queue speaker mute request"
+            );
+        }
+    }
+
+    fn restore_speakers_for_recording(&self, recording_id: u64, shortcut_id: &str) {
+        let result = self
+            .speaker_mute_service
+            .borrow()
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("speaker mute worker is shut down"))
+            .and_then(|service| service.restore_for_recording(recording_id, shortcut_id));
+        if let Err(error) = result {
+            warn!(
+                ?error,
+                recording_id, shortcut_id, "failed to queue speaker mute restore request"
+            );
         }
     }
 
@@ -708,12 +763,15 @@ impl AppRuntime {
         if self.settings_window.borrow().is_none() {
             let window = SettingsWindow::new(
                 &self.application,
-                &self.config.borrow(),
-                self.audio_input_devices.borrow().clone(),
-                self.model_row_states(),
-                self.model_store.ready_model_ids(),
-                shortcut_trigger_capabilities(),
-                self.command_sender(),
+                SettingsWindowInit {
+                    config: self.config.borrow().clone(),
+                    audio_input_devices: self.audio_input_devices.borrow().clone(),
+                    model_states: self.model_row_states(),
+                    ready_model_ids: self.model_store.ready_model_ids(),
+                    whisper_runtime_status: self.whisper_runtime_status.borrow().clone(),
+                    shortcut_trigger_capabilities: shortcut_trigger_capabilities(),
+                    command_tx: self.command_sender(),
+                },
             );
             self.settings_window.replace(Some(window));
         }
@@ -776,6 +834,9 @@ impl AppRuntime {
         }
 
         self.config.replace(config.clone());
+        self.update_whisper_runtime_status(WhisperRuntimeStatus::initial(
+            config.general.compute_backend,
+        ));
         if let Some(window) = self.settings_window.borrow().as_ref() {
             window.update_config(&config);
             window.update_model_states(self.model_row_states(), self.model_store.ready_model_ids());
@@ -972,6 +1033,14 @@ impl AppRuntime {
         }
     }
 
+    fn update_whisper_runtime_status(&self, status: WhisperRuntimeStatus) {
+        debug!(status = %status.summary(), "whisper runtime status updated");
+        self.whisper_runtime_status.replace(status.clone());
+        if let Some(window) = self.settings_window.borrow().as_ref() {
+            window.update_whisper_runtime_status(status);
+        }
+    }
+
     fn model_row_states(&self) -> Vec<ModelRowState> {
         let config = self.config.borrow();
         let download_manager = self.download_manager.borrow();
@@ -999,6 +1068,7 @@ impl AppRuntime {
 
         let services = ShutdownServices {
             recording_pipeline: self.recording_pipeline.borrow_mut().take(),
+            speaker_mute_service: self.speaker_mute_service.borrow_mut().take(),
             output_service: self.output_service.borrow_mut().take(),
             signal_trigger_service: self.signal_trigger_service.borrow_mut().take(),
             transcription_service: self.transcription_service.borrow_mut().take(),

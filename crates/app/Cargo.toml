@@ -29,6 +29,7 @@ toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 whisper-rs.workspace = true
+whisper-rs-sys.workspace = true
 x11rb.workspace = true
 
 [features]

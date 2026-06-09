@@ -3,6 +3,7 @@ use crate::output::{
 };
 use crate::transcription::TranscriptionRequest;
 use crate::transcription::TranscriptionResult;
+use crate::transcription::WhisperRuntimeStatus;
 use shared::AppConfig;
 
 pub type DownloadId = u64;
@@ -36,6 +37,7 @@ pub enum AppCommand {
         shortcut_id: String,
         result: Result<Box<TranscriptionResult>, String>,
     },
+    WhisperRuntimeStatusChanged(WhisperRuntimeStatus),
     RefreshTrayRecordingPhase,
     OutputScriptFinished {
         shortcut_id: String,

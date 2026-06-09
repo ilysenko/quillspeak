@@ -13,6 +13,7 @@ pub struct TranscriptionPlan {
     pub model_path: PathBuf,
     pub language: String,
     pub compute_backend: ComputeBackend,
+    pub mute_output_while_recording: bool,
     pub output: OutputAction,
     pub input: AudioInputRef,
 }
