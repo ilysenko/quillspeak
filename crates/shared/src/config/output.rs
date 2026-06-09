@@ -127,13 +127,6 @@ impl ShortcutOutput {
         Self::Custom { action }
     }
 
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Default => "Default",
-            Self::Custom { action } => action.label(),
-        }
-    }
-
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
         match self {
             Self::Default => Ok(()),
@@ -145,15 +138,6 @@ impl ShortcutOutput {
 pub enum ResolvedOutput<'a> {
     General(&'a OutputAction),
     Custom(&'a OutputAction),
-}
-
-impl ResolvedOutput<'_> {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::General(output) => output.label(),
-            Self::Custom(output) => output.label(),
-        }
-    }
 }
 
 const fn default_copy_to_clipboard() -> bool {

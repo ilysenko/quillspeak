@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use shared::persistence::atomic_write_text;
-use shared::{ModelCatalogEntry, model_catalog_entry};
+use shared::{MODEL_CATALOG, ModelCatalogEntry, model_catalog_entry};
 use tracing::{info, warn};
 
 const INVENTORY_FILE_NAME: &str = "inventory.toml";
@@ -73,6 +73,23 @@ pub fn model_path(root: &Path, entry: ModelCatalogEntry) -> PathBuf {
 
 pub fn partial_model_path(root: &Path, entry: ModelCatalogEntry) -> PathBuf {
     model_path(root, entry).with_extension("bin.part")
+}
+
+pub fn remove_orphan_partials(root: &Path) -> Result<usize> {
+    if !root.exists() {
+        return Ok(0);
+    }
+
+    let mut removed = 0;
+    for entry in MODEL_CATALOG {
+        let partial = partial_model_path(root, *entry);
+        if partial.exists() {
+            fs::remove_file(&partial)
+                .with_context(|| format!("failed to remove partial model {}", partial.display()))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 fn load_inventory(root: &Path) -> Result<ModelInventory> {
@@ -299,6 +316,20 @@ mod tests {
 
         assert!(!ready.contains(entry.id));
         assert!(!load_ready_model_ids(&root).contains(entry.id));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remove_orphan_partials_deletes_catalog_part_files() {
+        let root = temp_model_root();
+        let entry = model_catalog_entry("tiny").unwrap();
+        fs::create_dir_all(&root).unwrap();
+        fs::write(partial_model_path(&root, entry), b"partial").unwrap();
+
+        let removed = remove_orphan_partials(&root).unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(!partial_model_path(&root, entry).exists());
         let _ = fs::remove_dir_all(root);
     }
 

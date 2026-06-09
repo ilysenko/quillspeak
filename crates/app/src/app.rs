@@ -927,6 +927,16 @@ impl AppRuntime {
 
     fn quit(&self) {
         info!("Quitting MyApp");
+        let download_handles = self.download_manager.borrow_mut().cancel_all();
+        if !download_handles.is_empty() {
+            info!(
+                download_count = download_handles.len(),
+                "canceling active model downloads on quit"
+            );
+        }
+        for handle in download_handles {
+            handle.cancel();
+        }
         if let Some(pipeline) = self.recording_pipeline.borrow_mut().take() {
             pipeline.shutdown();
         }

@@ -90,7 +90,7 @@ pub fn build(
 
     let compute = dropdown_row(
         "Whisper compute",
-        &["Auto", "CPU", "Vulkan", "CUDA", "ROCm", "OpenVINO"],
+        &["Auto", "CPU", "Vulkan", "CUDA", "ROCm"],
         compute_index(config.general.compute_backend),
     );
     compute.dropdown.connect_selected_notify({

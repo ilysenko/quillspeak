@@ -712,7 +712,7 @@ mod tests {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use shared::{OutputAction, ScriptOutput};
 
@@ -1041,11 +1041,10 @@ mod tests {
         }
     }
 
-    fn unique_test_suffix() -> u128 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time should be after epoch")
-            .as_nanos()
+    static TEST_SCRIPT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_test_suffix() -> u64 {
+        TEST_SCRIPT_COUNTER.fetch_add(1, Ordering::Relaxed)
     }
 
     struct TestScript {
@@ -1061,16 +1060,18 @@ mod tests {
             ));
             fs::create_dir_all(&dir).expect("test script dir should be writable");
             let path = dir.join("script.sh");
-            let mut file = File::create(&path).expect("test script should be writable");
+            let tmp_path = dir.join("script.sh.tmp");
+            let mut file = File::create(&tmp_path).expect("test script should be writable");
             file.write_all(format!("#!/bin/sh\n{body}").as_bytes())
                 .expect("test script body should be writable");
             file.sync_all().expect("test script should sync to disk");
             drop(file);
-            let mut permissions = fs::metadata(&path)
+            let mut permissions = fs::metadata(&tmp_path)
                 .expect("test script metadata should be readable")
                 .permissions();
             permissions.set_mode(0o755);
-            fs::set_permissions(&path, permissions).expect("test script should be executable");
+            fs::set_permissions(&tmp_path, permissions).expect("test script should be executable");
+            fs::rename(&tmp_path, &path).expect("test script should be atomically installed");
             Self { path, dir }
         }
 

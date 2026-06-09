@@ -15,6 +15,7 @@ use tracing::warn;
 use crate::audio::devices::resolve_input_device;
 
 const MAX_CAPTURE_SECONDS: usize = 10 * 60;
+const CALLBACK_BUFFER_SECONDS: usize = 2;
 const SESSION_PREROLL_ALLOWANCE: Duration = Duration::from_millis(50);
 const TARGET_INPUT_BUFFER_FRAMES: FrameCount = 1024;
 const NO_FIRST_CALLBACK_LATENCY: u64 = u64::MAX;
@@ -129,7 +130,7 @@ impl AudioCaptureService {
         anyhow::ensure!(channels > 0, "input device reported zero channels");
         let mut last_error = None;
         for stream_config in stream_config_attempts(&config) {
-            let capacity = max_capture_samples(sample_rate, channels);
+            let capacity = callback_buffer_samples(sample_rate, channels);
             let (producer, consumer) = RingBuffer::new(capacity);
             let active = Arc::new(AtomicBool::new(false));
             let callback_count = Arc::new(AtomicU64::new(0));
@@ -253,12 +254,16 @@ impl AudioCaptureService {
     }
 
     pub fn stop_session(&mut self) -> AudioCaptureStopInfo {
+        self.stop_session_with_samples(Vec::new())
+    }
+
+    pub fn stop_session_with_samples(&mut self, mut samples: Vec<f32>) -> AudioCaptureStopInfo {
         let pause_error = self.pause_stream().err().map(|error| format!("{error:#}"));
         self.active.store(false, Ordering::Release);
         self.first_callback_latency_ms = self.first_callback_latency_ms();
 
         let stopped_at = Instant::now();
-        let samples = self.drain_samples();
+        self.collect_available_samples(&mut samples);
         let started_at = self.session_started_at.take().unwrap_or(stopped_at);
         let audio = CapturedAudio {
             samples,
@@ -277,6 +282,29 @@ impl AudioCaptureService {
         };
 
         AudioCaptureStopInfo { audio, pause_error }
+    }
+
+    pub fn collect_available_samples(&mut self, samples: &mut Vec<f32>) {
+        let max_samples = self.max_session_samples();
+        let mut dropped_samples = 0_u64;
+
+        while let Ok(sample) = self.consumer.pop() {
+            if samples.len() < max_samples {
+                samples.push(sample);
+            } else {
+                dropped_samples += 1;
+            }
+        }
+
+        if dropped_samples > 0 {
+            self.dropped_samples
+                .fetch_add(dropped_samples, Ordering::Relaxed);
+            self.missed_chunks.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn max_session_samples(&self) -> usize {
+        max_capture_samples(self.sample_rate, self.channels)
     }
 
     fn ensure_stream_running(&mut self) -> Result<()> {
@@ -497,6 +525,12 @@ fn max_capture_samples(sample_rate: u32, channels: u16) -> usize {
         .saturating_mul(MAX_CAPTURE_SECONDS)
 }
 
+fn callback_buffer_samples(sample_rate: u32, channels: u16) -> usize {
+    (sample_rate as usize)
+        .saturating_mul(usize::from(channels))
+        .saturating_mul(CALLBACK_BUFFER_SECONDS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -593,6 +627,18 @@ mod tests {
         assert_eq!(
             max_capture_samples(48_000, 2),
             48_000 * 2 * MAX_CAPTURE_SECONDS
+        );
+    }
+
+    #[test]
+    fn callback_buffer_samples_uses_short_drain_window() {
+        assert_eq!(
+            callback_buffer_samples(16_000, 1),
+            16_000 * CALLBACK_BUFFER_SECONDS
+        );
+        assert_eq!(
+            callback_buffer_samples(48_000, 2),
+            48_000 * 2 * CALLBACK_BUFFER_SECONDS
         );
     }
 

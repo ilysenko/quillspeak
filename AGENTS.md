@@ -153,7 +153,7 @@ The app is the source of truth for user settings. Current app config path:
 Current schema:
 
 ```toml
-schema_version = 9
+schema_version = 10
 
 [general]
 mode = "push_to_talk"
@@ -175,11 +175,15 @@ language = "default"
 output = { type = "default" }
 ```
 
-Only schema v9 is supported during development. Do not add old-config
+Only schema v10 is supported during development. Do not add old-config
 migration paths unless explicitly requested. If the schema changes during
 active development, update the current schema and tests directly instead of
-layering legacy compatibility; older schemas, including v8, are discarded and
+layering legacy compatibility; older schemas, including v9, are discarded and
 replaced with the current default config.
+
+Supported `compute_backend` values are `auto`, `cpu`, `vulkan`, `cuda`, and
+`rocm`. Do not offer or parse OpenVINO unless a future whisper-rs integration
+explicitly supports it.
 
 Output is one simple pipeline: transcript, optional script transform, final
 text, optional clipboard copy/transport, optional paste shortcut. If script is
@@ -239,6 +243,10 @@ Readiness rules:
 
 - a model becomes ready only after successful SHA-1 verification and final file
   rename,
+- model download workers should be named, cancellable, and canceled from the
+  app quit path,
+- startup should remove orphan catalog `.part` files before reconciling ready
+  inventory,
 - after completion, the current process must update in-memory ready model IDs
   immediately,
 - a later app start should reconcile inventory with the real final file and
@@ -274,6 +282,9 @@ Current audio behavior:
   PulseAudio through pipewire-pulse when PipeWire is unavailable,
 - audio capture runs on the `myapp-audio-capture` worker thread, not on the GTK
   main thread,
+- the CPAL callback writes only to a short ring buffer; the capture worker
+  drains it into a bounded session buffer capped by the maximum recording
+  duration,
 - the input stream must be stopped while idle,
 - app quit must explicitly shut down and join the capture worker.
 
@@ -432,6 +443,9 @@ The intended verification set is:
 - `cargo test --workspace`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `git diff --check`
+
+`cargo test --workspace` should pass with the default parallel test runner.
+Serial `-- --test-threads=1` runs are only for debugging.
 
 If these fail because system GTK/libadwaita development packages are missing,
 report that accurately. If they fail because of Rust code, fix the code or

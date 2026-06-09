@@ -175,7 +175,6 @@ pub fn compute_index(backend: ComputeBackend) -> u32 {
         ComputeBackend::Vulkan => 2,
         ComputeBackend::Cuda => 3,
         ComputeBackend::Rocm => 4,
-        ComputeBackend::OpenVino => 5,
     }
 }
 
@@ -185,7 +184,6 @@ pub fn compute_from_index(index: u32) -> ComputeBackend {
         2 => ComputeBackend::Vulkan,
         3 => ComputeBackend::Cuda,
         4 => ComputeBackend::Rocm,
-        5 => ComputeBackend::OpenVino,
         _ => ComputeBackend::Auto,
     }
 }

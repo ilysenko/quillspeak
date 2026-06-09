@@ -12,9 +12,10 @@ use crate::command::{AppCommand, DownloadId};
 use crate::models::downloader::{self, DownloadHandle};
 use crate::models::inventory::{
     load_ready_model_ids, mark_model_ready, model_path, partial_model_path,
-    remove_model_from_inventory,
+    remove_model_from_inventory, remove_orphan_partials,
 };
 use crate::models::view_model::{ModelRowState, ModelStatus, referenced_models};
+use tracing::warn;
 
 #[derive(Debug)]
 pub struct ModelStore {
@@ -26,6 +27,9 @@ impl ModelStore {
     pub fn new() -> Result<Self> {
         let base_dirs = BaseDirs::new().context("failed to resolve user data directory")?;
         let root = base_dirs.data_dir().join("myapp/models");
+        if let Err(error) = remove_orphan_partials(&root) {
+            warn!(?error, root = %root.display(), "failed to remove orphan model partials");
+        }
         let ready_model_ids = load_ready_model_ids(&root);
         Ok(Self {
             root,

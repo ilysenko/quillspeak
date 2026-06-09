@@ -9,14 +9,12 @@ use tracing::{debug, warn};
 pub struct AudioInputDevice {
     pub reference: AudioInputRef,
     pub label: String,
-    pub is_default: bool,
 }
 
 pub fn list_input_devices() -> Vec<AudioInputDevice> {
     let mut devices = vec![AudioInputDevice {
         reference: AudioInputRef::SystemDefault,
         label: "System Default".to_string(),
-        is_default: true,
     }];
     let mut seen = HashSet::from([AudioInputRef::SystemDefault.stable_key()]);
 
@@ -60,11 +58,7 @@ pub fn list_input_devices() -> Vec<AudioInputDevice> {
             };
 
             if seen.insert(reference.stable_key()) {
-                devices.push(AudioInputDevice {
-                    reference,
-                    label,
-                    is_default,
-                });
+                devices.push(AudioInputDevice { reference, label });
             }
         }
     }

@@ -20,7 +20,7 @@ pub use shortcut::{
     ShortcutModifiers, ShortcutProfile, ShortcutTrigger, next_shortcut_id, normalize_accelerator,
 };
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 9;
+pub const CONFIG_SCHEMA_VERSION: u32 = 10;
 pub const INHERIT_VALUE: &str = "default";
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -128,7 +128,6 @@ pub enum ComputeBackend {
     Vulkan,
     Cuda,
     Rocm,
-    OpenVino,
 }
 
 impl ComputeBackend {
@@ -139,7 +138,6 @@ impl ComputeBackend {
             Self::Vulkan => "vulkan",
             Self::Cuda => "cuda",
             Self::Rocm => "rocm",
-            Self::OpenVino => "openvino",
         }
     }
 }
@@ -154,7 +152,6 @@ impl TryFrom<&str> for ComputeBackend {
             "vulkan" => Ok(Self::Vulkan),
             "cuda" => Ok(Self::Cuda),
             "rocm" => Ok(Self::Rocm),
-            "openvino" => Ok(Self::OpenVino),
             other => Err(ConfigError::UnsupportedComputeBackend(other.to_string())),
         }
     }
@@ -438,7 +435,7 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_schema_without_default_input() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 9
+schema_version = 10
 
 [general]
 mode = "push_to_talk"
@@ -467,7 +464,7 @@ output = { type = "default" }
     fn rejects_schema_without_keep_model_loaded() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 9
+schema_version = 10
 
 [general]
 mode = "push_to_talk"
@@ -528,7 +525,7 @@ output = { type = "default" }
     fn rejects_removed_daemon_backend() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 9
+schema_version = 10
 
 [general]
 mode = "push_to_talk"
@@ -559,7 +556,7 @@ output = { type = "default" }
     fn rejects_removed_portal_backend() {
         let result = toml::from_str::<AppConfig>(
             r#"
-schema_version = 9
+schema_version = 10
 
 [general]
 mode = "push_to_talk"

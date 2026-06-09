@@ -83,6 +83,14 @@ impl ModelDownloadManager {
         handle
     }
 
+    pub fn cancel_all(&mut self) -> Vec<DownloadHandle> {
+        let model_ids = self.active_downloads.keys().cloned().collect::<Vec<_>>();
+        model_ids
+            .into_iter()
+            .filter_map(|model_id| self.cancel(&model_id))
+            .collect()
+    }
+
     pub fn progress(
         &mut self,
         download_id: DownloadId,
@@ -256,6 +264,37 @@ mod tests {
         assert_eq!(effect, FinishEffect::Canceled);
         assert!(!manager.is_active(MODEL_ID));
         assert_eq!(manager.statuses().get(MODEL_ID), None);
+    }
+
+    #[test]
+    fn cancel_all_moves_active_downloads_to_canceling() {
+        let mut manager = ModelDownloadManager::default();
+        let first_id = manager.begin(MODEL_ID).unwrap();
+        let second_id = manager.begin("base").unwrap();
+        let first_handle = DownloadHandle::new_for_test();
+        let second_handle = DownloadHandle::new_for_test();
+        manager.attach_handle(MODEL_ID, first_id, first_handle);
+        manager.attach_handle("base", second_id, second_handle);
+        manager.progress(first_id, MODEL_ID, 25, Some(100));
+        manager.progress(second_id, "base", 50, Some(200));
+
+        let handles = manager.cancel_all();
+
+        assert_eq!(handles.len(), 2);
+        assert!(matches!(
+            manager.statuses().get(MODEL_ID),
+            Some(ModelStatus::Canceling {
+                downloaded: 25,
+                total: Some(100),
+            })
+        ));
+        assert!(matches!(
+            manager.statuses().get("base"),
+            Some(ModelStatus::Canceling {
+                downloaded: 50,
+                total: Some(200),
+            })
+        ));
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use shared::AudioInputRef;
@@ -8,6 +9,8 @@ use tracing::{debug, info, warn};
 use crate::audio::AudioCaptureService;
 use crate::command::AppCommand;
 use crate::transcription::TranscriptionPlan;
+
+const CAPTURE_DRAIN_INTERVAL: Duration = Duration::from_millis(20);
 
 pub struct RecordingPipeline {
     worker_tx: mpsc::Sender<RecordingWorkerCommand>,
@@ -73,15 +76,26 @@ fn recording_worker_loop(
     command_tx: mpsc::Sender<AppCommand>,
 ) {
     let mut worker = RecordingWorker::new(command_tx);
-    for command in worker_rx {
-        match command {
-            RecordingWorkerCommand::PrepareInput(input) => worker.prepare_input(&input),
-            RecordingWorkerCommand::Start(plan) => worker.start(*plan),
-            RecordingWorkerCommand::Stop {
-                recording_id,
-                shortcut_id,
-            } => worker.stop(recording_id, &shortcut_id),
-            RecordingWorkerCommand::Shutdown => {
+    loop {
+        match worker_rx.recv_timeout(CAPTURE_DRAIN_INTERVAL) {
+            Ok(command) => {
+                let shutdown = matches!(command, RecordingWorkerCommand::Shutdown);
+                match command {
+                    RecordingWorkerCommand::PrepareInput(input) => worker.prepare_input(&input),
+                    RecordingWorkerCommand::Start(plan) => worker.start(*plan),
+                    RecordingWorkerCommand::Stop {
+                        recording_id,
+                        shortcut_id,
+                    } => worker.stop(recording_id, &shortcut_id),
+                    RecordingWorkerCommand::Shutdown => worker.cancel(),
+                }
+                worker.collect_active_samples();
+                if shutdown {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => worker.collect_active_samples(),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
                 worker.cancel();
                 break;
             }
@@ -93,6 +107,7 @@ struct RecordingWorker {
     command_tx: mpsc::Sender<AppCommand>,
     capture: Option<AudioCaptureService>,
     active_plan: Option<TranscriptionPlan>,
+    active_samples: Vec<f32>,
 }
 
 impl RecordingWorker {
@@ -101,6 +116,7 @@ impl RecordingWorker {
             command_tx,
             capture: None,
             active_plan: None,
+            active_samples: Vec::new(),
         }
     }
 
@@ -151,6 +167,7 @@ impl RecordingWorker {
                     recording_id, shortcut_id, "failed to start audio capture"
                 );
                 self.active_plan = None;
+                self.active_samples.clear();
                 self.send(AppCommand::AudioCaptureStartFailed {
                     recording_id,
                     shortcut_id,
@@ -165,6 +182,7 @@ impl RecordingWorker {
         let recording_id = plan.recording_id;
         let capture = self.capture_for_input(&plan.input)?;
         let info = capture.start_session()?;
+        self.active_samples.clear();
         self.active_plan = Some(plan);
         Ok(AppCommand::AudioCaptureStarted {
             recording_id,
@@ -216,14 +234,16 @@ impl RecordingWorker {
             );
             return;
         }
+        self.collect_active_samples();
         let plan = self
             .active_plan
             .take()
             .expect("active plan was checked before stop");
+        let active_samples = std::mem::take(&mut self.active_samples);
 
         let result = match self.capture.as_mut() {
             Some(capture) => {
-                let stopped = capture.stop_session();
+                let stopped = capture.stop_session_with_samples(active_samples);
                 if let Some(error) = &stopped.pause_error {
                     warn!(
                         error,
@@ -251,6 +271,7 @@ impl RecordingWorker {
 
     fn cancel(&mut self) {
         self.active_plan.take();
+        self.active_samples.clear();
         if let Some(mut capture) = self.capture.take() {
             let stopped = capture.stop_session();
             if let Some(error) = stopped.pause_error {
@@ -260,6 +281,14 @@ impl RecordingWorker {
                     "audio capture stream pause failed during cancellation"
                 );
             }
+        }
+    }
+
+    fn collect_active_samples(&mut self) {
+        if self.active_plan.is_some()
+            && let Some(capture) = self.capture.as_mut()
+        {
+            capture.collect_available_samples(&mut self.active_samples);
         }
     }
 

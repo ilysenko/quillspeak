@@ -318,12 +318,6 @@ pub struct ShortcutModifiers {
     pub super_key: bool,
 }
 
-impl ShortcutModifiers {
-    pub const fn is_empty(self) -> bool {
-        !self.ctrl && !self.alt && !self.shift && !self.super_key
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShortcutKey {
     Character(char),

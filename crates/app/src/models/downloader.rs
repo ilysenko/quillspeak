@@ -30,6 +30,13 @@ impl DownloadHandle {
     pub fn cancel(&self) {
         self.cancel_requested.store(true, Ordering::Relaxed);
     }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test() -> Self {
+        Self {
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+        }
+    }
 }
 
 pub fn start_download(
@@ -41,20 +48,32 @@ pub fn start_download(
     let root = root.to_path_buf();
     let cancel_requested = Arc::new(AtomicBool::new(false));
     let worker_cancel_requested = Arc::clone(&cancel_requested);
-    thread::spawn(move || {
+    let worker_command_tx = command_tx.clone();
+    let worker_model_id = model_id.clone();
+    let thread_name = format!("myapp-model-download-{model_id}");
+    let spawn_result = thread::Builder::new().name(thread_name).spawn(move || {
         let outcome = download_model(
             &root,
             download_id,
-            &model_id,
-            &command_tx,
+            &worker_model_id,
+            &worker_command_tx,
             &worker_cancel_requested,
         );
-        let _ = command_tx.send(AppCommand::ModelDownloadFinished {
+        let _ = worker_command_tx.send(AppCommand::ModelDownloadFinished {
             download_id,
-            model_id,
+            model_id: worker_model_id,
             outcome,
         });
     });
+    if let Err(error) = spawn_result {
+        let _ = command_tx.send(AppCommand::ModelDownloadFinished {
+            download_id,
+            model_id,
+            outcome: ModelDownloadOutcome::Failed(format!(
+                "failed to spawn model download worker: {error}"
+            )),
+        });
+    }
     DownloadHandle { cancel_requested }
 }
 

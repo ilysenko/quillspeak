@@ -210,6 +210,53 @@ output = { type = "default" }
         let _ = fs::remove_dir_all(root);
     }
 
+    #[test]
+    fn schema_v9_openvino_config_is_discarded_instead_of_parsed() {
+        let root = temp_config_root();
+        let path = root.join("config.toml");
+        fs::create_dir_all(&root).expect("test config dir should be writable");
+        fs::write(
+            &path,
+            r#"
+schema_version = 9
+
+[general]
+mode = "push_to_talk"
+hotkey_backend = "auto"
+default_input = { type = "system_default" }
+default_model_id = "large-v3-turbo-q5_0"
+default_language = "auto"
+compute_backend = "openvino"
+keep_model_loaded = true
+default_output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
+
+[[shortcuts]]
+id = "default"
+name = "Default"
+enabled = true
+trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
+model_id = "default"
+language = "default"
+output = { type = "default" }
+"#,
+        )
+        .expect("v9 config should be writable");
+        let store = ConfigStore::for_path(path.clone());
+
+        let config = store
+            .load_or_create_default()
+            .expect("v9 config should be discarded");
+        let contents = fs::read_to_string(&path).expect("replacement config should be readable");
+
+        assert_eq!(config, AppConfig::default());
+        assert_eq!(
+            config_schema_version(&contents),
+            Some(CONFIG_SCHEMA_VERSION)
+        );
+        assert!(!contents.contains("openvino"));
+        let _ = fs::remove_dir_all(root);
+    }
+
     fn temp_config_root() -> PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)

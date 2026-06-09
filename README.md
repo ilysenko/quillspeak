@@ -72,6 +72,8 @@ The workspace currently pins `whisper-rs = "=0.13.2"` because that version's
 Vulkan feature builds here. Newer `whisper-rs` releases should be retested
 before upgrading.
 
+The workspace declares `rust-version = "1.92"` in the root `Cargo.toml`.
+
 ## Build And Run
 
 Run the app in foreground development mode:
@@ -170,6 +172,10 @@ The app keeps the input stream stopped while idle. It starts the CPAL stream
 only while recording and pauses it again on stop, so idle logs stay quiet and
 the microphone is not held open unnecessarily.
 
+Audio capture uses a short callback ring buffer and drains it on the
+`myapp-audio-capture` worker into a bounded session buffer. The callback does
+not preallocate storage for the full maximum recording duration.
+
 On stop, the app converts captured audio to 16 kHz mono `f32` with `rubato`,
 runs `whisper-rs`/whisper.cpp on the model selected by the active shortcut, and
 logs recognized text:
@@ -207,6 +213,11 @@ Models must be downloaded in Settings > Models before they can be used. If a
 shortcut points to a model that is not ready, recording stops with a clear log
 error and no hidden download starts during the hotkey flow.
 
+Model downloads run on named worker threads, can be canceled from the UI, and
+are canceled during app quit. On startup the model store removes orphan
+catalog `.part` files left behind by interrupted downloads before reconciling
+ready inventory.
+
 ## Output
 
 Output uses one simple pipeline:
@@ -242,7 +253,7 @@ The app owns user settings and writes TOML to:
 Default config:
 
 ```toml
-schema_version = 9
+schema_version = 10
 
 [general]
 mode = "push_to_talk"
@@ -265,8 +276,12 @@ output = { type = "default" }
 ```
 
 During development only the current schema is supported. If the app sees an
-older local config schema, including v8, it replaces it with a fresh default
+older local config schema, including v9, it replaces it with a fresh default
 config instead of migrating it.
+
+Supported `compute_backend` values are `auto`, `cpu`, `vulkan`, `cuda`, and
+`rocm`. OpenVINO is not currently supported by this whisper-rs integration and
+is not offered in Settings.
 
 Settings has `General`, `Models`, one page per shortcut profile, and `Add New`
 pages. `Models` manages downloaded whisper.cpp ggml models under
@@ -295,6 +310,9 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 git diff --check
 ```
+
+`cargo test --workspace` is expected to pass with Cargo's default parallel test
+runner; use `-- --test-threads=1` only as a debugging aid.
 
 If the full app build fails because `gtk4.pc`, `libadwaita-1.pc`, or related
 pkg-config files are missing, install the GTK4/libadwaita development packages

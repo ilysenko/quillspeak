@@ -65,9 +65,6 @@ pub fn context_params(
                 compute_backend.as_str()
             );
         }
-        ComputeBackend::OpenVino => {
-            anyhow::bail!("OpenVINO is not supported by the current whisper-rs integration");
-        }
     }
 }
 
@@ -141,6 +138,5 @@ mod tests {
         if !cfg!(feature = "whisper-rocm") {
             assert!(context_params(ComputeBackend::Rocm).is_err());
         }
-        assert!(context_params(ComputeBackend::OpenVino).is_err());
     }
 }
