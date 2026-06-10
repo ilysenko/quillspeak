@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use shared::AppConfig;
@@ -21,6 +21,11 @@ const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_EXTERNAL_TRIGGER_CLIENTS: usize = 16;
+const USAGE: &str = "usage: myapp\n       myapp trigger <shortcut-id-or-name> <start|stop|toggle>";
+
+pub fn usage() -> &'static str {
+    USAGE
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternalTriggerAction {
@@ -89,6 +94,7 @@ impl ExternalTriggerResponse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExternalTriggerInvocation {
     RunApp,
+    ShowUsage,
     Send(ExternalTriggerRequest),
 }
 
@@ -123,9 +129,6 @@ impl ExternalTriggerService {
         prepare_socket_path(&socket_path)?;
         let listener = UnixListener::bind(&socket_path)
             .with_context(|| format!("failed to bind command socket {}", socket_path.display()))?;
-        listener
-            .set_nonblocking(true)
-            .context("failed to configure command socket listener")?;
 
         let shutdown_requested = Arc::new(AtomicBool::new(false));
         let worker_shutdown = Arc::clone(&shutdown_requested);
@@ -155,14 +158,16 @@ impl ExternalTriggerService {
 
     pub fn shutdown(&mut self) {
         self.shutdown_requested.store(true, Ordering::Relaxed);
-        if let Some(join_handle) = self.join_handle.take()
-            && let Err(error) = join_handle.join()
-        {
-            warn!(
-                ?error,
-                socket_path = %self.socket_path.display(),
-                "command socket thread panicked during shutdown"
-            );
+        if let Some(join_handle) = self.join_handle.take() {
+            // Wake the blocking accept so the worker observes the shutdown flag.
+            let _ = UnixStream::connect(&self.socket_path);
+            if let Err(error) = join_handle.join() {
+                warn!(
+                    ?error,
+                    socket_path = %self.socket_path.display(),
+                    "command socket thread panicked during shutdown"
+                );
+            }
         }
     }
 }
@@ -182,12 +187,15 @@ where
     if args.is_empty() {
         return Ok(ExternalTriggerInvocation::RunApp);
     }
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
+        return Ok(ExternalTriggerInvocation::ShowUsage);
+    }
     if args.len() == 3 && args[0] == "trigger" {
         let request =
             ExternalTriggerRequest::new(args[1].clone(), ExternalTriggerAction::parse(&args[2])?)?;
         return Ok(ExternalTriggerInvocation::Send(request));
     }
-    bail!("usage: myapp\n       myapp trigger <shortcut-id-or-name> <start|stop|toggle>");
+    bail!("{USAGE}");
 }
 
 pub fn send_trigger_request(request: &ExternalTriggerRequest) -> Result<()> {
@@ -247,7 +255,8 @@ fn prepare_socket_path(socket_path: &Path) -> Result<()> {
             "command socket is already active at {}; is MyApp already running?",
             socket_path.display()
         )),
-        Err(_) => {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
             fs::remove_file(socket_path).with_context(|| {
                 format!(
                     "failed to remove stale command socket {}",
@@ -256,6 +265,10 @@ fn prepare_socket_path(socket_path: &Path) -> Result<()> {
             })?;
             Ok(())
         }
+        Err(error) => Err(anyhow!(
+            "command socket {} exists but its liveness probe failed ({error}); not removing it",
+            socket_path.display()
+        )),
     }
 }
 
@@ -266,10 +279,13 @@ fn command_socket_loop(
     max_clients: usize,
 ) {
     let mut client_handlers = Vec::new();
-    while !shutdown_requested.load(Ordering::Relaxed) {
-        join_finished_client_handlers(&mut client_handlers);
+    loop {
         match listener.accept() {
             Ok((stream, _)) => {
+                if shutdown_requested.load(Ordering::Relaxed) {
+                    break;
+                }
+                join_finished_client_handlers(&mut client_handlers);
                 if client_handlers.len() >= max_clients {
                     reject_overloaded_connection(stream);
                     continue;
@@ -284,10 +300,10 @@ fn command_socket_loop(
                     Err(error) => warn!(?error, "failed to spawn command socket client handler"),
                 }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(SOCKET_POLL_INTERVAL);
-            }
             Err(error) => {
+                if shutdown_requested.load(Ordering::Relaxed) {
+                    break;
+                }
                 warn!(?error, "failed to accept command socket connection");
                 thread::sleep(SOCKET_POLL_INTERVAL);
             }
@@ -365,6 +381,7 @@ fn dispatch_request(
     command_tx
         .send(AppCommand::ExternalTrigger {
             request,
+            deadline: Instant::now() + COMMAND_RESPONSE_TIMEOUT,
             response_tx,
         })
         .context("failed to send external trigger command to app runtime")?;
@@ -567,6 +584,33 @@ mod tests {
     }
 
     #[test]
+    fn disabled_id_match_blocks_name_fallback() {
+        let mut config = AppConfig::default();
+        config.shortcuts.push(ShortcutProfile::new_profile(
+            "legacy".to_string(),
+            "Spare".to_string(),
+            DEFAULT_MODEL_ID.to_string(),
+        ));
+        config.shortcuts.push(ShortcutProfile::new_profile(
+            "shortcut-2".to_string(),
+            "legacy".to_string(),
+            DEFAULT_MODEL_ID.to_string(),
+        ));
+        let legacy_index = config
+            .shortcuts
+            .iter()
+            .position(|shortcut| shortcut.id == "legacy")
+            .expect("legacy shortcut should exist");
+        config.shortcuts[legacy_index].enabled = false;
+
+        // Id resolution wins even when disabled; the enabled shortcut whose
+        // NAME is "legacy" must not be reached through name fallback.
+        let error = resolve_shortcut_selector(&config, "legacy")
+            .expect_err("disabled id match should not fall back to name resolution");
+        assert!(error.contains("disabled"), "unexpected error: {error}");
+    }
+
+    #[test]
     fn socket_service_dispatches_valid_command_and_returns_ack() {
         let socket_path = temp_socket_path();
         let (command_tx, command_rx) = mpsc::channel();
@@ -587,6 +631,7 @@ mod tests {
             AppCommand::ExternalTrigger {
                 request: received,
                 response_tx,
+                ..
             } => {
                 assert_eq!(received, request);
                 response_tx
@@ -625,6 +670,7 @@ mod tests {
             AppCommand::ExternalTrigger {
                 request: received,
                 response_tx,
+                ..
             } => {
                 assert_eq!(received, first_request);
                 response_tx
@@ -647,6 +693,7 @@ mod tests {
             AppCommand::ExternalTrigger {
                 request: received,
                 response_tx,
+                ..
             } => {
                 assert_eq!(received, second_request);
                 response_tx
@@ -698,6 +745,7 @@ mod tests {
             AppCommand::ExternalTrigger {
                 request: received,
                 response_tx,
+                ..
             } => {
                 assert_eq!(received, first_request);
                 response_tx

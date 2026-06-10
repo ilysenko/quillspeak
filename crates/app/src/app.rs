@@ -16,7 +16,7 @@ use crate::audio::{AudioInputDevice, list_input_devices};
 use crate::command::{AppCommand, DownloadId, ModelDownloadOutcome};
 use crate::config_store::ConfigStore;
 use crate::external_trigger::{
-    ExternalTriggerAction, ExternalTriggerResponse, ExternalTriggerService,
+    ExternalTriggerAction, ExternalTriggerRequest, ExternalTriggerResponse, ExternalTriggerService,
     resolve_shortcut_selector,
 };
 use crate::hotkey::{
@@ -257,14 +257,8 @@ impl AppRuntime {
         if self.is_quitting.get()
             && !matches!(command, AppCommand::ShutdownComplete | AppCommand::Quit)
         {
-            match command {
-                AppCommand::ExternalTrigger { response_tx, .. } => {
-                    let _ =
-                        response_tx.send(ExternalTriggerResponse::rejected("MyApp is quitting"));
-                }
-                other => {
-                    debug!(?other, "ignoring command while app is quitting");
-                }
+            if let Some(command) = command.reject_pending_reply("MyApp is quitting") {
+                debug!(?command, "ignoring command while app is quitting");
             }
             return;
         }
@@ -275,10 +269,15 @@ impl AppRuntime {
             AppCommand::LinuxSignalReceived(signal) => self.handle_linux_signal(signal),
             AppCommand::ExternalTrigger {
                 request,
+                deadline,
                 response_tx,
-            } => self.handle_external_trigger(request, response_tx),
-            AppCommand::StartRecording(shortcut_id) => self.start_recording(&shortcut_id),
-            AppCommand::StopRecording(shortcut_id) => self.stop_recording(&shortcut_id),
+            } => self.handle_external_trigger(request, deadline, response_tx),
+            AppCommand::StartRecording(shortcut_id) => {
+                let _ = self.start_recording(&shortcut_id);
+            }
+            AppCommand::StopRecording(shortcut_id) => {
+                let _ = self.stop_recording(&shortcut_id);
+            }
             AppCommand::AudioCaptureStarted {
                 recording_id,
                 shortcut_id,
@@ -352,31 +351,37 @@ impl AppRuntime {
     }
 
     fn toggle_recording(&self) {
-        self.toggle_recording_for(DEFAULT_SHORTCUT_ID);
+        let _ = self.toggle_recording_for(DEFAULT_SHORTCUT_ID);
     }
 
-    fn toggle_recording_for(&self, shortcut_id: &str) {
+    fn toggle_recording_for(&self, shortcut_id: &str) -> Result<(), String> {
         let phase = self.recording.borrow().phase();
         match phase {
             RecordingPhase::Idle => self.start_recording(shortcut_id),
             RecordingPhase::Arming | RecordingPhase::Recording
                 if self.recording.borrow().active_shortcut_id() == Some(shortcut_id) =>
             {
-                self.stop_recording(shortcut_id);
+                self.stop_recording(shortcut_id)
             }
             RecordingPhase::Arming | RecordingPhase::Recording => {
+                let active_shortcut_id = self
+                    .recording
+                    .borrow()
+                    .active_shortcut_id()
+                    .unwrap_or("unknown")
+                    .to_string();
                 info!(
                     requested_shortcut_id = shortcut_id,
-                    active_shortcut_id = self
-                        .recording
-                        .borrow()
-                        .active_shortcut_id()
-                        .unwrap_or("unknown"),
-                    "Recording toggle ignored for inactive shortcut"
+                    active_shortcut_id, "Recording toggle ignored for inactive shortcut"
                 );
+                Err(format!(
+                    "toggle ignored for shortcut '{shortcut_id}' because shortcut \
+                     '{active_shortcut_id}' is recording"
+                ))
             }
             RecordingPhase::Processing => {
                 info!("Recording toggle ignored while processing audio");
+                Err("toggle ignored while a recording is being processed".to_string())
             }
         }
     }
@@ -418,17 +423,33 @@ impl AppRuntime {
         };
 
         match action {
-            LinuxSignalAction::Start(shortcut_id) => self.start_recording(&shortcut_id),
-            LinuxSignalAction::Stop(shortcut_id) => self.stop_recording(&shortcut_id),
+            LinuxSignalAction::Start(shortcut_id) => {
+                let _ = self.start_recording(&shortcut_id);
+            }
+            LinuxSignalAction::Stop(shortcut_id) => {
+                let _ = self.stop_recording(&shortcut_id);
+            }
         }
     }
 
     fn handle_external_trigger(
         &self,
-        request: crate::external_trigger::ExternalTriggerRequest,
+        request: ExternalTriggerRequest,
+        deadline: Instant,
         response_tx: mpsc::Sender<ExternalTriggerResponse>,
     ) {
         let received_at = Instant::now();
+        if received_at > deadline {
+            warn!(
+                shortcut = %request.shortcut,
+                action = request.action.as_str(),
+                "External trigger expired before the runtime processed it; ignoring"
+            );
+            let _ = response_tx.send(ExternalTriggerResponse::rejected(
+                "trigger request expired before MyApp processed it",
+            ));
+            return;
+        }
         debug!(
             shortcut = %request.shortcut,
             action = request.action.as_str(),
@@ -449,25 +470,40 @@ impl AppRuntime {
             }
         };
 
-        match request.action {
+        let outcome = match request.action {
             ExternalTriggerAction::Start => self.start_recording(&shortcut_id),
             ExternalTriggerAction::Stop => self.stop_recording(&shortcut_id),
             ExternalTriggerAction::Toggle => self.toggle_recording_for(&shortcut_id),
+        };
+        match outcome {
+            Ok(()) => {
+                debug!(
+                    shortcut_id,
+                    action = request.action.as_str(),
+                    elapsed_ms = received_at.elapsed().as_millis(),
+                    "External trigger dispatched by runtime"
+                );
+                let _ = response_tx.send(ExternalTriggerResponse::accepted());
+            }
+            Err(reason) => {
+                warn!(
+                    shortcut_id,
+                    action = request.action.as_str(),
+                    reason,
+                    "External trigger had no effect"
+                );
+                let _ = response_tx.send(ExternalTriggerResponse::rejected(reason));
+            }
         }
-        debug!(
-            shortcut_id,
-            action = request.action.as_str(),
-            elapsed_ms = received_at.elapsed().as_millis(),
-            "External trigger dispatched by runtime"
-        );
-        let _ = response_tx.send(ExternalTriggerResponse::accepted());
     }
 
-    fn start_recording(&self, shortcut_id: &str) {
+    fn start_recording(&self, shortcut_id: &str) -> Result<(), String> {
         if self.recording.borrow().phase() != RecordingPhase::Idle {
             let phase = self.recording.borrow_mut().start_recording(0, shortcut_id);
             self.set_recording_phase(phase);
-            return;
+            return Err(format!(
+                "cannot start recording for shortcut '{shortcut_id}': recorder is {phase:?}"
+            ));
         }
 
         let recording_id = self.allocate_recording_id();
@@ -481,7 +517,7 @@ impl AppRuntime {
             Ok(plan) => plan,
             Err(error) => {
                 warn!(?error, shortcut_id, "Start recording ignored");
-                return;
+                return Err(format!("{error:#}"));
             }
         };
         let input_label = plan.input.display_label().to_string();
@@ -513,7 +549,7 @@ impl AppRuntime {
                 .start_failed(recording_id, shortcut_id);
             self.set_recording_phase(phase);
             self.restore_speakers_for_recording(recording_id, shortcut_id);
-            return;
+            return Err(format!("failed to start audio capture: {error:#}"));
         }
         info!(
             recording_id,
@@ -521,9 +557,10 @@ impl AppRuntime {
             input = input_label,
             "audio capture start requested"
         );
+        Ok(())
     }
 
-    fn stop_recording(&self, shortcut_id: &str) {
+    fn stop_recording(&self, shortcut_id: &str) -> Result<(), String> {
         let started_at = Instant::now();
         let (phase, recording_id) = self.recording.borrow_mut().stop_recording(shortcut_id);
         self.set_recording_phase(phase);
@@ -544,9 +581,12 @@ impl AppRuntime {
             elapsed_ms = started_at.elapsed().as_millis(),
             "recording stop request processed"
         );
-        if let Some(recording_id) = recording_id
-            && let Err(error) = stop_result
-        {
+        let Some(recording_id) = recording_id else {
+            return Err(format!(
+                "no active recording to stop for shortcut '{shortcut_id}'"
+            ));
+        };
+        if let Err(error) = stop_result {
             warn!(
                 ?error,
                 recording_id, shortcut_id, "failed to stop audio capture"
@@ -560,6 +600,7 @@ impl AppRuntime {
                 });
             self.restore_speakers_for_recording(recording_id, shortcut_id);
         }
+        Ok(())
     }
 
     fn audio_capture_started(

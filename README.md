@@ -147,7 +147,10 @@ myapp trigger Default toggle
 The shortcut argument is resolved by exact shortcut id first, then by exact
 unique display name. Disabled, missing, or ambiguous shortcuts are rejected.
 `start` and `stop` are explicit edges. `toggle` is state-aware for that shortcut:
-idle starts it, and an active arming/recording shortcut stops it.
+idle starts it, and an active arming/recording shortcut stops it. A command that
+cannot be applied — start while another recording is active, stop with no active
+recording, or toggle while processing — prints an error and exits non-zero, so
+scripts can tell a no-op from success. `myapp --help` prints usage.
 
 Linux signal triggers are dropdowns with exact supported signal names:
 `SIGUSR1`, `SIGUSR2`, `SIGALRM`, and `SIGWINCH`. Aliases, numeric values, and

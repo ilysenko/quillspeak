@@ -7,6 +7,8 @@ mod planner;
 mod service;
 mod skip;
 mod status;
+#[cfg(test)]
+pub(crate) mod test_support;
 mod types;
 
 pub use compute::CompiledWhisperBackends;
@@ -18,4 +20,4 @@ pub use types::{
 };
 
 #[cfg(test)]
-pub use types::{TranscriptionDebugInfo, TranscriptionSkipReason};
+pub use types::TranscriptionSkipReason;

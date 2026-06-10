@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
 
-use crate::audio::{PreparedAudio, prepare_whisper_audio};
+use crate::audio::{AudioSignalStats, PreparedAudio, prepare_whisper_audio};
 use crate::transcription::cache::{ModelCacheKey, SingleModelCache};
 use crate::transcription::compute::{default_thread_count, whisper_language};
 use crate::transcription::debug_audio::maybe_write_debug_audio;
@@ -72,8 +72,8 @@ impl WhisperEngine {
             anyhow::bail!("prepared whisper audio is empty");
         }
 
-        if let Some(skip_reason) = skip_transcription_reason(&request, &prepared) {
-            let audio_stats = request.audio.signal_stats();
+        let audio_stats = request.audio.signal_stats();
+        if let Some(skip_reason) = skip_transcription_reason(&request, &prepared, audio_stats) {
             warn!(
                 shortcut_id = %request.shortcut_id,
                 model_id = %request.model_id,
@@ -123,7 +123,7 @@ impl WhisperEngine {
         if self.keep_model_loaded {
             let result = {
                 let context = self.cached_context(&request, key)?;
-                Self::run_transcription(context, request, prepared)
+                Self::run_transcription(context, request, prepared, audio_stats)
             };
             self.handle_cache_after_transcription(&result);
             result
@@ -133,7 +133,7 @@ impl WhisperEngine {
             let compute_backend = request.compute_backend;
             let loaded = load_context(&request)?;
             self.pending_runtime_status = Some(loaded.runtime_status.clone());
-            let result = Self::run_transcription(&loaded.context, request, prepared);
+            let result = Self::run_transcription(&loaded.context, request, prepared, audio_stats);
             info!(
                 model_id = %model_id,
                 model_path = %model_path.display(),
@@ -195,6 +195,7 @@ impl WhisperEngine {
         context: &WhisperContext,
         request: TranscriptionRequest,
         prepared: PreparedAudio,
+        audio_stats: AudioSignalStats,
     ) -> Result<TranscriptionResult> {
         let mut state = context
             .create_state()
@@ -215,7 +216,6 @@ impl WhisperEngine {
         params.set_translate(false);
         params.set_n_threads(default_thread_count());
 
-        let audio_stats = request.audio.signal_stats();
         let capture_duration_ms = request.audio.duration_ms();
         let capture_wall_duration_ms = request.audio.wall_duration_ms();
         let prepared_duration_ms = prepared.duration_ms();
@@ -467,6 +467,7 @@ mod tests {
     use crate::audio::CapturedAudio;
     use crate::transcription::compute::context_params;
     use crate::transcription::debug_audio::millis_u64;
+    use crate::transcription::test_support::transcription_request_from_prepared;
     use crate::transcription::types::TranscriptionSkipReason;
 
     #[test]
@@ -482,7 +483,7 @@ mod tests {
             "short",
             PathBuf::from("/tmp/myapp-model-that-should-not-be-loaded.bin"),
             "/tmp/short.wav",
-            prepared,
+            &prepared,
             1,
         );
 
@@ -515,7 +516,7 @@ mod tests {
             "silent",
             PathBuf::from("/tmp/myapp-model-that-should-not-be-loaded.bin"),
             "/tmp/silent.wav",
-            prepared,
+            &prepared,
             2,
         );
 
@@ -549,7 +550,7 @@ mod tests {
             "silent",
             PathBuf::from("/tmp/debug-model.bin"),
             "/tmp/silent.wav",
-            prepared.clone(),
+            &prepared,
             2,
         );
         let audio_stats = request.audio.signal_stats();
@@ -617,7 +618,8 @@ mod tests {
             context_params(ComputeBackend::Auto).expect("debug context params should resolve"),
         )
         .expect("debug model should load");
-        let result = WhisperEngine::run_transcription(&context, request, prepared)
+        let audio_stats = request.audio.signal_stats();
+        let result = WhisperEngine::run_transcription(&context, request, prepared, audio_stats)
             .expect("debug WAV should transcribe");
 
         assert!(
@@ -651,7 +653,7 @@ mod tests {
                 "short",
                 model_path.clone(),
                 "/tmp/short.wav",
-                short_prepared,
+                &short_prepared,
                 1,
             ))
             .expect("short capture should be skipped");
@@ -669,7 +671,7 @@ mod tests {
                 "debug",
                 model_path.clone(),
                 &wav_path.display().to_string(),
-                normal_prepared.clone(),
+                &normal_prepared,
                 5,
             ))
             .expect("first normal transcription should succeed");
@@ -683,7 +685,7 @@ mod tests {
                 "debug",
                 model_path,
                 &wav_path.display().to_string(),
-                normal_prepared,
+                &normal_prepared,
                 5,
             ))
             .expect("cached normal transcription should succeed");
@@ -691,43 +693,6 @@ mod tests {
             !second.text.trim().is_empty(),
             "cached normal transcription produced no text"
         );
-    }
-
-    fn transcription_request_from_prepared(
-        shortcut_id: &str,
-        model_path: PathBuf,
-        input_label: &str,
-        prepared: PreparedAudio,
-        audio_callback_count: u64,
-    ) -> TranscriptionRequest {
-        let now = Instant::now();
-        let stopped_at = now + Duration::from_millis(millis_u64(prepared.duration_ms()));
-
-        TranscriptionRequest {
-            recording_id: 1,
-            shortcut_id: shortcut_id.to_string(),
-            shortcut_name: "Debug".to_string(),
-            model_id: "debug-model".to_string(),
-            model_path,
-            language: "auto".to_string(),
-            compute_backend: ComputeBackend::Auto,
-            output: OutputAction::default(),
-            audio: CapturedAudio {
-                samples: prepared.samples,
-                sample_rate: prepared.sample_rate,
-                channels: 1,
-                input_label: input_label.to_string(),
-                started_at: now,
-                stopped_at,
-                startup_latency_ms: 0,
-                first_callback_latency_ms: Some(0),
-                audio_callback_count,
-                dropped_samples: 0,
-                missed_chunks: 0,
-                stale_callback_count: 0,
-                stale_samples: 0,
-            },
-        }
     }
 
     fn read_debug_whisper_wav(path: &Path) -> PreparedAudio {

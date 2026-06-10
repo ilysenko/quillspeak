@@ -22,6 +22,10 @@ fn main() -> gtk4::glib::ExitCode {
     init_logging();
     match external_trigger::parse_invocation(env::args().skip(1)) {
         Ok(external_trigger::ExternalTriggerInvocation::RunApp) => app::run(),
+        Ok(external_trigger::ExternalTriggerInvocation::ShowUsage) => {
+            println!("{}", external_trigger::usage());
+            gtk4::glib::ExitCode::SUCCESS
+        }
         Ok(external_trigger::ExternalTriggerInvocation::Send(request)) => {
             match external_trigger::send_trigger_request(&request) {
                 Ok(()) => gtk4::glib::ExitCode::SUCCESS,

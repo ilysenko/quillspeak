@@ -388,7 +388,9 @@ start`, `myapp trigger <shortcut-id-or-name> stop`, or
 `myapp trigger <shortcut-id-or-name> toggle`. Command mode sends one line to the
 running app through `$XDG_RUNTIME_DIR/myapp/command.sock`; shortcut selectors
 resolve by exact id first, then exact unique display name. Disabled, missing,
-and ambiguous shortcuts are rejected. If the command socket cannot be created,
+and ambiguous shortcuts are rejected, and commands that do not change recording
+state (start while busy, stop with no active recording, toggle while
+processing) are rejected with an error exit code. If the command socket cannot be created,
 the main app should continue running and `myapp trigger` remains unavailable
 until a later app start successfully creates the socket.
 

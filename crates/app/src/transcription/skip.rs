@@ -18,8 +18,8 @@ pub(super) fn pad_short_whisper_audio(prepared: &mut PreparedAudio) {
 pub(super) fn skip_transcription_reason(
     request: &TranscriptionRequest,
     prepared: &PreparedAudio,
+    audio_stats: AudioSignalStats,
 ) -> Option<TranscriptionSkipReason> {
-    let audio_stats = request.audio.signal_stats();
     if request.audio.duration_ms() < MIN_TRANSCRIBE_CAPTURE_MS {
         return Some(TranscriptionSkipReason::CaptureTooShort);
     }
@@ -92,11 +92,10 @@ pub(super) fn skipped_transcription_result(
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::time::{Duration, Instant};
 
-    use shared::{ComputeBackend, OutputAction};
-
-    use crate::audio::CapturedAudio;
+    use crate::transcription::test_support::{
+        prepared_audio_with_samples, transcription_request_from_prepared,
+    };
 
     #[test]
     fn pads_short_whisper_audio_to_one_second() {
@@ -133,10 +132,10 @@ mod tests {
     #[test]
     fn skips_near_silent_capture_after_minimum_duration() {
         let prepared = prepared_audio_with_samples(vec![0.0; 16_000]);
-        let request = request_from_prepared(&prepared);
+        let request = debug_request_from_prepared(&prepared);
 
         assert_eq!(
-            skip_transcription_reason(&request, &prepared),
+            skip_transcription_reason(&request, &prepared, request.audio.signal_stats()),
             Some(TranscriptionSkipReason::NearSilent)
         );
     }
@@ -144,47 +143,21 @@ mod tests {
     #[test]
     fn audible_capture_is_not_skipped_by_near_silent_threshold() {
         let prepared = prepared_audio_with_samples(vec![0.02; 16_000]);
-        let request = request_from_prepared(&prepared);
+        let request = debug_request_from_prepared(&prepared);
 
-        assert_eq!(skip_transcription_reason(&request, &prepared), None);
+        assert_eq!(
+            skip_transcription_reason(&request, &prepared, request.audio.signal_stats()),
+            None
+        );
     }
 
-    fn prepared_audio_with_samples(samples: Vec<f32>) -> PreparedAudio {
-        PreparedAudio {
-            samples,
-            source_sample_rate: 16_000,
-            source_channels: 1,
-            sample_rate: 16_000,
-        }
-    }
-
-    fn request_from_prepared(prepared: &PreparedAudio) -> TranscriptionRequest {
-        let now = Instant::now();
-        let stopped_at = now + Duration::from_millis(prepared.duration_ms() as u64);
-        TranscriptionRequest {
-            recording_id: 1,
-            shortcut_id: "default".to_string(),
-            shortcut_name: "Default".to_string(),
-            model_id: "debug-model".to_string(),
-            model_path: PathBuf::from("/tmp/debug-model.bin"),
-            language: "auto".to_string(),
-            compute_backend: ComputeBackend::Auto,
-            output: OutputAction::default(),
-            audio: CapturedAudio {
-                samples: prepared.samples.clone(),
-                sample_rate: prepared.sample_rate,
-                channels: prepared.source_channels,
-                input_label: "Debug input".to_string(),
-                started_at: now,
-                stopped_at,
-                startup_latency_ms: 0,
-                first_callback_latency_ms: Some(0),
-                audio_callback_count: 2,
-                dropped_samples: 0,
-                missed_chunks: 0,
-                stale_callback_count: 0,
-                stale_samples: 0,
-            },
-        }
+    fn debug_request_from_prepared(prepared: &PreparedAudio) -> TranscriptionRequest {
+        transcription_request_from_prepared(
+            "default",
+            PathBuf::from("/tmp/debug-model.bin"),
+            "Debug input",
+            prepared,
+            2,
+        )
     }
 }

@@ -1,5 +1,6 @@
 use shared::ComputeBackend;
 use std::ffi::CStr;
+use std::sync::OnceLock;
 
 use crate::transcription::compute::CompiledWhisperBackends;
 
@@ -100,20 +101,28 @@ impl WhisperRuntimeStatus {
 }
 
 fn whisper_system_info() -> String {
-    let c_buffer = unsafe { whisper_rs_sys::whisper_print_system_info() };
-    if c_buffer.is_null() {
-        return "unavailable".to_string();
-    }
+    // whisper_print_system_info writes into an unsynchronized static
+    // std::string inside whisper.cpp; concurrent calls corrupt the heap.
+    // OnceLock guarantees the FFI call happens exactly once per process.
+    static SYSTEM_INFO: OnceLock<String> = OnceLock::new();
+    SYSTEM_INFO
+        .get_or_init(|| {
+            let c_buffer = unsafe { whisper_rs_sys::whisper_print_system_info() };
+            if c_buffer.is_null() {
+                return "unavailable".to_string();
+            }
 
-    let system_info = unsafe { CStr::from_ptr(c_buffer) }
-        .to_string_lossy()
-        .trim()
-        .to_string();
-    if system_info.is_empty() {
-        "unavailable".to_string()
-    } else {
-        system_info
-    }
+            let system_info = unsafe { CStr::from_ptr(c_buffer) }
+                .to_string_lossy()
+                .trim()
+                .to_string();
+            if system_info.is_empty() {
+                "unavailable".to_string()
+            } else {
+                system_info
+            }
+        })
+        .clone()
 }
 
 #[cfg(test)]

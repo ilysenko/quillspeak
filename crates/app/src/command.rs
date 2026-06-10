@@ -16,6 +16,7 @@ pub enum AppCommand {
     LinuxSignalReceived(i32),
     ExternalTrigger {
         request: ExternalTriggerRequest,
+        deadline: std::time::Instant,
         response_tx: std::sync::mpsc::Sender<ExternalTriggerResponse>,
     },
     StartRecording(String),
@@ -81,6 +82,21 @@ pub enum AppCommand {
     },
     ShutdownComplete,
     Quit,
+}
+
+impl AppCommand {
+    /// Answers commands that carry a reply channel so external clients are not
+    /// left waiting out their response timeout; returns the command back when
+    /// no reply was pending.
+    pub fn reject_pending_reply(self, reason: &str) -> Option<Self> {
+        match self {
+            Self::ExternalTrigger { response_tx, .. } => {
+                let _ = response_tx.send(ExternalTriggerResponse::rejected(reason));
+                None
+            }
+            other => Some(other),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
