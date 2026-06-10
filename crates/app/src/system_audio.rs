@@ -7,17 +7,19 @@ use std::thread;
 use anyhow::{Context, Result, anyhow, bail};
 use tracing::{debug, info, warn};
 
+use crate::command::AppCommand;
+
 pub struct SpeakerMuteService {
     worker_tx: mpsc::Sender<SpeakerMuteCommand>,
     join_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl SpeakerMuteService {
-    pub fn spawn() -> Result<Self> {
+    pub fn spawn(command_tx: mpsc::Sender<AppCommand>) -> Result<Self> {
         let (worker_tx, worker_rx) = mpsc::channel();
         let join_handle = thread::Builder::new()
             .name("myapp-speaker-mute".to_string())
-            .spawn(move || speaker_mute_worker_loop(worker_rx))
+            .spawn(move || speaker_mute_worker_loop(worker_rx, command_tx))
             .map_err(|error| anyhow!("failed to spawn speaker mute worker: {error}"))?;
         Ok(Self {
             worker_tx,
@@ -123,7 +125,10 @@ pub fn speaker_mute_tools_status() -> String {
     "Missing: wpctl or pactl".to_string()
 }
 
-fn speaker_mute_worker_loop(worker_rx: mpsc::Receiver<SpeakerMuteCommand>) {
+fn speaker_mute_worker_loop(
+    worker_rx: mpsc::Receiver<SpeakerMuteCommand>,
+    command_tx: mpsc::Sender<AppCommand>,
+) {
     let mut active: Option<ActiveSpeakerMute> = None;
     for command in worker_rx {
         match command {
@@ -134,7 +139,13 @@ fn speaker_mute_worker_loop(worker_rx: mpsc::Receiver<SpeakerMuteCommand>) {
             SpeakerMuteCommand::Restore {
                 recording_id,
                 shortcut_id,
-            } => restore_default_sink_for_recording(&mut active, recording_id, &shortcut_id),
+            } => {
+                restore_default_sink_for_recording(&mut active, recording_id, &shortcut_id);
+                let _ = command_tx.send(AppCommand::SpeakerRestoreFinished {
+                    recording_id,
+                    shortcut_id,
+                });
+            }
             SpeakerMuteCommand::Shutdown => {
                 restore_active_default_sink(&mut active, "shutdown");
                 break;

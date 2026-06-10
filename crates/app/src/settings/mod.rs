@@ -10,6 +10,7 @@ use shared::{AppConfig, DEFAULT_SHORTCUT_ID};
 
 use crate::audio::AudioInputDevice;
 use crate::command::AppCommand;
+use crate::history::HistoryEntry;
 use crate::hotkey::ShortcutTriggerCapabilities;
 use crate::models::ModelRowState;
 use crate::transcription::WhisperRuntimeStatus;
@@ -28,6 +29,7 @@ pub struct SettingsState {
     audio_input_devices: Rc<RefCell<Vec<AudioInputDevice>>>,
     model_states: Rc<RefCell<Vec<ModelRowState>>>,
     ready_model_ids: Rc<RefCell<HashSet<String>>>,
+    history_entries: Rc<RefCell<Vec<HistoryEntry>>>,
     whisper_runtime_status: Rc<RefCell<WhisperRuntimeStatus>>,
     shortcut_trigger_capabilities: ShortcutTriggerCapabilities,
     command_tx: mpsc::Sender<AppCommand>,
@@ -42,6 +44,15 @@ pub struct SettingsWindow {
     status_page: Rc<RefCell<Option<pages::status::StatusPage>>>,
     general_page: Rc<RefCell<Option<pages::general::GeneralPage>>>,
     models_page: Rc<RefCell<Option<pages::models::ModelsPage>>>,
+    history_page: Rc<RefCell<Option<pages::history::HistoryPage>>>,
+}
+
+#[derive(Clone)]
+struct PageSlots {
+    status_page: Rc<RefCell<Option<pages::status::StatusPage>>>,
+    general_page: Rc<RefCell<Option<pages::general::GeneralPage>>>,
+    models_page: Rc<RefCell<Option<pages::models::ModelsPage>>>,
+    history_page: Rc<RefCell<Option<pages::history::HistoryPage>>>,
 }
 
 pub struct SettingsWindowInit {
@@ -49,6 +60,7 @@ pub struct SettingsWindowInit {
     pub audio_input_devices: Vec<AudioInputDevice>,
     pub model_states: Vec<ModelRowState>,
     pub ready_model_ids: HashSet<String>,
+    pub history_entries: Vec<HistoryEntry>,
     pub whisper_runtime_status: WhisperRuntimeStatus,
     pub shortcut_trigger_capabilities: ShortcutTriggerCapabilities,
     pub command_tx: mpsc::Sender<AppCommand>,
@@ -61,6 +73,7 @@ impl SettingsWindow {
             audio_input_devices,
             model_states,
             ready_model_ids,
+            history_entries,
             whisper_runtime_status,
             shortcut_trigger_capabilities,
             command_tx,
@@ -72,6 +85,7 @@ impl SettingsWindow {
             audio_input_devices: Rc::new(RefCell::new(audio_input_devices)),
             model_states: Rc::new(RefCell::new(model_states)),
             ready_model_ids: Rc::new(RefCell::new(ready_model_ids)),
+            history_entries: Rc::new(RefCell::new(history_entries)),
             whisper_runtime_status: Rc::new(RefCell::new(whisper_runtime_status)),
             shortcut_trigger_capabilities,
             command_tx: command_tx.clone(),
@@ -137,6 +151,7 @@ impl SettingsWindow {
             status_page: Rc::new(RefCell::new(None)),
             general_page: Rc::new(RefCell::new(None)),
             models_page: Rc::new(RefCell::new(None)),
+            history_page: Rc::new(RefCell::new(None)),
         };
         this.render(None);
         this
@@ -193,6 +208,12 @@ impl SettingsWindow {
         self.render(visible);
     }
 
+    pub fn update_history_entries(&self, history_entries: Vec<HistoryEntry>) {
+        let visible = self.stack.visible_child_name().map(|name| name.to_string());
+        self.state.history_entries.replace(history_entries);
+        self.render(visible);
+    }
+
     pub fn update_whisper_runtime_status(&self, status: WhisperRuntimeStatus) {
         let visible = self.stack.visible_child_name().map(|name| name.to_string());
         self.state.whisper_runtime_status.replace(status);
@@ -220,9 +241,12 @@ impl SettingsWindow {
             &self.sidebar,
             &self.state,
             preferred_page,
-            &self.status_page,
-            &self.general_page,
-            &self.models_page,
+            PageSlots {
+                status_page: Rc::clone(&self.status_page),
+                general_page: Rc::clone(&self.general_page),
+                models_page: Rc::clone(&self.models_page),
+                history_page: Rc::clone(&self.history_page),
+            },
         );
     }
 }
@@ -250,13 +274,12 @@ fn render_stack(
     settings_sidebar: &sidebar::SettingsSidebar,
     state: &SettingsState,
     preferred_page: Option<String>,
-    status_page_slot: &Rc<RefCell<Option<pages::status::StatusPage>>>,
-    general_page_slot: &Rc<RefCell<Option<pages::general::GeneralPage>>>,
-    models_page_slot: &Rc<RefCell<Option<pages::models::ModelsPage>>>,
+    page_slots: PageSlots,
 ) {
-    status_page_slot.replace(None);
-    general_page_slot.replace(None);
-    models_page_slot.replace(None);
+    page_slots.status_page.replace(None);
+    page_slots.general_page.replace(None);
+    page_slots.models_page.replace(None);
+    page_slots.history_page.replace(None);
     while let Some(child) = stack.first_child() {
         stack.remove(&child);
     }
@@ -266,18 +289,14 @@ fn render_stack(
         let stack = stack.clone();
         let settings_sidebar = settings_sidebar.clone();
         let state = state.clone();
-        let status_page_slot = Rc::clone(status_page_slot);
-        let general_page_slot = Rc::clone(general_page_slot);
-        let models_page_slot = Rc::clone(models_page_slot);
+        let page_slots = page_slots.clone();
         move |preferred_page| {
             render_stack(
                 &stack,
                 &settings_sidebar,
                 &state,
                 preferred_page,
-                &status_page_slot,
-                &general_page_slot,
-                &models_page_slot,
+                page_slots.clone(),
             )
         }
     });
@@ -287,6 +306,7 @@ fn render_stack(
         sidebar::SidebarPage::new("status", "Status"),
         sidebar::SidebarPage::new("general", "General"),
         sidebar::SidebarPage::new("models", "Models"),
+        sidebar::SidebarPage::new("history", "History"),
     ];
     let mut shortcut_pages = Vec::new();
 
@@ -296,7 +316,7 @@ fn render_stack(
         Some("status"),
         "Status",
     );
-    status_page_slot.replace(Some(status_page));
+    page_slots.status_page.replace(Some(status_page));
 
     let general_page = pages::general::build(
         &config,
@@ -304,7 +324,7 @@ fn render_stack(
         state.draft.clone(),
     );
     stack.add_titled(general_page.widget(), Some("general"), "General");
-    general_page_slot.replace(Some(general_page));
+    page_slots.general_page.replace(Some(general_page));
     let models_page = pages::models::build(
         state.model_states.borrow().clone(),
         state.command_tx.clone(),
@@ -314,7 +334,17 @@ fn render_stack(
         Some("models"),
         "Models",
     );
-    models_page_slot.replace(Some(models_page));
+    page_slots.models_page.replace(Some(models_page));
+    let history_page = pages::history::build(
+        state.history_entries.borrow().clone(),
+        state.command_tx.clone(),
+    );
+    stack.add_titled(
+        &widgets::scrollable_page(history_page.widget()),
+        Some("history"),
+        "History",
+    );
+    page_slots.history_page.replace(Some(history_page));
 
     for shortcut in &config.shortcuts {
         let title = if shortcut.id == DEFAULT_SHORTCUT_ID {

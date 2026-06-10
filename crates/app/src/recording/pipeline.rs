@@ -475,6 +475,7 @@ mod tests {
             language: "auto".to_string(),
             compute_backend: ComputeBackend::Cpu,
             mute_output_while_recording: false,
+            beep_on_recording: false,
             output: OutputAction::default(),
             input: AudioInputRef::SystemDefault,
         }

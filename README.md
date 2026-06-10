@@ -221,7 +221,8 @@ the microphone is not held open unnecessarily.
 
 Audio capture uses a short callback ring buffer and drains it on the
 `myapp-audio-capture` worker into a bounded session buffer. The callback does
-not preallocate storage for the full maximum recording duration.
+not preallocate storage for the full maximum recording duration. Recordings
+stop automatically after 60 seconds.
 
 On stop, the app converts captured audio to 16 kHz mono `f32` with `rubato`,
 runs `whisper-rs`/whisper.cpp on the model selected by the active shortcut, and
@@ -308,7 +309,7 @@ Generated defaults are display-aware. On X11-capable sessions the app creates
 the keyboard default plus a signal shortcut:
 
 ```toml
-schema_version = 14
+schema_version = 15
 
 [general]
 mode = "push_to_talk"
@@ -325,6 +326,7 @@ trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
 model_id = "large-v3-turbo-q5_0"
 language = "auto"
 mute_output_while_recording = false
+beep_on_recording = false
 output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 
 [[shortcuts]]
@@ -335,6 +337,7 @@ trigger = { type = "linux_signal", start_signal = "SIGUSR1", stop_signal = "SIGU
 model_id = "large-v3-turbo-q5_0"
 language = "auto"
 mute_output_while_recording = false
+beep_on_recording = false
 output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 ```
 
@@ -357,10 +360,12 @@ Supported `compute_backend` values are `auto`, `cpu`, `vulkan`, `cuda`, and
 `rocm`. OpenVINO is not currently supported by this whisper-rs integration and
 is not offered in Settings.
 
-Settings has `Status`, `General`, `Models`, one page per shortcut profile, and
-`Add New` pages. `Models` manages downloaded whisper.cpp ggml models under
-`~/.local/share/myapp/models`. Shortcut pages choose only ready models; each
-shortcut owns its model, language, mute, script, clipboard, and paste settings.
+Settings has `Status`, `General`, `Models`, `History`, one page per shortcut
+profile, and `Add New` pages. `Models` manages downloaded whisper.cpp ggml
+models under `~/.local/share/myapp/models`. `History` shows saved final text
+from `~/.local/share/myapp/history.jsonl` and can clear it after confirmation.
+Shortcut pages choose only ready models; each shortcut owns its model,
+language, mute, beep, script, clipboard, and paste settings.
 
 Each shortcut profile has its own trigger, model, language, and output pipeline.
 Triggers can be keyboard shortcuts or Linux signals.

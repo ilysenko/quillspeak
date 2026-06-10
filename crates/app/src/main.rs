@@ -1,8 +1,10 @@
 mod app;
 mod audio;
+mod beep;
 mod command;
 mod config_store;
 mod external_trigger;
+mod history;
 mod hotkey;
 mod models;
 mod output;

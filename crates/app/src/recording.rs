@@ -36,7 +36,6 @@ impl RecordingService {
             .map(|active| active.shortcut_id.as_str())
     }
 
-    #[cfg(test)]
     pub fn active_recording_id(&self) -> Option<u64> {
         self.active.as_ref().map(|active| active.id)
     }
@@ -102,6 +101,19 @@ impl RecordingService {
                 RecordingPhase::Arming | RecordingPhase::Processing
             )
         {
+            self.phase = RecordingPhase::Idle;
+            self.active = None;
+        }
+
+        self.phase
+    }
+
+    pub fn cancel_arming(&mut self, recording_id: u64, shortcut_id: &str) -> RecordingPhase {
+        if self.phase == RecordingPhase::Arming && self.matches_active(recording_id, shortcut_id) {
+            info!(
+                recording_id,
+                shortcut_id, "Recording start canceled before audio capture"
+            );
             self.phase = RecordingPhase::Idle;
             self.active = None;
         }
@@ -241,6 +253,18 @@ mod tests {
         assert_eq!(phase, RecordingPhase::Idle);
         assert!(accepted);
         assert_eq!(service.stop_recording("default").0, RecordingPhase::Idle);
+    }
+
+    #[test]
+    fn arming_recording_can_be_canceled_before_capture_starts() {
+        let mut service = RecordingService::default();
+
+        assert_eq!(
+            service.start_recording(7, "default"),
+            RecordingPhase::Arming
+        );
+        assert_eq!(service.cancel_arming(7, "default"), RecordingPhase::Idle);
+        assert_eq!(service.active_recording_id(), None);
     }
 
     #[test]

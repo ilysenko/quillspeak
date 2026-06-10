@@ -37,6 +37,7 @@ pub(crate) fn transcription_request_from_prepared(
         model_path,
         language: "auto".to_string(),
         compute_backend: ComputeBackend::Auto,
+        beep_on_recording: false,
         output: OutputAction::default(),
         audio: CapturedAudio {
             samples: prepared.samples.clone(),

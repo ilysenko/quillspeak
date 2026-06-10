@@ -14,7 +14,7 @@ use tracing::warn;
 
 use crate::audio::devices::resolve_input_device;
 
-const MAX_CAPTURE_SECONDS: usize = 10 * 60;
+const MAX_CAPTURE_SECONDS: usize = 60;
 const CALLBACK_BUFFER_SECONDS: usize = 2;
 const SESSION_PREROLL_ALLOWANCE: Duration = Duration::from_millis(50);
 const TARGET_INPUT_BUFFER_FRAMES: FrameCount = 1024;

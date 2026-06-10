@@ -49,6 +49,9 @@ pub struct OutputScriptResult {
     pub script_path: String,
     pub output_text: Option<String>,
     pub output: OutputAction,
+    pub shortcut_name: String,
+    pub model_id: String,
+    pub language: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,7 +112,7 @@ impl OutputService {
         }
 
         if let Some(script) = &result.output.script {
-            self.run_script(recording_id, shortcut_id, script, &result.output, text)
+            self.run_script(recording_id, shortcut_id, result, script, text)
         } else {
             self.copy_final_text_if_requested(
                 ClipboardCopySource::Transcription {
@@ -136,8 +139,8 @@ impl OutputService {
         &self,
         recording_id: u64,
         shortcut_id: &str,
+        result: &TranscriptionResult,
         script: &ScriptOutput,
-        output: &OutputAction,
         text: &str,
     ) -> OutputDelivery {
         let command = OutputWorkerCommand::RunScript {
@@ -145,7 +148,10 @@ impl OutputService {
             shortcut_id: shortcut_id.to_string(),
             script_path: script.path.clone(),
             text: text.to_string(),
-            output: output.clone(),
+            output: result.output.clone(),
+            shortcut_name: result.debug.shortcut_name.clone(),
+            model_id: result.debug.model_id.clone(),
+            language: result.debug.language.clone(),
         };
         if self.worker_tx.send(command).is_err() {
             warn!(shortcut_id, script = %script.path, "output worker is not running");
@@ -304,6 +310,9 @@ enum OutputWorkerCommand {
         script_path: String,
         text: String,
         output: OutputAction,
+        shortcut_name: String,
+        model_id: String,
+        language: String,
     },
     CopyClipboard {
         source: ClipboardCopySource,
@@ -329,8 +338,17 @@ fn output_worker_loop(
                 script_path,
                 text,
                 output,
+                shortcut_name,
+                model_id,
+                language,
             } => {
                 let result = run_script(&script_path, &text, &output, &cancel_requested)
+                    .map(|mut result| {
+                        result.shortcut_name = shortcut_name;
+                        result.model_id = model_id;
+                        result.language = language;
+                        result
+                    })
                     .map_err(|error| format!("{error:#}"));
                 let _ = command_tx.send(AppCommand::OutputScriptFinished {
                     recording_id,
@@ -866,9 +884,7 @@ fn run_script(
     action: &OutputAction,
     cancel_requested: &AtomicBool,
 ) -> Result<OutputScriptResult> {
-    let deliver_stdout = action.copy_to_clipboard || action.paste_from_clipboard;
-    let process_output =
-        run_script_with_timeout(script_path, text, deliver_stdout, cancel_requested)?;
+    let process_output = run_script_with_timeout(script_path, text, true, cancel_requested)?;
     if !process_output.status.success() {
         bail!(
             "script {} exited with status {}; stderr: {}",
@@ -878,14 +894,10 @@ fn run_script(
         );
     }
 
-    let output_text = if deliver_stdout {
-        Some(
-            String::from_utf8(process_output.stdout)
-                .with_context(|| format!("script {script_path} stdout was not UTF-8"))?,
-        )
-    } else {
-        None
-    };
+    let output_text = Some(
+        String::from_utf8(process_output.stdout)
+            .with_context(|| format!("script {script_path} stdout was not UTF-8"))?,
+    );
     let mut output = action.clone();
     output.script = None;
 
@@ -893,6 +905,9 @@ fn run_script(
         script_path: script_path.to_string(),
         output_text,
         output,
+        shortcut_name: String::new(),
+        model_id: String::new(),
+        language: String::new(),
     })
 }
 
@@ -981,6 +996,9 @@ mod tests {
             script_path: "/bin/echo".to_string(),
             output_text: Some("hello\n".to_string()),
             output: OutputAction::default(),
+            shortcut_name: "Default".to_string(),
+            model_id: "tiny".to_string(),
+            language: "auto".to_string(),
         };
 
         assert_eq!(result.output_text.as_deref(), Some("hello\n"));
@@ -1113,8 +1131,8 @@ mod tests {
     }
 
     #[test]
-    fn run_script_skips_stdout_decode_when_delivery_is_disabled() {
-        let script = TestScript::new("invalid-stdout-unused", "printf '\\377'\n");
+    fn run_script_captures_stdout_when_delivery_is_disabled() {
+        let script = TestScript::new("stdout-for-history", "printf 'translated:%s' \"$1\"\n");
 
         let output = OutputAction {
             copy_to_clipboard: false,
@@ -1122,9 +1140,9 @@ mod tests {
             ..OutputAction::default()
         };
         let result = run_script(script.path_str(), "hello", &output, never_cancel())
-            .expect("script-only output should ignore stdout bytes");
+            .expect("script-only output should capture stdout for history");
 
-        assert_eq!(result.output_text, None);
+        assert_eq!(result.output_text.as_deref(), Some("translated:hello"));
         assert!(!result.output.copy_to_clipboard);
     }
 
@@ -1157,12 +1175,12 @@ mod tests {
     }
 
     #[test]
-    fn run_script_rejects_invalid_utf8_when_delivery_is_requested() {
-        let script = TestScript::new("invalid-stdout-delivered", "printf '\\377'\n");
+    fn run_script_rejects_invalid_utf8_stdout() {
+        let script = TestScript::new("invalid-stdout", "printf '\\377'\n");
 
         let output = OutputAction::default();
         let error = run_script(script.path_str(), "hello", &output, never_cancel())
-            .expect_err("delivered stdout must be UTF-8");
+            .expect_err("script stdout must be UTF-8");
 
         assert!(error.to_string().contains("stdout was not UTF-8"));
     }

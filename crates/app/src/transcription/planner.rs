@@ -39,6 +39,7 @@ pub fn build_transcription_plan(
         language: shortcut.language.clone(),
         compute_backend: config.general.compute_backend,
         mute_output_while_recording: shortcut.mute_output_while_recording,
+        beep_on_recording: shortcut.beep_on_recording,
         output: shortcut.output.clone(),
         input: config.general.audio_input.clone(),
     })
@@ -91,6 +92,7 @@ mod tests {
         assert_eq!(plan.model_path, model_path);
         assert_eq!(plan.input, config.general.audio_input);
         assert!(!plan.mute_output_while_recording);
+        assert!(!plan.beep_on_recording);
 
         let _ = fs::remove_file(plan.model_path);
     }
@@ -113,6 +115,27 @@ mod tests {
         .expect("ready model should build a plan");
 
         assert!(plan.mute_output_while_recording);
+        let _ = fs::remove_file(plan.model_path);
+    }
+
+    #[test]
+    fn plan_snapshots_shortcut_beep_setting() {
+        let mut config = AppConfig::default();
+        config.shortcuts[0].beep_on_recording = true;
+        let ready_model_ids = HashSet::from([DEFAULT_MODEL_ID.to_string()]);
+        let model_path = temp_model_path();
+        fs::write(&model_path, b"model").expect("test model file should be writable");
+
+        let plan = build_transcription_plan(
+            &config,
+            &ready_model_ids,
+            |_| model_path.clone(),
+            9,
+            DEFAULT_SHORTCUT_ID,
+        )
+        .expect("ready model should build a plan");
+
+        assert!(plan.beep_on_recording);
         let _ = fs::remove_file(plan.model_path);
     }
 

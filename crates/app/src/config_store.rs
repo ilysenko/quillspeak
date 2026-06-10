@@ -116,6 +116,7 @@ fn default_signal_shortcut_profile() -> ShortcutProfile {
         model_id: DEFAULT_MODEL_ID.to_string(),
         language: shared::AUTO_LANGUAGE_VALUE.to_string(),
         mute_output_while_recording: false,
+        beep_on_recording: false,
         output: shared::OutputAction::default(),
     }
 }
@@ -435,14 +436,14 @@ output = { type = "default" }
     }
 
     #[test]
-    fn schema_v13_config_is_discarded_instead_of_migrated() {
+    fn schema_v14_config_is_discarded_instead_of_migrated() {
         let root = temp_config_root();
         let path = root.join("config.toml");
         fs::create_dir_all(&root).expect("test config dir should be writable");
         fs::write(
             &path,
             r#"
-schema_version = 13
+schema_version = 14
 
 [general]
 mode = "push_to_talk"
@@ -462,12 +463,12 @@ mute_output_while_recording = true
 output = { copy_to_clipboard = false, paste_from_clipboard = true, paste_shortcut = "ctrl_v" }
 "#,
         )
-        .expect("v13 config should be writable");
+        .expect("v14 config should be writable");
         let store = ConfigStore::for_path(path.clone());
 
         let config = store
             .load_or_create_default()
-            .expect("v13 config should be discarded");
+            .expect("v14 config should be discarded");
         let contents = fs::read_to_string(&path).expect("replacement config should be readable");
 
         assert_eq!(
@@ -478,9 +479,10 @@ output = { copy_to_clipboard = false, paste_from_clipboard = true, paste_shortcu
             config_schema_version(&contents),
             Some(CONFIG_SCHEMA_VERSION)
         );
-        assert!(contents.contains("schema_version = 14"));
+        assert!(contents.contains("schema_version = 15"));
         assert!(contents.contains("audio_input"));
         assert!(contents.contains("mute_output_while_recording = false"));
+        assert!(contents.contains("beep_on_recording = false"));
         assert!(!contents.contains("paste_from_clipboard = true"));
         let _ = fs::remove_dir_all(root);
     }

@@ -21,6 +21,15 @@ pub enum AppCommand {
     },
     StartRecording(String),
     StopRecording(String),
+    RecordingStartCueFinished {
+        recording_id: u64,
+        shortcut_id: String,
+        result: Result<(), String>,
+    },
+    RecordingDurationLimitReached {
+        recording_id: u64,
+        shortcut_id: String,
+    },
     AudioCaptureStarted {
         recording_id: u64,
         shortcut_id: String,
@@ -58,7 +67,12 @@ pub enum AppCommand {
         source: ClipboardCopySource,
         result: Result<ClipboardPasteOutcome, String>,
     },
+    SpeakerRestoreFinished {
+        recording_id: u64,
+        shortcut_id: String,
+    },
     AudioInputDevicesRefreshed(Vec<crate::audio::AudioInputDevice>),
+    ClearHistory,
     SaveConfig(AppConfig),
     DownloadModel(String),
     CancelModelDownload(String),

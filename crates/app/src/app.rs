@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -13,12 +14,14 @@ use shared::{APP_ID, AppConfig, DEFAULT_SHORTCUT_ID, ShortcutTrigger};
 use tracing::{debug, error, info, warn};
 
 use crate::audio::{AudioInputDevice, list_input_devices};
+use crate::beep::BeepService;
 use crate::command::{AppCommand, DownloadId, ModelDownloadOutcome};
 use crate::config_store::ConfigStore;
 use crate::external_trigger::{
     ExternalTriggerAction, ExternalTriggerRequest, ExternalTriggerResponse, ExternalTriggerService,
     resolve_shortcut_selector,
 };
+use crate::history::{HistoryEntry, HistorySource, HistoryStore, unix_time_ms_now};
 use crate::hotkey::{
     HotkeyBackendHandle, configure_hotkey_backend, configured_backend_name, effective_backend_name,
     shortcut_trigger_capabilities,
@@ -44,6 +47,7 @@ use crate::tray::Tray;
 const COMMAND_PUMP_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_COMMANDS_PER_PUMP: usize = 128;
 const TRAY_IDLE_RECONCILE_DELAY: Duration = Duration::from_millis(200);
+const MAX_RECORDING_DURATION: Duration = Duration::from_secs(60);
 
 pub fn run() -> gtk::glib::ExitCode {
     let application = adw::Application::builder().application_id(APP_ID).build();
@@ -77,16 +81,21 @@ struct AppRuntime {
     command_tx: mpsc::Sender<AppCommand>,
     config_store: ConfigStore,
     model_store: ModelStore,
+    history_store: HistoryStore,
     download_manager: RefCell<ModelDownloadManager>,
     audio_input_devices: RefCell<Vec<AudioInputDevice>>,
     recording_pipeline: RefCell<Option<RecordingPipeline>>,
     speaker_mute_service: RefCell<Option<SpeakerMuteService>>,
+    beep_service: RefCell<Option<BeepService>>,
     transcription_service: RefCell<Option<TranscriptionService>>,
     output_service: RefCell<Option<OutputService>>,
     config: RefCell<AppConfig>,
+    history_entries: RefCell<Vec<HistoryEntry>>,
     whisper_runtime_status: RefCell<WhisperRuntimeStatus>,
     recording: RefCell<RecordingService>,
     recording_phase: Cell<RecordingPhase>,
+    pending_recording_start: RefCell<Option<PendingRecordingStart>>,
+    pending_stop_cues: RefCell<HashSet<(u64, String)>>,
     pending_output: RefCell<Option<PendingOutputDelivery>>,
     next_recording_id: Cell<u64>,
     is_quitting: Cell<bool>,
@@ -104,6 +113,13 @@ struct PendingOutputDelivery {
     completion: OutputCompletion,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct PendingRecordingStart {
+    recording_id: u64,
+    shortcut_id: String,
+    plan: TranscriptionPlan,
+}
+
 impl PendingOutputDelivery {
     fn matches(&self, recording_id: u64, shortcut_id: &str, completion: OutputCompletion) -> bool {
         self.recording_id == recording_id
@@ -119,6 +135,7 @@ impl PendingOutputDelivery {
 struct ShutdownServices {
     recording_pipeline: Option<RecordingPipeline>,
     speaker_mute_service: Option<SpeakerMuteService>,
+    beep_service: Option<BeepService>,
     output_service: Option<OutputService>,
     signal_trigger_service: Option<SignalTriggerService>,
     external_trigger_service: Option<ExternalTriggerService>,
@@ -131,6 +148,7 @@ impl ShutdownServices {
         let Self {
             recording_pipeline,
             speaker_mute_service,
+            beep_service,
             output_service,
             signal_trigger_service,
             external_trigger_service,
@@ -151,6 +169,9 @@ impl ShutdownServices {
         if let Some(speaker_mute_service) = speaker_mute_service {
             speaker_mute_service.shutdown();
         }
+        if let Some(beep_service) = beep_service {
+            beep_service.shutdown();
+        }
         if let Some(output_service) = output_service {
             output_service.shutdown();
         }
@@ -167,6 +188,14 @@ impl AppRuntime {
 
         let config_store = ConfigStore::new()?;
         let model_store = ModelStore::new()?;
+        let history_store = HistoryStore::new()?;
+        let history_entries = match history_store.load() {
+            Ok(entries) => entries,
+            Err(error) => {
+                warn!(?error, history_path = %history_store.path().display(), "failed to load history");
+                Vec::new()
+            }
+        };
         let audio_input_devices = list_input_devices();
         let config = config_store.load_or_create_default().with_context(|| {
             format!(
@@ -179,7 +208,8 @@ impl AppRuntime {
             TranscriptionService::spawn(command_tx.clone(), config.general.keep_model_loaded)?;
         let whisper_runtime_status = WhisperRuntimeStatus::initial(config.general.compute_backend);
         let recording_pipeline = RecordingPipeline::spawn(command_tx.clone())?;
-        let speaker_mute_service = SpeakerMuteService::spawn()?;
+        let speaker_mute_service = SpeakerMuteService::spawn(command_tx.clone())?;
+        let beep_service = BeepService::spawn(command_tx.clone())?;
         let output_service = OutputService::spawn(command_tx.clone())?;
 
         let hotkey_backend = configure_hotkey_backend(command_tx.clone(), &config);
@@ -214,16 +244,21 @@ impl AppRuntime {
             command_tx,
             config_store,
             model_store,
+            history_store,
             download_manager: RefCell::new(ModelDownloadManager::default()),
             audio_input_devices: RefCell::new(audio_input_devices),
             recording_pipeline: RefCell::new(Some(recording_pipeline)),
             speaker_mute_service: RefCell::new(Some(speaker_mute_service)),
+            beep_service: RefCell::new(Some(beep_service)),
             transcription_service: RefCell::new(Some(transcription_service)),
             output_service: RefCell::new(Some(output_service)),
             whisper_runtime_status: RefCell::new(whisper_runtime_status),
             config: RefCell::new(config),
+            history_entries: RefCell::new(history_entries),
             recording: RefCell::new(RecordingService::default()),
             recording_phase: Cell::new(RecordingPhase::Idle),
+            pending_recording_start: RefCell::new(None),
+            pending_stop_cues: RefCell::new(HashSet::new()),
             pending_output: RefCell::new(None),
             next_recording_id: Cell::new(1),
             is_quitting: Cell::new(false),
@@ -278,6 +313,15 @@ impl AppRuntime {
             AppCommand::StopRecording(shortcut_id) => {
                 let _ = self.stop_recording(&shortcut_id);
             }
+            AppCommand::RecordingStartCueFinished {
+                recording_id,
+                shortcut_id,
+                result,
+            } => self.recording_start_cue_finished(recording_id, &shortcut_id, result),
+            AppCommand::RecordingDurationLimitReached {
+                recording_id,
+                shortcut_id,
+            } => self.recording_duration_limit_reached(recording_id, &shortcut_id),
             AppCommand::AudioCaptureStarted {
                 recording_id,
                 shortcut_id,
@@ -321,9 +365,14 @@ impl AppRuntime {
             AppCommand::ClipboardPasteFinished { source, result } => {
                 self.finish_clipboard_paste(source, result)
             }
+            AppCommand::SpeakerRestoreFinished {
+                recording_id,
+                shortcut_id,
+            } => self.speaker_restore_finished(recording_id, &shortcut_id),
             AppCommand::AudioInputDevicesRefreshed(devices) => {
                 self.update_audio_input_devices(devices)
             }
+            AppCommand::ClearHistory => self.clear_history(),
             AppCommand::SaveConfig(config) => self.save_config(config),
             AppCommand::DownloadModel(model_id) => self.download_model(model_id),
             AppCommand::CancelModelDownload(model_id) => self.cancel_model_download(model_id),
@@ -520,12 +569,94 @@ impl AppRuntime {
                 return Err(format!("{error:#}"));
             }
         };
-        let input_label = plan.input.display_label().to_string();
         let phase = self
             .recording
             .borrow_mut()
             .start_recording(recording_id, shortcut_id);
         self.set_recording_phase(phase);
+
+        if plan.beep_on_recording {
+            return self.queue_start_cue_for_plan(plan);
+        }
+
+        self.start_capture_for_plan(plan)
+    }
+
+    fn queue_start_cue_for_plan(&self, plan: TranscriptionPlan) -> Result<(), String> {
+        let recording_id = plan.recording_id;
+        let shortcut_id = plan.shortcut_id.clone();
+        self.pending_recording_start
+            .replace(Some(PendingRecordingStart {
+                recording_id,
+                shortcut_id: shortcut_id.clone(),
+                plan,
+            }));
+
+        let result = self
+            .beep_service
+            .borrow()
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("beep worker is shut down"))
+            .and_then(|service| service.play_start_cue(recording_id, &shortcut_id));
+
+        if let Err(error) = result {
+            warn!(
+                ?error,
+                recording_id,
+                shortcut_id,
+                "failed to queue recording start cue; starting capture immediately"
+            );
+            let Some(pending) = self.pending_recording_start.borrow_mut().take() else {
+                return Err(format!("failed to queue recording start cue: {error:#}"));
+            };
+            return self.start_capture_for_plan(pending.plan);
+        }
+
+        info!(
+            recording_id,
+            shortcut_id, "recording start cue queued before audio capture"
+        );
+        Ok(())
+    }
+
+    fn recording_start_cue_finished(
+        &self,
+        recording_id: u64,
+        shortcut_id: &str,
+        result: std::result::Result<(), String>,
+    ) {
+        let Some(pending) = self.pending_recording_start.borrow_mut().take() else {
+            debug!(
+                recording_id,
+                shortcut_id, "stale recording start cue ignored because no start is pending"
+            );
+            return;
+        };
+
+        if pending.recording_id != recording_id || pending.shortcut_id != shortcut_id {
+            debug!(
+                pending_recording_id = pending.recording_id,
+                pending_shortcut_id = %pending.shortcut_id,
+                recording_id,
+                shortcut_id, "stale recording start cue ignored"
+            );
+            self.pending_recording_start.replace(Some(pending));
+            return;
+        }
+
+        if let Err(error) = &result {
+            warn!(
+                recording_id,
+                shortcut_id, error, "recording start cue failed; continuing with audio capture"
+            );
+        }
+        let _ = self.start_capture_for_plan(pending.plan);
+    }
+
+    fn start_capture_for_plan(&self, plan: TranscriptionPlan) -> Result<(), String> {
+        let recording_id = plan.recording_id;
+        let shortcut_id = plan.shortcut_id.clone();
+        let input_label = plan.input.display_label().to_string();
         self.mute_speakers_for_plan(&plan);
 
         let start_result = self
@@ -546,9 +677,9 @@ impl AppRuntime {
             let phase = self
                 .recording
                 .borrow_mut()
-                .start_failed(recording_id, shortcut_id);
+                .start_failed(recording_id, &shortcut_id);
             self.set_recording_phase(phase);
-            self.restore_speakers_for_recording(recording_id, shortcut_id);
+            self.restore_speakers_for_recording(recording_id, &shortcut_id);
             return Err(format!("failed to start audio capture: {error:#}"));
         }
         info!(
@@ -561,6 +692,19 @@ impl AppRuntime {
     }
 
     fn stop_recording(&self, shortcut_id: &str) -> Result<(), String> {
+        if let Some(pending) = self.pending_recording_start.borrow().as_ref()
+            && pending.shortcut_id == shortcut_id
+        {
+            let recording_id = pending.recording_id;
+            self.pending_recording_start.borrow_mut().take();
+            let phase = self
+                .recording
+                .borrow_mut()
+                .cancel_arming(recording_id, shortcut_id);
+            self.set_recording_phase(phase);
+            return Ok(());
+        }
+
         let started_at = Instant::now();
         let (phase, recording_id) = self.recording.borrow_mut().stop_recording(shortcut_id);
         self.set_recording_phase(phase);
@@ -598,7 +742,11 @@ impl AppRuntime {
                     shortcut_id: shortcut_id.to_string(),
                     result: Err(format!("{error:#}")),
                 });
-            self.restore_speakers_for_recording(recording_id, shortcut_id);
+            let play_stop_cue =
+                self.queue_stop_cue_after_speaker_restore_for_shortcut(recording_id, shortcut_id);
+            if !self.restore_speakers_for_recording(recording_id, shortcut_id) && play_stop_cue {
+                self.play_queued_stop_cue_if_needed(recording_id, shortcut_id);
+            }
         }
         Ok(())
     }
@@ -624,6 +772,37 @@ impl AppRuntime {
             .borrow_mut()
             .capture_started(recording_id, shortcut_id);
         self.set_recording_phase(phase);
+        self.schedule_recording_duration_limit(recording_id, shortcut_id);
+    }
+
+    fn schedule_recording_duration_limit(&self, recording_id: u64, shortcut_id: &str) {
+        let command_tx = self.command_sender();
+        let shortcut_id = shortcut_id.to_string();
+        let _source_id = gtk::glib::timeout_add_local(MAX_RECORDING_DURATION, move || {
+            let _ = command_tx.send(AppCommand::RecordingDurationLimitReached {
+                recording_id,
+                shortcut_id: shortcut_id.clone(),
+            });
+            gtk::glib::ControlFlow::Break
+        });
+    }
+
+    fn recording_duration_limit_reached(&self, recording_id: u64, shortcut_id: &str) {
+        if !recording_duration_limit_applies(&self.recording.borrow(), recording_id, shortcut_id) {
+            debug!(
+                recording_id,
+                shortcut_id, "recording duration limit ignored for stale recording"
+            );
+            return;
+        }
+
+        info!(
+            recording_id,
+            shortcut_id,
+            max_duration_seconds = MAX_RECORDING_DURATION.as_secs(),
+            "recording duration limit reached; stopping recording"
+        );
+        let _ = self.stop_recording(shortcut_id);
     }
 
     fn audio_capture_start_failed(&self, recording_id: u64, shortcut_id: &str, error: &str) {
@@ -645,7 +824,6 @@ impl AppRuntime {
         shortcut_id: &str,
         result: std::result::Result<Box<TranscriptionRequest>, String>,
     ) {
-        self.restore_speakers_for_recording(recording_id, shortcut_id);
         if !self
             .recording
             .borrow()
@@ -656,6 +834,16 @@ impl AppRuntime {
                 shortcut_id, "ignoring stale audio capture result"
             );
             return;
+        }
+        let play_stop_cue = result
+            .as_ref()
+            .ok()
+            .is_some_and(|request| request.beep_on_recording);
+        if play_stop_cue {
+            self.queue_stop_cue_after_speaker_restore(recording_id, shortcut_id);
+        }
+        if !self.restore_speakers_for_recording(recording_id, shortcut_id) && play_stop_cue {
+            self.play_queued_stop_cue_if_needed(recording_id, shortcut_id);
         }
 
         match &result {
@@ -736,6 +924,17 @@ impl AppRuntime {
                     ),
                 }
                 log_recognized_text(shortcut_id, &result);
+                if matches!(result.status, TranscriptionStatus::Completed)
+                    && result.output.script.is_none()
+                {
+                    self.append_history_entry(history_entry_from_transcription(
+                        recording_id,
+                        shortcut_id,
+                        &result,
+                        HistorySource::Transcription,
+                        &result.text,
+                    ));
+                }
                 match self.apply_transcription_output(recording_id, shortcut_id, &result) {
                     OutputDelivery::Queued(completion) => {
                         self.set_pending_output(recording_id, shortcut_id, completion);
@@ -871,7 +1070,7 @@ impl AppRuntime {
         }
     }
 
-    fn restore_speakers_for_recording(&self, recording_id: u64, shortcut_id: &str) {
+    fn restore_speakers_for_recording(&self, recording_id: u64, shortcut_id: &str) -> bool {
         let result = self
             .speaker_mute_service
             .borrow()
@@ -882,6 +1081,59 @@ impl AppRuntime {
             warn!(
                 ?error,
                 recording_id, shortcut_id, "failed to queue speaker mute restore request"
+            );
+            return false;
+        }
+        true
+    }
+
+    fn queue_stop_cue_after_speaker_restore_for_shortcut(
+        &self,
+        recording_id: u64,
+        shortcut_id: &str,
+    ) -> bool {
+        let enabled = self
+            .config
+            .borrow()
+            .shortcut_by_id(shortcut_id)
+            .is_some_and(|shortcut| shortcut.beep_on_recording);
+        if enabled {
+            self.queue_stop_cue_after_speaker_restore(recording_id, shortcut_id);
+        }
+        enabled
+    }
+
+    fn queue_stop_cue_after_speaker_restore(&self, recording_id: u64, shortcut_id: &str) {
+        self.pending_stop_cues
+            .borrow_mut()
+            .insert((recording_id, shortcut_id.to_string()));
+    }
+
+    fn speaker_restore_finished(&self, recording_id: u64, shortcut_id: &str) {
+        self.play_queued_stop_cue_if_needed(recording_id, shortcut_id);
+    }
+
+    fn play_queued_stop_cue_if_needed(&self, recording_id: u64, shortcut_id: &str) {
+        if self
+            .pending_stop_cues
+            .borrow_mut()
+            .remove(&(recording_id, shortcut_id.to_string()))
+        {
+            self.play_stop_cue(recording_id, shortcut_id);
+        }
+    }
+
+    fn play_stop_cue(&self, recording_id: u64, shortcut_id: &str) {
+        let result = self
+            .beep_service
+            .borrow()
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("beep worker is shut down"))
+            .and_then(|service| service.play_stop_cue(recording_id, shortcut_id));
+        if let Err(error) = result {
+            warn!(
+                ?error,
+                recording_id, shortcut_id, "failed to queue recording stop cue"
             );
         }
     }
@@ -928,7 +1180,13 @@ impl AppRuntime {
                     paste_from_clipboard = result.output.paste_from_clipboard,
                     "output script finished"
                 );
-                if let Some(output_text) = result.output_text {
+                if let Some(output_text) = result.output_text.clone() {
+                    self.append_history_entry(history_entry_from_script_result(
+                        recording_id,
+                        shortcut_id,
+                        &result,
+                        &output_text,
+                    ));
                     if let Some(output_service) = self.output_service.borrow().as_ref() {
                         match output_service.copy_final_text_if_requested(
                             ClipboardCopySource::ScriptStdout {
@@ -1129,6 +1387,7 @@ impl AppRuntime {
                     audio_input_devices: self.audio_input_devices.borrow().clone(),
                     model_states: self.model_row_states(),
                     ready_model_ids: self.model_store.ready_model_ids(),
+                    history_entries: self.history_entries.borrow().clone(),
                     whisper_runtime_status: self.whisper_runtime_status.borrow().clone(),
                     shortcut_trigger_capabilities: shortcut_trigger_capabilities(),
                     command_tx: self.command_sender(),
@@ -1429,6 +1688,47 @@ impl AppRuntime {
         }
     }
 
+    fn append_history_entry(&self, mut entry: HistoryEntry) {
+        entry.text = entry.text.trim().to_string();
+        if entry.text.is_empty() {
+            return;
+        }
+
+        if let Err(error) = self.history_store.append(&entry) {
+            warn!(
+                ?error,
+                history_path = %self.history_store.path().display(),
+                recording_id = entry.recording_id,
+                shortcut_id = %entry.shortcut_id,
+                "failed to append transcription history"
+            );
+            return;
+        }
+
+        self.history_entries.borrow_mut().push(entry);
+        if let Some(window) = self.settings_window.borrow().as_ref() {
+            window.update_history_entries(self.history_entries.borrow().clone());
+        }
+    }
+
+    fn clear_history(&self) {
+        match self.history_store.clear() {
+            Ok(()) => {
+                self.history_entries.borrow_mut().clear();
+                if let Some(window) = self.settings_window.borrow().as_ref() {
+                    window.update_history_entries(Vec::new());
+                    window.update_save_status("History cleared");
+                }
+            }
+            Err(error) => {
+                warn!(?error, "failed to clear transcription history");
+                if let Some(window) = self.settings_window.borrow().as_ref() {
+                    window.update_save_status(&format!("Failed to clear history: {error}"));
+                }
+            }
+        }
+    }
+
     fn update_whisper_runtime_status(&self, status: WhisperRuntimeStatus) {
         debug!(status = %status.summary(), "whisper runtime status updated");
         self.whisper_runtime_status.replace(status.clone());
@@ -1465,6 +1765,7 @@ impl AppRuntime {
         let services = ShutdownServices {
             recording_pipeline: self.recording_pipeline.borrow_mut().take(),
             speaker_mute_service: self.speaker_mute_service.borrow_mut().take(),
+            beep_service: self.beep_service.borrow_mut().take(),
             output_service: self.output_service.borrow_mut().take(),
             signal_trigger_service: self.signal_trigger_service.borrow_mut().take(),
             external_trigger_service: self.external_trigger_service.borrow_mut().take(),
@@ -1576,6 +1877,56 @@ fn trigger_summary(trigger: &ShortcutTrigger) -> String {
     }
 }
 
+fn recording_duration_limit_applies(
+    recording: &RecordingService,
+    recording_id: u64,
+    shortcut_id: &str,
+) -> bool {
+    recording.active_recording_id() == Some(recording_id)
+        && recording.active_shortcut_id() == Some(shortcut_id)
+        && matches!(
+            recording.phase(),
+            RecordingPhase::Arming | RecordingPhase::Recording
+        )
+}
+
+fn history_entry_from_transcription(
+    recording_id: u64,
+    shortcut_id: &str,
+    result: &TranscriptionResult,
+    source: HistorySource,
+    text: &str,
+) -> HistoryEntry {
+    HistoryEntry {
+        created_at_unix_ms: unix_time_ms_now(),
+        recording_id,
+        shortcut_id: shortcut_id.to_string(),
+        shortcut_name: result.debug.shortcut_name.clone(),
+        model_id: result.debug.model_id.clone(),
+        language: result.debug.language.clone(),
+        source,
+        text: text.to_string(),
+    }
+}
+
+fn history_entry_from_script_result(
+    recording_id: u64,
+    shortcut_id: &str,
+    result: &OutputScriptResult,
+    text: &str,
+) -> HistoryEntry {
+    HistoryEntry {
+        created_at_unix_ms: unix_time_ms_now(),
+        recording_id,
+        shortcut_id: shortcut_id.to_string(),
+        shortcut_name: result.shortcut_name.clone(),
+        model_id: result.model_id.clone(),
+        language: result.language.clone(),
+        source: HistorySource::Script,
+        text: text.to_string(),
+    }
+}
+
 fn log_recognized_text(shortcut_id: &str, result: &TranscriptionResult) {
     if !matches!(result.status, TranscriptionStatus::Completed) {
         return;
@@ -1652,5 +2003,20 @@ mod tests {
 
         assert_eq!(updated.default_shortcut().model_id, "small-q8_0");
         assert_eq!(updated.shortcuts[1].model_id, "tiny");
+    }
+
+    #[test]
+    fn recording_duration_limit_only_applies_to_active_recording() {
+        let mut recording = RecordingService::default();
+
+        assert!(!recording_duration_limit_applies(&recording, 1, "default"));
+        recording.start_recording(1, "default");
+        assert!(recording_duration_limit_applies(&recording, 1, "default"));
+        assert!(!recording_duration_limit_applies(&recording, 2, "default"));
+        assert!(!recording_duration_limit_applies(&recording, 1, "other"));
+        recording.capture_started(1, "default");
+        assert!(recording_duration_limit_applies(&recording, 1, "default"));
+        recording.stop_recording("default");
+        assert!(!recording_duration_limit_applies(&recording, 1, "default"));
     }
 }

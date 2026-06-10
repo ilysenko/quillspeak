@@ -251,6 +251,22 @@ pub fn build(
     });
     group.add(&mute_output_row);
 
+    let (beep_row, beep_switch) = switch_row(
+        "Beep on start and stop",
+        "Play a short two-tone cue before recording starts and after recording stops.",
+        shortcut.beep_on_recording,
+    );
+    beep_switch.connect_active_notify({
+        let draft = draft.clone();
+        let shortcut_id = shortcut_id.clone();
+        move |switch| {
+            draft.update_shortcut(&shortcut_id, |shortcut| {
+                shortcut.beep_on_recording = switch.is_active();
+            });
+        }
+    });
+    group.add(&beep_row);
+
     add_shortcut_output_controls(&group, &shortcut_id, &shortcut.output, draft.clone());
 
     if shortcut.id != DEFAULT_SHORTCUT_ID {

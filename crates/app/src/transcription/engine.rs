@@ -593,6 +593,7 @@ mod tests {
             model_path: model_path.clone(),
             language: "auto".to_string(),
             compute_backend: ComputeBackend::Auto,
+            beep_on_recording: false,
             output: OutputAction::default(),
             audio: CapturedAudio {
                 samples: prepared.samples.clone(),

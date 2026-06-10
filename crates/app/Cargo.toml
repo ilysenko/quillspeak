@@ -22,6 +22,7 @@ reqwest.workspace = true
 rtrb.workspace = true
 rubato.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 shared = { path = "../shared" }
 sha1.workspace = true
 signal-hook.workspace = true

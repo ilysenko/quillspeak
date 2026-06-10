@@ -21,7 +21,7 @@ pub use shortcut::{
     ShortcutTrigger, next_shortcut_id, normalize_accelerator,
 };
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 14;
+pub const CONFIG_SCHEMA_VERSION: u32 = 15;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConfigError {
@@ -345,6 +345,7 @@ mod tests {
         assert_eq!(config.default_shortcut().model_id, DEFAULT_MODEL_ID);
         assert_eq!(config.default_shortcut().language, AUTO_LANGUAGE_VALUE);
         assert!(!config.default_shortcut().mute_output_while_recording);
+        assert!(!config.default_shortcut().beep_on_recording);
         assert_eq!(config.default_shortcut().output, OutputAction::default());
     }
 
@@ -394,7 +395,7 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_schema_without_audio_input() {
         let result = toml::from_str::<AppConfig>(
             r#"
-	schema_version = 14
+	schema_version = 15
 
 	[general]
 	mode = "push_to_talk"
@@ -410,6 +411,7 @@ hotkey = "Ctrl-Alt-F"
 	model_id = "large-v3-turbo-q5_0"
 	language = "auto"
 	mute_output_while_recording = false
+	beep_on_recording = false
 	output = { copy_to_clipboard = true }
 	"#,
         );
@@ -421,7 +423,7 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_schema_without_keep_model_loaded() {
         let result = toml::from_str::<AppConfig>(
             r#"
-	schema_version = 14
+	schema_version = 15
 
 	[general]
 	mode = "push_to_talk"
@@ -437,6 +439,7 @@ hotkey = "Ctrl-Alt-F"
 	model_id = "large-v3-turbo-q5_0"
 	language = "auto"
 	mute_output_while_recording = false
+	beep_on_recording = false
 	output = { copy_to_clipboard = true }
 	"#,
         );
@@ -448,7 +451,7 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_schema_without_shortcut_mute_output_setting() {
         let result = toml::from_str::<AppConfig>(
             r#"
-	schema_version = 14
+	schema_version = 15
 
 	[general]
 	mode = "push_to_talk"
@@ -464,6 +467,34 @@ hotkey = "Ctrl-Alt-F"
 	trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
 	model_id = "large-v3-turbo-q5_0"
 	language = "auto"
+	output = { copy_to_clipboard = true }
+	"#,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_schema_without_shortcut_beep_setting() {
+        let result = toml::from_str::<AppConfig>(
+            r#"
+	schema_version = 15
+
+	[general]
+	mode = "push_to_talk"
+	hotkey_backend = "auto"
+	audio_input = { type = "system_default" }
+	compute_backend = "auto"
+	keep_model_loaded = true
+
+	[[shortcuts]]
+	id = "default"
+	name = "Default"
+	enabled = true
+	trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
+	model_id = "large-v3-turbo-q5_0"
+	language = "auto"
+	mute_output_while_recording = false
 	output = { copy_to_clipboard = true }
 	"#,
         );
@@ -507,7 +538,7 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_removed_daemon_backend() {
         let result = toml::from_str::<AppConfig>(
             r#"
-	schema_version = 14
+	schema_version = 15
 
 	[general]
 	mode = "push_to_talk"
@@ -524,6 +555,7 @@ hotkey = "Ctrl-Alt-F"
 	model_id = "large-v3-turbo-q5_0"
 	language = "auto"
 	mute_output_while_recording = false
+	beep_on_recording = false
 	output = { copy_to_clipboard = true }
 	"#,
         );
@@ -536,7 +568,7 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_removed_portal_backend() {
         let result = toml::from_str::<AppConfig>(
             r#"
-	schema_version = 14
+	schema_version = 15
 
 	[general]
 	mode = "push_to_talk"
@@ -553,6 +585,7 @@ hotkey = "Ctrl-Alt-F"
 	model_id = "large-v3-turbo-q5_0"
 	language = "auto"
 	mute_output_while_recording = false
+	beep_on_recording = false
 	output = { copy_to_clipboard = true }
 	"#,
         );
@@ -646,6 +679,7 @@ hotkey = "Ctrl-Alt-F"
             model_id: DEFAULT_MODEL_ID.to_string(),
             language: AUTO_LANGUAGE_VALUE.to_string(),
             mute_output_while_recording: false,
+            beep_on_recording: false,
             output: OutputAction::default(),
         });
 
@@ -749,6 +783,7 @@ stop_signal = "SIGWINCH"
             model_id: DEFAULT_MODEL_ID.to_string(),
             language: AUTO_LANGUAGE_VALUE.to_string(),
             mute_output_while_recording: false,
+            beep_on_recording: false,
             output: OutputAction::default(),
         });
 
@@ -776,6 +811,7 @@ stop_signal = "SIGWINCH"
             model_id: DEFAULT_MODEL_ID.to_string(),
             language: AUTO_LANGUAGE_VALUE.to_string(),
             mute_output_while_recording: false,
+            beep_on_recording: false,
             output: OutputAction::default(),
         });
 

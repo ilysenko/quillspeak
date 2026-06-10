@@ -43,6 +43,7 @@ pub struct ShortcutProfile {
     pub model_id: String,
     pub language: String,
     pub mute_output_while_recording: bool,
+    pub beep_on_recording: bool,
     pub output: OutputAction,
 }
 
@@ -56,6 +57,7 @@ impl ShortcutProfile {
             model_id: DEFAULT_MODEL_ID.to_string(),
             language: AUTO_LANGUAGE_VALUE.to_string(),
             mute_output_while_recording: false,
+            beep_on_recording: false,
             output: OutputAction::default(),
         }
     }
@@ -71,6 +73,7 @@ impl ShortcutProfile {
             model_id,
             language: AUTO_LANGUAGE_VALUE.to_string(),
             mute_output_while_recording: false,
+            beep_on_recording: false,
             output: OutputAction::default(),
         }
     }
