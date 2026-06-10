@@ -58,6 +58,7 @@ pub struct TranscriptionSegment {
 pub enum TranscriptionSkipReason {
     CaptureTooShort,
     PreparedAudioTooShort,
+    NearSilent,
 }
 
 impl TranscriptionSkipReason {
@@ -69,6 +70,7 @@ impl TranscriptionSkipReason {
             Self::PreparedAudioTooShort => {
                 "prepared whisper audio is shorter than the minimum transcription duration"
             }
+            Self::NearSilent => "captured audio is near silent",
         }
     }
 }

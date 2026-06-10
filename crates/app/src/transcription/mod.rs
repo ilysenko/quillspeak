@@ -16,3 +16,6 @@ pub use status::{WhisperRuntimeState, WhisperRuntimeStatus};
 pub use types::{
     TranscriptionPlan, TranscriptionRequest, TranscriptionResult, TranscriptionStatus,
 };
+
+#[cfg(test)]
+pub use types::{TranscriptionDebugInfo, TranscriptionSkipReason};

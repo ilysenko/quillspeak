@@ -75,6 +75,8 @@ indicator, and exits through the same quit path for tray `Quit` and Ctrl-C.
   these commands.
 - `crates/app/src/config_store.rs`: app config load/save under the XDG config
   directory.
+- `crates/app/src/external_trigger.rs`: single-binary command mode and
+  app-owned Unix socket for `myapp trigger <shortcut> <start|stop>` requests.
 - `crates/app/src/hotkey/mod.rs`: pluggable app hotkey backend boundary and
   backend resolution.
 - `crates/app/src/hotkey/x11.rs`: app-side X11 passive grab backend.
@@ -380,14 +382,24 @@ X11 capture lives in the app and uses passive X11 grabs. The X11 backend sends
 `StartRecording(shortcut_id)` on key down and `StopRecording(shortcut_id)` when
 the required chord is no longer pressed.
 
-Wayland capture is external to MyApp. Configure shortcut profiles as
-`linux_signal`, then use an external utility such as `swhkd` to send Linux
-signals to the `myapp` process. Signal controls are dropdowns, not free-text
-fields. The supported exact values are `SIGUSR1`, `SIGUSR2`, `SIGALRM`, and
-`SIGWINCH`; aliases, numeric values, reserved process-control signals, and
-custom names are not supported. `SIGUSR1` and `SIGUSR2` are always registered as
-guard signals; if either signal does not match an enabled shortcut, MyApp logs
-the received signal at debug level and continues running.
+Wayland capture is external to MyApp. Prefer external utilities such as `swhkd`
+calling the existing binary in command mode: `myapp trigger <shortcut-id-or-name>
+start`, `myapp trigger <shortcut-id-or-name> stop`, or
+`myapp trigger <shortcut-id-or-name> toggle`. Command mode sends one line to the
+running app through `$XDG_RUNTIME_DIR/myapp/command.sock`; shortcut selectors
+resolve by exact id first, then exact unique display name. Disabled, missing,
+and ambiguous shortcuts are rejected. If the command socket cannot be created,
+the main app should continue running and `myapp trigger` remains unavailable
+until a later app start successfully creates the socket.
+
+Linux signal triggers remain available as a lower-level fallback. Configure
+shortcut profiles as `linux_signal`, then send Linux signals to the `myapp`
+process. Signal controls are dropdowns, not free-text fields. The supported
+exact values are `SIGUSR1`, `SIGUSR2`, `SIGALRM`, and `SIGWINCH`; aliases,
+numeric values, reserved process-control signals, and custom names are not
+supported. `SIGUSR1` and `SIGUSR2` are always registered as guard signals; if
+either signal does not match an enabled shortcut, MyApp logs the received signal
+at debug level and continues running.
 
 When a shortcut uses the same start and stop signal, each received signal is
 handled once. If the app is idle it starts that shortcut. If that same shortcut
@@ -397,8 +409,9 @@ shortcuts or processing state are ignored with debug logging.
 Example external trigger commands:
 
 ```sh
-pkill -USR1 -x myapp
-pkill -USR2 -x myapp
+myapp trigger Default start
+myapp trigger Default stop
+myapp trigger Default toggle
 ```
 
 The main app should never be run with sudo.

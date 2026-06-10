@@ -118,8 +118,9 @@ The app has two supported trigger paths:
 - X11: `hotkey_backend = "auto"` or `"x11"` lets the app capture configured
   keyboard shortcuts directly with X11 passive grabs; signal shortcuts are also
   available.
-- Wayland: shortcut profiles use Linux signal triggers and an external hotkey
-  utility such as `swhkd` sends Linux signals to `myapp`.
+- Wayland: an external hotkey utility such as `swhkd` can run `myapp trigger`
+  commands for shortcut start/stop. Linux signal shortcuts remain available as
+  a lower-level fallback.
 
 Settings follows the same display split. On X11 it shows both keyboard shortcut
 and Linux signal trigger controls. On Wayland, or in mixed Wayland/X11 sessions,
@@ -129,10 +130,24 @@ the app can actually receive.
 Backend values:
 
 - `auto`: X11 uses the app's X11 backend; Wayland resolves to disabled so
-  external signal tooling can drive signal shortcuts.
+  external command or signal tooling can drive shortcuts.
 - `disabled`: no app-side global keyboard capture; tray manual actions and
-  Linux signal triggers still work.
+  external trigger commands and Linux signal triggers still work.
 - `x11`: force app-side X11 capture.
+
+External trigger commands talk to the already running app through
+`$XDG_RUNTIME_DIR/myapp/command.sock`:
+
+```sh
+myapp trigger Default start
+myapp trigger Default stop
+myapp trigger Default toggle
+```
+
+The shortcut argument is resolved by exact shortcut id first, then by exact
+unique display name. Disabled, missing, or ambiguous shortcuts are rejected.
+`start` and `stop` are explicit edges. `toggle` is state-aware for that shortcut:
+idle starts it, and an active arming/recording shortcut stops it.
 
 Linux signal triggers are dropdowns with exact supported signal names:
 `SIGUSR1`, `SIGUSR2`, `SIGALRM`, and `SIGWINCH`. Aliases, numeric values, and
@@ -153,16 +168,16 @@ Example `~/.config/swhkd/swhkdrc` entries for Wayland:
 
 ```conf
 ctrl + space
-    pkill -USR1 -x myapp
+    myapp trigger Default start
 
 ctrl + @space
-    pkill -USR1 -x myapp
+    myapp trigger Default start
 
 ctrl + shift + space
-    pkill -USR2 -x myapp
+    myapp trigger Default stop
 
 ctrl + shift + @space
-    pkill -USR2 -x myapp
+    myapp trigger Default stop
 ```
 
 If a shortcut uses the same start and stop signal, the first received signal
@@ -171,16 +186,25 @@ If a shortcut uses distinct start and stop signals, the external utility must
 send the matching signal for each edge.
 
 For a quick manual check while the app is running, send the default start and
-stop pair:
+stop commands:
 
 ```sh
-pkill -USR1 -x myapp
-pkill -USR2 -x myapp
+myapp trigger Default start
+myapp trigger Default stop
 ```
 
-For a same-signal shortcut, send the same command twice. The first signal should
-start recording, and the second should stop the active recording. Unmatched guard
-signals are reported in debug logs and ignored; the app should continue running.
+You can also use one command for both edges:
+
+```sh
+myapp trigger Default toggle
+myapp trigger Default toggle
+```
+
+For a same-signal Linux signal shortcut, configure the shortcut with the same
+start and stop signal, then send that signal twice. The first signal should
+start recording, and the second should stop the active recording. Unmatched
+guard signals are reported in debug logs and ignored; the app should continue
+running.
 
 ## Audio And Transcription
 

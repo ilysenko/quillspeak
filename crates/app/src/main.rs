@@ -2,6 +2,7 @@ mod app;
 mod audio;
 mod command;
 mod config_store;
+mod external_trigger;
 mod hotkey;
 mod models;
 mod output;
@@ -19,7 +20,22 @@ const APP_DEV_LOG_FILTER: &str = "myapp=debug,shared=debug,info,pulseaudio::clie
 
 fn main() -> gtk4::glib::ExitCode {
     init_logging();
-    app::run()
+    match external_trigger::parse_invocation(env::args().skip(1)) {
+        Ok(external_trigger::ExternalTriggerInvocation::RunApp) => app::run(),
+        Ok(external_trigger::ExternalTriggerInvocation::Send(request)) => {
+            match external_trigger::send_trigger_request(&request) {
+                Ok(()) => gtk4::glib::ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("{error:#}");
+                    gtk4::glib::ExitCode::FAILURE
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!("{error:#}");
+            gtk4::glib::ExitCode::FAILURE
+        }
+    }
 }
 
 fn init_logging() {

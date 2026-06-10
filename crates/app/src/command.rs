@@ -1,3 +1,4 @@
+use crate::external_trigger::{ExternalTriggerRequest, ExternalTriggerResponse};
 use crate::output::{
     ClipboardCopyOutcome, ClipboardCopySource, ClipboardPasteOutcome, OutputScriptResult,
 };
@@ -13,6 +14,10 @@ pub enum AppCommand {
     ShowSettings,
     ToggleRecording,
     LinuxSignalReceived(i32),
+    ExternalTrigger {
+        request: ExternalTriggerRequest,
+        response_tx: std::sync::mpsc::Sender<ExternalTriggerResponse>,
+    },
     StartRecording(String),
     StopRecording(String),
     AudioCaptureStarted {

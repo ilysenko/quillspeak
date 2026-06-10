@@ -98,7 +98,6 @@ impl WhisperEngine {
             if let Err(error) = maybe_write_debug_audio(&request, &prepared) {
                 warn!(?error, "failed to write skipped debug audio files");
             }
-            self.clear_cached_context("unusable audio capture skipped");
             return Ok(skipped_transcription_result(
                 request,
                 prepared,
@@ -440,16 +439,14 @@ impl WhisperEngine {
     }
 
     fn handle_cache_after_transcription(&mut self, result: &Result<TranscriptionResult>) {
-        match result {
-            Ok(result) if matches!(result.status, TranscriptionStatus::Skipped { .. }) => {
-                self.clear_cached_context("unusable audio capture skipped");
-            }
-            Err(_) => {
-                self.clear_cached_context("whisper transcription failed");
-            }
-            Ok(_) => {}
+        if should_clear_cache_after_transcription(result) {
+            self.clear_cached_context("whisper transcription failed");
         }
     }
+}
+
+fn should_clear_cache_after_transcription(result: &Result<TranscriptionResult>) -> bool {
+    result.is_err()
 }
 
 impl Default for WhisperEngine {
@@ -503,6 +500,74 @@ mod tests {
         ));
         assert_eq!(result.debug.inference_duration_ms, 0);
         assert_eq!(result.debug.capture_duration_ms, 500);
+    }
+
+    #[test]
+    fn skips_near_silent_capture_before_loading_model() {
+        let mut engine = WhisperEngine::new(true);
+        let prepared = PreparedAudio {
+            samples: vec![0.0; 16_000],
+            source_sample_rate: 16_000,
+            source_channels: 1,
+            sample_rate: 16_000,
+        };
+        let request = transcription_request_from_prepared(
+            "silent",
+            PathBuf::from("/tmp/myapp-model-that-should-not-be-loaded.bin"),
+            "/tmp/silent.wav",
+            prepared,
+            2,
+        );
+
+        let result = engine
+            .transcribe(request)
+            .expect("near-silent captures should be skipped before model loading");
+
+        assert!(result.text.is_empty());
+        assert!(result.segments.is_empty());
+        assert!(matches!(
+            result.status,
+            TranscriptionStatus::Skipped {
+                reason: TranscriptionSkipReason::NearSilent
+            }
+        ));
+        assert_eq!(result.debug.inference_duration_ms, 0);
+        assert_eq!(result.debug.capture_duration_ms, 1_000);
+        assert_eq!(result.debug.audio_rms, 0.0);
+        assert_eq!(result.debug.audio_peak, 0.0);
+    }
+
+    #[test]
+    fn cache_policy_keeps_model_loaded_after_skipped_result() {
+        let prepared = PreparedAudio {
+            samples: vec![0.0; 16_000],
+            source_sample_rate: 16_000,
+            source_channels: 1,
+            sample_rate: 16_000,
+        };
+        let request = transcription_request_from_prepared(
+            "silent",
+            PathBuf::from("/tmp/debug-model.bin"),
+            "/tmp/silent.wav",
+            prepared.clone(),
+            2,
+        );
+        let audio_stats = request.audio.signal_stats();
+        let result = skipped_transcription_result(
+            request,
+            prepared,
+            audio_stats,
+            TranscriptionSkipReason::NearSilent,
+        );
+
+        assert!(!should_clear_cache_after_transcription(&Ok(result)));
+    }
+
+    #[test]
+    fn cache_policy_clears_model_after_transcription_error() {
+        let result: Result<TranscriptionResult> = Err(anyhow::anyhow!("whisper failed"));
+
+        assert!(should_clear_cache_after_transcription(&result));
     }
 
     #[test]

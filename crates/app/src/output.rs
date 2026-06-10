@@ -954,11 +954,16 @@ mod tests {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
+    };
 
-    use shared::{OutputAction, ScriptOutput};
+    use shared::{ComputeBackend, OutputAction, ScriptOutput};
 
     use super::*;
+    use crate::transcription::{TranscriptionDebugInfo, TranscriptionSkipReason};
 
     #[test]
     fn clipboard_disabled_when_output_does_not_request_it() {
@@ -997,6 +1002,24 @@ mod tests {
             output.script.as_ref().map(|script| script.path.as_str()),
             Some("/bin/echo")
         );
+    }
+
+    #[test]
+    fn apply_does_not_queue_output_for_skipped_transcription() {
+        let (worker_tx, worker_rx) = mpsc::channel();
+        let service = OutputService {
+            worker_tx,
+            join_handle: None,
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+        };
+        let result =
+            skipped_transcription_result_for_output_test(TranscriptionSkipReason::NearSilent);
+
+        assert_eq!(
+            service.apply(7, "default", &result),
+            OutputDelivery::NotQueued
+        );
+        assert!(worker_rx.try_recv().is_err());
     }
 
     #[test]
@@ -1368,6 +1391,44 @@ mod tests {
             std::process::id(),
             TEST_SCRIPT_COUNTER.fetch_add(1, Ordering::Relaxed)
         )
+    }
+
+    fn skipped_transcription_result_for_output_test(
+        reason: TranscriptionSkipReason,
+    ) -> TranscriptionResult {
+        TranscriptionResult {
+            status: TranscriptionStatus::Skipped { reason },
+            text: "ignored text".to_string(),
+            segments: Vec::new(),
+            output: OutputAction::default(),
+            debug: TranscriptionDebugInfo {
+                shortcut_name: "Default".to_string(),
+                model_id: "debug-model".to_string(),
+                model_path: PathBuf::from("/tmp/debug-model.bin"),
+                language: "auto".to_string(),
+                compute_backend: ComputeBackend::Auto,
+                output_label: OutputAction::default().label().to_string(),
+                input_label: "Debug input".to_string(),
+                capture_duration_ms: 1_000,
+                capture_wall_duration_ms: 1_000,
+                startup_latency_ms: 0,
+                first_callback_latency_ms: Some(0),
+                audio_callback_count: 2,
+                source_sample_rate: 16_000,
+                source_channels: 1,
+                source_frames: 16_000,
+                dropped_samples: 0,
+                missed_audio_chunks: 0,
+                stale_callback_count: 0,
+                stale_samples: 0,
+                audio_rms: 0.0,
+                audio_peak: 0.0,
+                whisper_sample_rate: 16_000,
+                whisper_samples: 16_000,
+                prepared_duration_ms: 1_000,
+                inference_duration_ms: 0,
+            },
+        }
     }
 
     struct TestScript {

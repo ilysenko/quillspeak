@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use gtk::gio;
@@ -15,6 +15,10 @@ use tracing::{debug, error, info, warn};
 use crate::audio::{AudioInputDevice, list_input_devices};
 use crate::command::{AppCommand, DownloadId, ModelDownloadOutcome};
 use crate::config_store::ConfigStore;
+use crate::external_trigger::{
+    ExternalTriggerAction, ExternalTriggerResponse, ExternalTriggerService,
+    resolve_shortcut_selector,
+};
 use crate::hotkey::{
     HotkeyBackendHandle, configure_hotkey_backend, configured_backend_name, effective_backend_name,
     shortcut_trigger_capabilities,
@@ -90,6 +94,7 @@ struct AppRuntime {
     tray: RefCell<Option<Tray>>,
     hotkey_backend: RefCell<Option<HotkeyBackendHandle>>,
     signal_trigger_service: RefCell<Option<SignalTriggerService>>,
+    external_trigger_service: RefCell<Option<ExternalTriggerService>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +121,7 @@ struct ShutdownServices {
     speaker_mute_service: Option<SpeakerMuteService>,
     output_service: Option<OutputService>,
     signal_trigger_service: Option<SignalTriggerService>,
+    external_trigger_service: Option<ExternalTriggerService>,
     transcription_service: Option<TranscriptionService>,
     hotkey_backend: Option<HotkeyBackendHandle>,
 }
@@ -127,11 +133,15 @@ impl ShutdownServices {
             speaker_mute_service,
             output_service,
             signal_trigger_service,
+            external_trigger_service,
             transcription_service,
             hotkey_backend,
         } = self;
 
         drop(hotkey_backend);
+        if let Some(mut external_trigger_service) = external_trigger_service {
+            external_trigger_service.shutdown();
+        }
         if let Some(mut signal_trigger_service) = signal_trigger_service {
             signal_trigger_service.shutdown();
         }
@@ -186,6 +196,16 @@ impl AppRuntime {
         };
 
         let signal_trigger_service = SignalTriggerService::spawn(command_tx.clone(), &config)?;
+        let external_trigger_service = match ExternalTriggerService::spawn(command_tx.clone()) {
+            Ok(service) => Some(service),
+            Err(error) => {
+                warn!(
+                    ?error,
+                    "failed to start external trigger command socket; myapp trigger commands are disabled"
+                );
+                None
+            }
+        };
         install_ctrl_c_handler(command_tx.clone());
 
         let runtime = Rc::new(Self {
@@ -211,6 +231,7 @@ impl AppRuntime {
             tray: RefCell::new(tray),
             hotkey_backend: RefCell::new(hotkey_backend),
             signal_trigger_service: RefCell::new(Some(signal_trigger_service)),
+            external_trigger_service: RefCell::new(external_trigger_service),
         });
 
         Self::attach_command_pump(&runtime, command_rx);
@@ -236,7 +257,15 @@ impl AppRuntime {
         if self.is_quitting.get()
             && !matches!(command, AppCommand::ShutdownComplete | AppCommand::Quit)
         {
-            debug!(?command, "ignoring command while app is quitting");
+            match command {
+                AppCommand::ExternalTrigger { response_tx, .. } => {
+                    let _ =
+                        response_tx.send(ExternalTriggerResponse::rejected("MyApp is quitting"));
+                }
+                other => {
+                    debug!(?other, "ignoring command while app is quitting");
+                }
+            }
             return;
         }
 
@@ -244,6 +273,10 @@ impl AppRuntime {
             AppCommand::ShowSettings => self.show_settings(),
             AppCommand::ToggleRecording => self.toggle_recording(),
             AppCommand::LinuxSignalReceived(signal) => self.handle_linux_signal(signal),
+            AppCommand::ExternalTrigger {
+                request,
+                response_tx,
+            } => self.handle_external_trigger(request, response_tx),
             AppCommand::StartRecording(shortcut_id) => self.start_recording(&shortcut_id),
             AppCommand::StopRecording(shortcut_id) => self.stop_recording(&shortcut_id),
             AppCommand::AudioCaptureStarted {
@@ -390,6 +423,46 @@ impl AppRuntime {
         }
     }
 
+    fn handle_external_trigger(
+        &self,
+        request: crate::external_trigger::ExternalTriggerRequest,
+        response_tx: mpsc::Sender<ExternalTriggerResponse>,
+    ) {
+        let received_at = Instant::now();
+        debug!(
+            shortcut = %request.shortcut,
+            action = request.action.as_str(),
+            "External trigger received by runtime"
+        );
+        let shortcut_id = match resolve_shortcut_selector(&self.config.borrow(), &request.shortcut)
+        {
+            Ok(shortcut_id) => shortcut_id,
+            Err(error) => {
+                warn!(
+                    shortcut = %request.shortcut,
+                    action = request.action.as_str(),
+                    error,
+                    "External trigger rejected"
+                );
+                let _ = response_tx.send(ExternalTriggerResponse::rejected(error));
+                return;
+            }
+        };
+
+        match request.action {
+            ExternalTriggerAction::Start => self.start_recording(&shortcut_id),
+            ExternalTriggerAction::Stop => self.stop_recording(&shortcut_id),
+            ExternalTriggerAction::Toggle => self.toggle_recording_for(&shortcut_id),
+        }
+        debug!(
+            shortcut_id,
+            action = request.action.as_str(),
+            elapsed_ms = received_at.elapsed().as_millis(),
+            "External trigger dispatched by runtime"
+        );
+        let _ = response_tx.send(ExternalTriggerResponse::accepted());
+    }
+
     fn start_recording(&self, shortcut_id: &str) {
         if self.recording.borrow().phase() != RecordingPhase::Idle {
             let phase = self.recording.borrow_mut().start_recording(0, shortcut_id);
@@ -451,6 +524,7 @@ impl AppRuntime {
     }
 
     fn stop_recording(&self, shortcut_id: &str) {
+        let started_at = Instant::now();
         let (phase, recording_id) = self.recording.borrow_mut().stop_recording(shortcut_id);
         self.set_recording_phase(phase);
 
@@ -464,6 +538,12 @@ impl AppRuntime {
             Ok(())
         };
 
+        debug!(
+            shortcut_id,
+            recording_id,
+            elapsed_ms = started_at.elapsed().as_millis(),
+            "recording stop request processed"
+        );
         if let Some(recording_id) = recording_id
             && let Err(error) = stop_result
         {
@@ -537,6 +617,22 @@ impl AppRuntime {
             return;
         }
 
+        match &result {
+            Ok(request) => info!(
+                recording_id,
+                shortcut_id,
+                input = %request.audio.input_label,
+                capture_duration_ms = request.audio.duration_ms(),
+                capture_wall_duration_ms = request.audio.wall_duration_ms(),
+                source_frames = request.audio.frame_count(),
+                "audio capture stopped; submitting transcription"
+            ),
+            Err(error) => warn!(
+                recording_id,
+                shortcut_id, error, "audio capture stopped with error"
+            ),
+        }
+
         let result = result.map_err(anyhow::Error::msg).and_then(|request| {
             self.transcription_service
                 .borrow()
@@ -580,6 +676,24 @@ impl AppRuntime {
 
         match result {
             Ok(result) => {
+                match &result.status {
+                    TranscriptionStatus::Completed => info!(
+                        recording_id,
+                        shortcut_id,
+                        inference_duration_ms = result.debug.inference_duration_ms,
+                        text_chars = result.text.chars().count(),
+                        "transcription finished; applying output"
+                    ),
+                    TranscriptionStatus::Skipped { reason } => info!(
+                        recording_id,
+                        shortcut_id,
+                        reason = reason.label(),
+                        capture_duration_ms = result.debug.capture_duration_ms,
+                        audio_rms = result.debug.audio_rms,
+                        audio_peak = result.debug.audio_peak,
+                        "transcription skipped; finishing without output"
+                    ),
+                }
                 log_recognized_text(shortcut_id, &result);
                 match self.apply_transcription_output(recording_id, shortcut_id, &result) {
                     OutputDelivery::Queued(completion) => {
@@ -683,6 +797,14 @@ impl AppRuntime {
             info!(
                 recording_id,
                 shortcut_id, "ignoring stale processing completion"
+            );
+        }
+        if accepted {
+            debug!(
+                recording_id,
+                shortcut_id,
+                ?phase,
+                "recording processing finished"
             );
         }
         self.set_recording_phase(phase);
@@ -1304,6 +1426,7 @@ impl AppRuntime {
             speaker_mute_service: self.speaker_mute_service.borrow_mut().take(),
             output_service: self.output_service.borrow_mut().take(),
             signal_trigger_service: self.signal_trigger_service.borrow_mut().take(),
+            external_trigger_service: self.external_trigger_service.borrow_mut().take(),
             transcription_service: self.transcription_service.borrow_mut().take(),
             hotkey_backend: self.hotkey_backend.borrow_mut().take(),
         };
