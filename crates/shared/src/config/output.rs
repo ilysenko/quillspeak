@@ -111,35 +111,6 @@ impl Default for OutputAction {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ShortcutOutput {
-    #[default]
-    Default,
-    Custom {
-        #[serde(flatten)]
-        action: OutputAction,
-    },
-}
-
-impl ShortcutOutput {
-    pub fn custom(action: OutputAction) -> Self {
-        Self::Custom { action }
-    }
-
-    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
-        match self {
-            Self::Default => Ok(()),
-            Self::Custom { action } => action.validate(),
-        }
-    }
-}
-
-pub enum ResolvedOutput<'a> {
-    General(&'a OutputAction),
-    Custom(&'a OutputAction),
-}
-
 const fn default_copy_to_clipboard() -> bool {
     true
 }

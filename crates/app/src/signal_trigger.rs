@@ -5,9 +5,7 @@ use std::thread;
 use anyhow::{Context, Result, anyhow};
 use shared::{AppConfig, ShortcutTrigger};
 use signal_hook::consts::FORBIDDEN;
-use signal_hook::consts::signal::{
-    SIGALRM, SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2, SIGWINCH,
-};
+use signal_hook::consts::signal::{SIGALRM, SIGINT, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2, SIGWINCH};
 use signal_hook::iterator::{Handle as SignalHandle, Signals};
 use tracing::{debug, info, warn};
 
@@ -186,52 +184,29 @@ fn guard_signal_numbers() -> [i32; 2] {
 }
 
 pub(crate) fn resolve_signal_number(input: &str) -> Result<i32> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
+    if input.trim().is_empty() {
         return Err(anyhow!("signal is empty"));
     }
-    if let Ok(number) = trimmed.parse::<i32>() {
-        if number <= 0 {
-            return Err(anyhow!("signal number must be positive"));
-        }
-        return Ok(number);
-    }
 
-    let mut name = trimmed.to_ascii_uppercase();
-    name.retain(|character| {
-        !character.is_ascii_whitespace() && character != '_' && character != '-'
-    });
-    if let Some(rest) = name.strip_prefix("SIG") {
-        name = rest.to_string();
-    }
-
-    match name.as_str() {
-        "USR1" | "USER1" => Ok(SIGUSR1),
-        "USR2" | "USER2" => Ok(SIGUSR2),
-        "HUP" => Ok(SIGHUP),
-        "ALRM" | "ALARM" => Ok(SIGALRM),
-        "WINCH" => Ok(SIGWINCH),
-        "INT" => Ok(SIGINT),
-        "TERM" => Ok(SIGTERM),
-        "QUIT" => Ok(SIGQUIT),
+    match input {
+        "SIGUSR1" => Ok(SIGUSR1),
+        "SIGUSR2" => Ok(SIGUSR2),
+        "SIGALRM" => Ok(SIGALRM),
+        "SIGWINCH" => Ok(SIGWINCH),
         other => Err(anyhow!("unsupported Linux signal: {other}")),
     }
 }
 
 pub(crate) fn is_registerable_signal(signal: i32) -> bool {
-    !FORBIDDEN.contains(&signal) && !matches!(signal, SIGINT | SIGTERM | SIGQUIT | SIGHUP)
+    !FORBIDDEN.contains(&signal) && !matches!(signal, SIGINT | SIGTERM | SIGQUIT)
 }
 
 pub(crate) fn signal_name(signal: i32) -> Option<&'static str> {
     match signal {
         SIGUSR1 => Some("SIGUSR1"),
         SIGUSR2 => Some("SIGUSR2"),
-        SIGHUP => Some("SIGHUP"),
         SIGALRM => Some("SIGALRM"),
         SIGWINCH => Some("SIGWINCH"),
-        SIGINT => Some("SIGINT"),
-        SIGTERM => Some("SIGTERM"),
-        SIGQUIT => Some("SIGQUIT"),
         _ => None,
     }
 }
@@ -245,14 +220,18 @@ mod tests {
     #[test]
     fn maps_registered_signal_numbers_to_names() {
         assert_eq!(resolve_signal_number("SIGUSR1").unwrap(), SIGUSR1);
-        assert_eq!(resolve_signal_number("User 2").unwrap(), SIGUSR2);
-        assert_eq!(resolve_signal_number("12").unwrap(), 12);
+        assert_eq!(resolve_signal_number("SIGUSR2").unwrap(), SIGUSR2);
+        assert_eq!(resolve_signal_number("SIGALRM").unwrap(), SIGALRM);
+        assert_eq!(resolve_signal_number("SIGWINCH").unwrap(), SIGWINCH);
+        assert!(resolve_signal_number("USR1").is_err());
+        assert!(resolve_signal_number("User 2").is_err());
+        assert!(resolve_signal_number("12").is_err());
         assert!(resolve_signal_number("nope").is_err());
         assert!(resolve_signal_number("0").is_err());
     }
 
     #[test]
-    fn skips_unresolved_and_reserved_configured_signals() {
+    fn skips_unresolved_configured_signals() {
         let mut config = AppConfig::default();
         config.shortcuts[0].trigger = ShortcutTrigger::LinuxSignal {
             start_signal: shared::LinuxSignal::new("SIGUSR1"),
@@ -273,6 +252,8 @@ mod tests {
     fn signal_names_cover_guard_signals() {
         assert_eq!(signal_name(SIGUSR1), Some("SIGUSR1"));
         assert_eq!(signal_name(SIGUSR2), Some("SIGUSR2"));
+        assert_eq!(signal_name(SIGALRM), Some("SIGALRM"));
+        assert_eq!(signal_name(SIGWINCH), Some("SIGWINCH"));
         assert_eq!(signal_name(999), None);
     }
 

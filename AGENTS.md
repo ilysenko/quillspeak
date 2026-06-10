@@ -57,7 +57,7 @@ indicator, and exits through the same quit path for tray `Quit` and Ctrl-C.
   normalization, shortcut IDs, shortcut chord parsing, Linux signal names, and
   shortcut key types.
 - `crates/shared/src/config/language.rs`: supported language list including
-  `auto`, default inheritance, and Ukrainian.
+  `auto` and Ukrainian.
 - `crates/shared/src/config/output.rs`: default and per-shortcut output action
   types for the final-text pipeline: optional script transform and clipboard
   copy.
@@ -159,45 +159,41 @@ Current schema. Generated defaults are display-aware; on X11-capable sessions
 the app creates the keyboard default plus a signal shortcut:
 
 ```toml
-schema_version = 12
+schema_version = 14
 
 [general]
 mode = "push_to_talk"
 hotkey_backend = "auto"
-default_input = { type = "system_default" }
-default_model_id = "large-v3-turbo-q5_0"
-default_language = "auto"
+audio_input = { type = "system_default" }
 compute_backend = "auto"
 keep_model_loaded = true
-mute_output_while_recording = false
-default_output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 
 [[shortcuts]]
 id = "default"
 name = "Default"
 enabled = true
 trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
-model_id = "default"
-language = "default"
-mute_output = { type = "default" }
-output = { type = "default" }
+model_id = "large-v3-turbo-q5_0"
+language = "auto"
+mute_output_while_recording = false
+output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 
 [[shortcuts]]
 id = "signal"
 name = "Signal"
 enabled = true
 trigger = { type = "linux_signal", start_signal = "SIGUSR1", stop_signal = "SIGUSR2" }
-model_id = "default"
-language = "default"
-mute_output = { type = "default" }
-output = { type = "default" }
+model_id = "large-v3-turbo-q5_0"
+language = "auto"
+mute_output_while_recording = false
+output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 ```
 
 On Wayland or mixed Wayland/X11 sessions, generated defaults use
 `linux_signal` on the permanent `Default` shortcut and Settings shows only
 signal trigger controls.
 
-Only schema v12 is supported during development. Do not add old-config
+Only schema v14 is supported during development. Do not add old-config
 migration paths unless explicitly requested. If the schema changes during
 active development, update the current schema and tests directly instead of
 layering legacy compatibility; older schemas, including v10, are discarded and
@@ -207,11 +203,13 @@ Supported `compute_backend` values are `auto`, `cpu`, `vulkan`, `cuda`, and
 `rocm`. Do not offer or parse OpenVINO unless a future whisper-rs integration
 explicitly supports it.
 
-Output is one simple pipeline: transcript, optional script transform, final
-text, optional clipboard copy/transport, optional paste shortcut. If script is
-enabled, its stdout is the final text and the original transcript must not be
-copied as a fallback. Paste from clipboard uses the external clipboard as
-transport and then sends a configured `xdotool` or `ydotool` shortcut.
+Each shortcut owns its model, language, speaker-mute preference, and output
+pipeline. Output is one simple pipeline: transcript, optional script transform,
+final text, optional clipboard copy/transport, optional paste shortcut. If
+script is enabled, its stdout is the final text and the original transcript
+must not be copied as a fallback. Paste from clipboard uses the external
+clipboard as transport and then sends a configured `xdotool` or `ydotool`
+shortcut.
 
 If a local development config is from an older schema, remove
 `~/.config/myapp/config.toml` and restart the app to generate the current
@@ -224,8 +222,9 @@ should not appear at startup.
 
 Current pages:
 
-- `General`: advanced hotkey status, backend, compute backend, default input,
-  default model, default language, and default output.
+- `Status`: runtime/tool readiness and formatted Whisper compute status.
+- `General`: hotkey backend, compute backend, audio input, and model cache
+  behavior.
 - `Models`: whisper.cpp model download/remove/status management.
 - one page per shortcut profile, with `Default` permanent.
 - `Add New`: creates a new shortcut profile.
@@ -245,9 +244,11 @@ Do not mutate the draft from a page builder just because a widget is being
 rendered; page builders should reflect the current draft and update it only from
 explicit user interactions.
 
-Shortcut pages should show only ready models plus `Default` inheritance. If a
-selected model is missing, the UI may show a missing marker so the user can fix
-the setting, but unavailable models must not be offered as normal choices.
+Shortcut pages should show only ready models. No shortcut setting inherits from
+General or `Default`; each shortcut owns its model, language, mute, script,
+clipboard, and paste settings. If a selected model is missing, the UI may show a
+missing marker so the user can fix the setting, but unavailable models must not
+be offered as normal choices.
 
 When ready model IDs change, Settings must update all model-dependent controls
 without requiring app restart. Progress-only changes should update existing
@@ -306,7 +307,7 @@ agnostic: X11/Wayland affects global hotkeys, not microphone capture.
 
 Current audio behavior:
 
-- `GeneralConfig.default_input` stores either `system_default` or a CPAL device
+- `GeneralConfig.audio_input` stores either `system_default` or a CPAL device
   reference with `host`, `id`, and human label,
 - Settings > General lists `System Default` first, then discovered input
   devices,
@@ -381,12 +382,12 @@ the required chord is no longer pressed.
 
 Wayland capture is external to MyApp. Configure shortcut profiles as
 `linux_signal`, then use an external utility such as `swhkd` to send Linux
-signals to the `myapp` process. Signal fields are text fields; MyApp saves
-arbitrary non-empty text, resolves common aliases and numeric signal values in
-`signal_trigger.rs`, and logs unsupported values without failing startup.
-`SIGUSR1` and `SIGUSR2` are always registered as guard signals; if either signal
-does not match an enabled shortcut, MyApp logs the received signal at debug
-level and continues running.
+signals to the `myapp` process. Signal controls are dropdowns, not free-text
+fields. The supported exact values are `SIGUSR1`, `SIGUSR2`, `SIGALRM`, and
+`SIGWINCH`; aliases, numeric values, reserved process-control signals, and
+custom names are not supported. `SIGUSR1` and `SIGUSR2` are always registered as
+guard signals; if either signal does not match an enabled shortcut, MyApp logs
+the received signal at debug level and continues running.
 
 When a shortcut uses the same start and stop signal, each received signal is
 handled once. If the app is idle it starts that shortcut. If that same shortcut

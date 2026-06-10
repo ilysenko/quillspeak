@@ -5,8 +5,7 @@ use anyhow::{Context, Result};
 use directories::BaseDirs;
 use shared::persistence::atomic_write_text;
 use shared::{
-    AppConfig, CONFIG_SCHEMA_VERSION, INHERIT_VALUE, ShortcutMuteOutput, ShortcutOutput,
-    ShortcutProfile, ShortcutTrigger,
+    AppConfig, CONFIG_SCHEMA_VERSION, DEFAULT_MODEL_ID, ShortcutProfile, ShortcutTrigger,
 };
 use tracing::warn;
 
@@ -114,10 +113,10 @@ fn default_signal_shortcut_profile() -> ShortcutProfile {
         name: SIGNAL_SHORTCUT_NAME.to_string(),
         enabled: true,
         trigger: ShortcutTrigger::default_linux_signal(),
-        model_id: INHERIT_VALUE.to_string(),
-        language: INHERIT_VALUE.to_string(),
-        mute_output: ShortcutMuteOutput::Default,
-        output: ShortcutOutput::Default,
+        model_id: DEFAULT_MODEL_ID.to_string(),
+        language: shared::AUTO_LANGUAGE_VALUE.to_string(),
+        mute_output_while_recording: false,
+        output: shared::OutputAction::default(),
     }
 }
 
@@ -432,6 +431,57 @@ output = { type = "default" }
         );
         assert!(contents.contains("type = \"linux_signal\""));
         assert!(!contents.contains("accelerator = \"Ctrl+Alt+Space\""));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn schema_v13_config_is_discarded_instead_of_migrated() {
+        let root = temp_config_root();
+        let path = root.join("config.toml");
+        fs::create_dir_all(&root).expect("test config dir should be writable");
+        fs::write(
+            &path,
+            r#"
+schema_version = 13
+
+[general]
+mode = "push_to_talk"
+hotkey_backend = "auto"
+audio_input = { type = "system_default" }
+compute_backend = "auto"
+keep_model_loaded = true
+
+[[shortcuts]]
+id = "default"
+name = "Default"
+enabled = true
+trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
+model_id = "large-v3-turbo-q5_0"
+language = "auto"
+mute_output_while_recording = true
+output = { copy_to_clipboard = false, paste_from_clipboard = true, paste_shortcut = "ctrl_v" }
+"#,
+        )
+        .expect("v13 config should be writable");
+        let store = ConfigStore::for_path(path.clone());
+
+        let config = store
+            .load_or_create_default()
+            .expect("v13 config should be discarded");
+        let contents = fs::read_to_string(&path).expect("replacement config should be readable");
+
+        assert_eq!(
+            config,
+            default_config_for_shortcut_capabilities(ShortcutTriggerCapabilities::SignalsOnly)
+        );
+        assert_eq!(
+            config_schema_version(&contents),
+            Some(CONFIG_SCHEMA_VERSION)
+        );
+        assert!(contents.contains("schema_version = 14"));
+        assert!(contents.contains("audio_input"));
+        assert!(contents.contains("mute_output_while_recording = false"));
+        assert!(!contents.contains("paste_from_clipboard = true"));
         let _ = fs::remove_dir_all(root);
     }
 

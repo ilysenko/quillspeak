@@ -1,5 +1,3 @@
-use super::INHERIT_VALUE;
-
 pub const AUTO_LANGUAGE_VALUE: &str = "auto";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,7 +72,6 @@ const fn lang(code: &'static str, label: &'static str) -> SupportedLanguage {
 
 pub fn supported_language_label(value: &str) -> Option<&'static str> {
     match value {
-        INHERIT_VALUE => Some("Default"),
         AUTO_LANGUAGE_VALUE => Some("Auto Detect"),
         code => SUPPORTED_LANGUAGES
             .iter()
@@ -83,9 +80,8 @@ pub fn supported_language_label(value: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) fn is_supported_language_ref(input: &str, allow_inherit: bool) -> bool {
-    (allow_inherit && input == INHERIT_VALUE)
-        || input == AUTO_LANGUAGE_VALUE
+pub(crate) fn is_supported_language_ref(input: &str) -> bool {
+    input == AUTO_LANGUAGE_VALUE
         || SUPPORTED_LANGUAGES
             .iter()
             .any(|language| language.code == input)

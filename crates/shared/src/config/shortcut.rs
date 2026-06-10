@@ -1,10 +1,37 @@
 use serde::{Deserialize, Serialize};
 
-use super::output::ShortcutOutput;
-use super::{ConfigError, inherit_value, normalize_language_ref, normalize_model_ref};
+use super::output::OutputAction;
+use super::{
+    AUTO_LANGUAGE_VALUE, ConfigError, DEFAULT_MODEL_ID, normalize_language_ref, normalize_model_id,
+};
 
 pub const DEFAULT_SHORTCUT_ID: &str = "default";
 pub const DEFAULT_SHORTCUT_NAME: &str = "Default";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinuxSignalSpec {
+    pub name: &'static str,
+    pub label: &'static str,
+}
+
+pub const SUPPORTED_LINUX_SIGNALS: &[LinuxSignalSpec] = &[
+    LinuxSignalSpec {
+        name: "SIGUSR1",
+        label: "SIGUSR1 - user-defined signal 1",
+    },
+    LinuxSignalSpec {
+        name: "SIGUSR2",
+        label: "SIGUSR2 - user-defined signal 2",
+    },
+    LinuxSignalSpec {
+        name: "SIGALRM",
+        label: "SIGALRM - alarm signal",
+    },
+    LinuxSignalSpec {
+        name: "SIGWINCH",
+        label: "SIGWINCH - window size change",
+    },
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -15,8 +42,8 @@ pub struct ShortcutProfile {
     pub trigger: ShortcutTrigger,
     pub model_id: String,
     pub language: String,
-    pub mute_output: ShortcutMuteOutput,
-    pub output: ShortcutOutput,
+    pub mute_output_while_recording: bool,
+    pub output: OutputAction,
 }
 
 impl ShortcutProfile {
@@ -26,14 +53,14 @@ impl ShortcutProfile {
             name: DEFAULT_SHORTCUT_NAME.to_string(),
             enabled: true,
             trigger: ShortcutTrigger::default_keyboard(),
-            model_id: inherit_value(),
-            language: inherit_value(),
-            mute_output: ShortcutMuteOutput::Default,
-            output: ShortcutOutput::Default,
+            model_id: DEFAULT_MODEL_ID.to_string(),
+            language: AUTO_LANGUAGE_VALUE.to_string(),
+            mute_output_while_recording: false,
+            output: OutputAction::default(),
         }
     }
 
-    pub fn new_profile(id: String, name: String) -> Self {
+    pub fn new_profile(id: String, name: String, model_id: String) -> Self {
         Self {
             id,
             name,
@@ -41,10 +68,10 @@ impl ShortcutProfile {
             trigger: ShortcutTrigger::Keyboard {
                 accelerator: String::new(),
             },
-            model_id: inherit_value(),
-            language: inherit_value(),
-            mute_output: ShortcutMuteOutput::Default,
-            output: ShortcutOutput::Default,
+            model_id,
+            language: AUTO_LANGUAGE_VALUE.to_string(),
+            mute_output_while_recording: false,
+            output: OutputAction::default(),
         }
     }
 
@@ -58,30 +85,11 @@ impl ShortcutProfile {
             self.name = self.id.clone();
         }
         self.trigger = self.trigger.normalized(self.enabled)?;
-        self.model_id = normalize_model_ref(&self.model_id)?;
-        self.language = normalize_language_ref(&self.language, true)?;
-        self.mute_output.validate();
+        self.model_id = normalize_model_id(&self.model_id)?;
+        self.language = normalize_language_ref(&self.language)?;
         self.output.validate()?;
         Ok(self)
     }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ShortcutMuteOutput {
-    #[default]
-    Default,
-    Custom {
-        enabled: bool,
-    },
-}
-
-impl ShortcutMuteOutput {
-    pub const fn custom(enabled: bool) -> Self {
-        Self::Custom { enabled }
-    }
-
-    pub(crate) const fn validate(self) {}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,6 +166,14 @@ impl LinuxSignal {
         Self("SIGUSR2".to_string())
     }
 
+    pub fn sigalrm() -> Self {
+        Self("SIGALRM".to_string())
+    }
+
+    pub fn sigwinch() -> Self {
+        Self("SIGWINCH".to_string())
+    }
+
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }
@@ -167,12 +183,13 @@ impl LinuxSignal {
     }
 
     pub fn normalized(&self) -> Result<Self, ConfigError> {
-        let value = normalize_signal_text(self.as_str())?;
-        Ok(Self(value))
+        validate_signal_text(self.as_str())?;
+        Ok(Self(self.0.clone()))
     }
 
     pub fn duplicate_key(&self) -> Result<String, ConfigError> {
-        normalize_signal_text(self.as_str())
+        validate_signal_text(self.as_str())?;
+        Ok(self.as_str().to_string())
     }
 }
 
@@ -182,36 +199,17 @@ impl Default for LinuxSignal {
     }
 }
 
-fn normalize_signal_text(input: &str) -> Result<String, ConfigError> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
+fn validate_signal_text(input: &str) -> Result<(), ConfigError> {
+    if input.trim().is_empty() {
         return Err(ConfigError::EmptySignal);
     }
-
-    Ok(match canonical_user_signal(trimmed) {
-        Some(signal) => signal.to_string(),
-        None => trimmed.to_string(),
-    })
-}
-
-fn canonical_user_signal(input: &str) -> Option<&'static str> {
-    let mut value = input.trim().to_ascii_uppercase();
-    value.retain(|character| {
-        !character.is_ascii_whitespace() && character != '_' && character != '-'
-    });
-    if let Some(rest) = value.strip_prefix("SIG") {
-        value = rest.to_string();
-    }
-    match value.as_str() {
-        "USR1" | "USER1" => Some("SIGUSR1"),
-        "USR2" | "USER2" => Some("SIGUSR2"),
-        "HUP" => Some("SIGHUP"),
-        "ALRM" | "ALARM" => Some("SIGALRM"),
-        "WINCH" => Some("SIGWINCH"),
-        "INT" => Some("SIGINT"),
-        "TERM" => Some("SIGTERM"),
-        "QUIT" => Some("SIGQUIT"),
-        _ => None,
+    if SUPPORTED_LINUX_SIGNALS
+        .iter()
+        .any(|signal| signal.name == input)
+    {
+        Ok(())
+    } else {
+        Err(ConfigError::UnsupportedSignal(input.to_string()))
     }
 }
 

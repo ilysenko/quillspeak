@@ -5,7 +5,7 @@ use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use shared::{
-    DEFAULT_SHORTCUT_ID, LinuxSignal, MODEL_CATALOG, ShortcutMuteOutput, ShortcutProfile,
+    DEFAULT_SHORTCUT_ID, LinuxSignal, MODEL_CATALOG, SUPPORTED_LINUX_SIGNALS, ShortcutProfile,
     ShortcutTrigger, model_catalog_entry,
 };
 
@@ -14,7 +14,8 @@ use crate::settings::SettingsDraft;
 use crate::settings::pages::output_controls::add_shortcut_output_controls;
 use crate::settings::shortcut_recorder::connect_record_button;
 use crate::settings::widgets::{
-    dropdown_row, language_dropdown_row, preferences_page, shortcut_model_dropdown_row,
+    dropdown_row_with_help, language_dropdown_row, preferences_page, shortcut_model_dropdown_row,
+    switch_row, text_row, value_dropdown_row,
 };
 
 pub fn build(
@@ -29,29 +30,30 @@ pub fn build(
     let group = adw::PreferencesGroup::builder().title("Shortcut").build();
     let keyboard_available = capabilities.keyboard_available();
 
-    let name_row = adw::EntryRow::builder()
-        .title("Name")
-        .text(&shortcut.name)
-        .build();
-    name_row.set_sensitive(shortcut.id != DEFAULT_SHORTCUT_ID);
-    name_row.connect_changed({
+    let name_row = text_row(
+        "Name",
+        "Display name shown in the Settings sidebar and logs for this shortcut profile.",
+        &shortcut.name,
+    );
+    name_row
+        .row
+        .set_sensitive(shortcut.id != DEFAULT_SHORTCUT_ID);
+    name_row.entry.connect_changed({
         let draft = draft.clone();
         let shortcut_id = shortcut_id.clone();
-        move |row| {
+        move |entry| {
             draft.update_shortcut(&shortcut_id, |shortcut| {
-                shortcut.name = row.text().to_string();
+                shortcut.name = entry.text().to_string();
             });
         }
     });
-    group.add(&name_row);
+    group.add(&name_row.row);
 
-    let enabled_switch = gtk::Switch::builder()
-        .active(shortcut.enabled)
-        .valign(gtk::Align::Center)
-        .build();
-    let enabled_row = adw::ActionRow::builder().title("Enabled").build();
-    enabled_row.add_suffix(&enabled_switch);
-    enabled_row.set_activatable_widget(Some(&enabled_switch));
+    let (enabled_row, enabled_switch) = switch_row(
+        "Enabled",
+        "Controls whether this shortcut profile can start recordings. Disabled profiles remain saved but ignore their trigger.",
+        shortcut.enabled,
+    );
     enabled_switch.connect_active_notify({
         let draft = draft.clone();
         let shortcut_id = shortcut_id.clone();
@@ -65,8 +67,9 @@ pub fn build(
 
     let trigger_is_keyboard =
         keyboard_available && matches!(shortcut.trigger, ShortcutTrigger::Keyboard { .. });
-    let trigger = dropdown_row(
+    let trigger = dropdown_row_with_help(
         "Trigger",
+        "Selects how this shortcut starts and stops recording. Keyboard is available only on X11; Linux signal works with external Wayland shortcut tools.",
         &["Keyboard shortcut", "Linux signal"],
         if trigger_is_keyboard { 0 } else { 1 },
     );
@@ -74,21 +77,22 @@ pub fn build(
         group.add(&trigger.row);
     }
 
-    let shortcut_entry = adw::EntryRow::builder()
-        .title("Shortcut")
-        .text(shortcut_keyboard_accelerator(shortcut))
-        .visible(trigger_is_keyboard)
-        .build();
-    shortcut_entry.connect_changed({
+    let shortcut_entry = text_row(
+        "Shortcut",
+        "Keyboard chord captured by the X11 backend, for example Ctrl+Alt+Space. Empty shortcuts are automatically disabled.",
+        shortcut_keyboard_accelerator(shortcut),
+    );
+    shortcut_entry.row.set_visible(trigger_is_keyboard);
+    shortcut_entry.entry.connect_changed({
         let draft = draft.clone();
         let shortcut_id = shortcut_id.clone();
         let enabled_switch = enabled_switch.clone();
-        move |row| {
-            let enabled = !row.text().trim().is_empty();
+        move |entry| {
+            let enabled = !entry.text().trim().is_empty();
             enabled_switch.set_active(enabled);
             draft.update_shortcut(&shortcut_id, |shortcut| {
                 shortcut.trigger = ShortcutTrigger::Keyboard {
-                    accelerator: row.text().to_string(),
+                    accelerator: entry.text().to_string(),
                 };
                 shortcut.enabled = enabled;
             });
@@ -99,49 +103,61 @@ pub fn build(
         .tooltip_text("Record shortcut")
         .valign(gtk::Align::Center)
         .build();
-    shortcut_entry.add_suffix(&record_button);
-    connect_record_button(&record_button, &shortcut_entry);
-    group.add(&shortcut_entry);
+    shortcut_entry.row.add_suffix(&record_button);
+    connect_record_button(&record_button, &shortcut_entry.entry);
+    group.add(&shortcut_entry.row);
 
     let (start_signal, stop_signal) = shortcut_signal_pair(shortcut);
-    let start_signal_row =
-        signal_entry_row("Start signal", start_signal.as_str(), !trigger_is_keyboard);
-    let stop_signal_row =
-        signal_entry_row("Stop signal", stop_signal.as_str(), !trigger_is_keyboard);
-    start_signal_row.connect_changed({
+    let start_signal_row = signal_dropdown_row("Start signal", &start_signal, !trigger_is_keyboard);
+    let stop_signal_row = signal_dropdown_row("Stop signal", &stop_signal, !trigger_is_keyboard);
+    start_signal_row.dropdown.connect_selected_notify({
         let draft = draft.clone();
         let shortcut_id = shortcut_id.clone();
-        let stop_signal_row = stop_signal_row.clone();
+        let start_values = start_signal_row.values.clone();
+        let stop_values = stop_signal_row.values.clone();
+        let stop_dropdown = stop_signal_row.dropdown.clone();
         let enabled_switch = enabled_switch.clone();
-        move |row| {
+        move |dropdown| {
             enabled_switch.set_active(true);
-            draft.update_shortcut(&shortcut_id, |shortcut| {
-                shortcut.trigger = ShortcutTrigger::LinuxSignal {
-                    start_signal: LinuxSignal::new(row.text().to_string()),
-                    stop_signal: LinuxSignal::new(stop_signal_row.text().to_string()),
-                };
-                shortcut.enabled = true;
-            });
+            if let (Some(start_signal), Some(stop_signal)) = (
+                start_values.get(dropdown.selected() as usize),
+                stop_values.get(stop_dropdown.selected() as usize),
+            ) {
+                draft.update_shortcut(&shortcut_id, |shortcut| {
+                    shortcut.trigger = ShortcutTrigger::LinuxSignal {
+                        start_signal: LinuxSignal::new(start_signal.clone()),
+                        stop_signal: LinuxSignal::new(stop_signal.clone()),
+                    };
+                    shortcut.enabled = true;
+                });
+            }
         }
     });
-    stop_signal_row.connect_changed({
+    stop_signal_row.dropdown.connect_selected_notify({
         let draft = draft.clone();
         let shortcut_id = shortcut_id.clone();
-        let start_signal_row = start_signal_row.clone();
+        let start_values = start_signal_row.values.clone();
+        let stop_values = stop_signal_row.values.clone();
+        let start_dropdown = start_signal_row.dropdown.clone();
         let enabled_switch = enabled_switch.clone();
-        move |row| {
+        move |dropdown| {
             enabled_switch.set_active(true);
-            draft.update_shortcut(&shortcut_id, |shortcut| {
-                shortcut.trigger = ShortcutTrigger::LinuxSignal {
-                    start_signal: LinuxSignal::new(start_signal_row.text().to_string()),
-                    stop_signal: LinuxSignal::new(row.text().to_string()),
-                };
-                shortcut.enabled = true;
-            });
+            if let (Some(start_signal), Some(stop_signal)) = (
+                start_values.get(start_dropdown.selected() as usize),
+                stop_values.get(dropdown.selected() as usize),
+            ) {
+                draft.update_shortcut(&shortcut_id, |shortcut| {
+                    shortcut.trigger = ShortcutTrigger::LinuxSignal {
+                        start_signal: LinuxSignal::new(start_signal.clone()),
+                        stop_signal: LinuxSignal::new(stop_signal.clone()),
+                    };
+                    shortcut.enabled = true;
+                });
+            }
         }
     });
-    group.add(&start_signal_row);
-    group.add(&stop_signal_row);
+    group.add(&start_signal_row.row);
+    group.add(&stop_signal_row.row);
 
     trigger.dropdown.connect_selected_notify({
         let draft = draft.clone();
@@ -152,19 +168,20 @@ pub fn build(
         let enabled_switch = enabled_switch.clone();
         move |dropdown| {
             let is_keyboard = dropdown.selected() == 0;
-            let enabled = !is_keyboard || !shortcut_entry.text().to_string().trim().is_empty();
-            shortcut_entry.set_visible(is_keyboard);
-            start_signal_row.set_visible(!is_keyboard);
-            stop_signal_row.set_visible(!is_keyboard);
+            let enabled =
+                !is_keyboard || !shortcut_entry.entry.text().to_string().trim().is_empty();
+            shortcut_entry.row.set_visible(is_keyboard);
+            start_signal_row.row.set_visible(!is_keyboard);
+            stop_signal_row.row.set_visible(!is_keyboard);
             if !is_keyboard {
-                start_signal_row.set_text("SIGUSR1");
-                stop_signal_row.set_text("SIGUSR2");
+                start_signal_row.dropdown.set_selected(0);
+                stop_signal_row.dropdown.set_selected(1);
             }
             enabled_switch.set_active(enabled);
             draft.update_shortcut(&shortcut_id, |shortcut| {
                 shortcut.trigger = if is_keyboard {
                     ShortcutTrigger::Keyboard {
-                        accelerator: shortcut_entry.text().to_string(),
+                        accelerator: shortcut_entry.entry.text().to_string(),
                     }
                 } else {
                     ShortcutTrigger::default_linux_signal()
@@ -179,7 +196,12 @@ pub fn build(
         .filter_map(|entry| model_catalog_entry(entry.id))
         .filter(|entry| ready_model_ids.contains(entry.id))
         .collect::<Vec<_>>();
-    let model = shortcut_model_dropdown_row("Model", &ready_entries, &shortcut.model_id);
+    let model = shortcut_model_dropdown_row(
+        "Model",
+        "Downloaded Whisper model used by this shortcut. Only ready models are offered; a missing marker means the configured model is not currently installed.",
+        &ready_entries,
+        &shortcut.model_id,
+    );
     model.dropdown.connect_selected_notify({
         let draft = draft.clone();
         let shortcut_id = shortcut_id.clone();
@@ -194,7 +216,11 @@ pub fn build(
     });
     group.add(&model.row);
 
-    let language = language_dropdown_row("Language", true, &shortcut.language);
+    let language = language_dropdown_row(
+        "Language",
+        "Language hint passed to Whisper. Auto Detect lets Whisper choose the spoken language for this shortcut.",
+        &shortcut.language,
+    );
     language.dropdown.connect_selected_notify({
         let draft = draft.clone();
         let shortcut_id = shortcut_id.clone();
@@ -209,21 +235,21 @@ pub fn build(
     });
     group.add(&language.row);
 
-    let mute_output = dropdown_row(
-        "Speaker mute",
-        &["Default", "Mute", "Do not mute"],
-        mute_output_index(shortcut.mute_output),
+    let (mute_output_row, mute_output_switch) = switch_row(
+        "Mute speakers while recording",
+        "Temporarily mutes the default system output while this shortcut is actively recording, then restores the previous mute state.",
+        shortcut.mute_output_while_recording,
     );
-    mute_output.dropdown.connect_selected_notify({
+    mute_output_switch.connect_active_notify({
         let draft = draft.clone();
         let shortcut_id = shortcut_id.clone();
-        move |dropdown| {
+        move |switch| {
             draft.update_shortcut(&shortcut_id, |shortcut| {
-                shortcut.mute_output = mute_output_from_index(dropdown.selected());
+                shortcut.mute_output_while_recording = switch.is_active();
             });
         }
     });
-    group.add(&mute_output.row);
+    group.add(&mute_output_row);
 
     add_shortcut_output_controls(&group, &shortcut_id, &shortcut.output, draft.clone());
 
@@ -274,24 +300,26 @@ fn shortcut_signal_pair(shortcut: &ShortcutProfile) -> (LinuxSignal, LinuxSignal
     }
 }
 
-fn signal_entry_row(title: &str, text: &str, visible: bool) -> adw::EntryRow {
-    let row = adw::EntryRow::builder().title(title).text(text).build();
-    row.set_visible(visible);
+fn signal_dropdown_row(
+    title: &str,
+    selected_signal: &LinuxSignal,
+    visible: bool,
+) -> crate::settings::widgets::ValueDropDownRow {
+    let labels = SUPPORTED_LINUX_SIGNALS
+        .iter()
+        .map(|signal| signal.label.to_string())
+        .collect::<Vec<_>>();
+    let values = SUPPORTED_LINUX_SIGNALS
+        .iter()
+        .map(|signal| signal.name.to_string())
+        .collect::<Vec<_>>();
+    let row = value_dropdown_row(
+        title,
+        "Linux signal sent by an external shortcut tool. Only the listed exact signal names are supported; using the same signal for start and stop toggles recording.",
+        labels,
+        values,
+        selected_signal.as_str(),
+    );
+    row.row.set_visible(visible);
     row
-}
-
-fn mute_output_index(mute_output: ShortcutMuteOutput) -> u32 {
-    match mute_output {
-        ShortcutMuteOutput::Default => 0,
-        ShortcutMuteOutput::Custom { enabled: true } => 1,
-        ShortcutMuteOutput::Custom { enabled: false } => 2,
-    }
-}
-
-fn mute_output_from_index(index: u32) -> ShortcutMuteOutput {
-    match index {
-        1 => ShortcutMuteOutput::custom(true),
-        2 => ShortcutMuteOutput::custom(false),
-        _ => ShortcutMuteOutput::Default,
-    }
 }

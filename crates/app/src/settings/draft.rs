@@ -3,7 +3,8 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use shared::{
-    AppConfig, ConfigError, DEFAULT_SHORTCUT_ID, ShortcutProfile, ShortcutTrigger, next_shortcut_id,
+    AppConfig, ConfigError, DEFAULT_MODEL_ID, DEFAULT_SHORTCUT_ID, ShortcutProfile,
+    ShortcutTrigger, next_shortcut_id,
 };
 
 use crate::hotkey::ShortcutTriggerCapabilities;
@@ -78,11 +79,15 @@ impl SettingsDraft {
         }
     }
 
-    pub fn add_shortcut(&self, capabilities: ShortcutTriggerCapabilities) -> ShortcutProfile {
+    pub fn add_shortcut(
+        &self,
+        capabilities: ShortcutTriggerCapabilities,
+        model_id: String,
+    ) -> ShortcutProfile {
         let mut config = self.config.borrow_mut();
         let id = next_shortcut_id(&config.shortcuts);
         let name = format!("Shortcut {}", config.shortcuts.len() + 1);
-        let mut shortcut = ShortcutProfile::new_profile(id, name);
+        let mut shortcut = ShortcutProfile::new_profile(id, name, model_id);
         if !capabilities.keyboard_available() {
             shortcut.trigger = ShortcutTrigger::default_linux_signal();
             shortcut.enabled = !shortcut_signal_keys(&shortcut).is_some_and(|keys| {
@@ -96,6 +101,14 @@ impl SettingsDraft {
         }
         config.shortcuts.push(shortcut.clone());
         shortcut
+    }
+
+    pub fn assign_factory_model_to_shortcuts(&self, model_id: &str) {
+        for shortcut in &mut self.config.borrow_mut().shortcuts {
+            if shortcut.model_id == DEFAULT_MODEL_ID {
+                shortcut.model_id = model_id.to_string();
+            }
+        }
     }
 
     pub fn remove_shortcut(&self, shortcut_id: &str) -> bool {
@@ -142,29 +155,58 @@ fn shortcut_signal_keys(shortcut: &ShortcutProfile) -> Option<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use shared::{OutputAction, ShortcutOutput};
+    use shared::{DEFAULT_MODEL_ID, OutputAction};
 
     use super::*;
 
     #[test]
     fn updates_shortcut_by_id_after_removing_another_shortcut() {
         let draft = SettingsDraft::new(AppConfig::default());
-        let first = draft.add_shortcut(ShortcutTriggerCapabilities::KeyboardAndSignals);
-        let second = draft.add_shortcut(ShortcutTriggerCapabilities::KeyboardAndSignals);
+        let first = draft.add_shortcut(
+            ShortcutTriggerCapabilities::KeyboardAndSignals,
+            DEFAULT_MODEL_ID.to_string(),
+        );
+        let second = draft.add_shortcut(
+            ShortcutTriggerCapabilities::KeyboardAndSignals,
+            DEFAULT_MODEL_ID.to_string(),
+        );
 
         assert!(draft.remove_shortcut(&first.id));
         draft.update_shortcut(&second.id, |shortcut| {
-            shortcut.output = ShortcutOutput::custom(OutputAction::default());
+            shortcut.output = OutputAction::default();
         });
 
         let config = draft.snapshot();
         assert_eq!(config.shortcuts.len(), 2);
         assert_eq!(config.shortcuts[0].id, DEFAULT_SHORTCUT_ID);
         assert_eq!(config.shortcuts[1].id, second.id);
-        assert_eq!(
-            config.shortcuts[1].output,
-            ShortcutOutput::custom(OutputAction::default())
+        assert_eq!(config.shortcuts[1].output, OutputAction::default());
+    }
+
+    #[test]
+    fn factory_model_assignment_preserves_unrelated_draft_edits() {
+        let draft = SettingsDraft::new(AppConfig::default());
+        let custom = draft.add_shortcut(
+            ShortcutTriggerCapabilities::KeyboardAndSignals,
+            "tiny".to_string(),
         );
+        draft.update(|config| {
+            config.general.keep_model_loaded = false;
+        });
+        draft.update_shortcut(&custom.id, |shortcut| {
+            shortcut.name = "Edited".to_string();
+        });
+
+        draft.assign_factory_model_to_shortcuts("small-q8_0");
+
+        let config = draft.snapshot();
+        assert!(!config.general.keep_model_loaded);
+        assert_eq!(config.default_shortcut().model_id, "small-q8_0");
+        let custom_shortcut = config
+            .shortcut_by_id(&custom.id)
+            .expect("custom shortcut should remain");
+        assert_eq!(custom_shortcut.model_id, "tiny");
+        assert_eq!(custom_shortcut.name, "Edited");
     }
 
     #[test]
@@ -179,7 +221,10 @@ mod tests {
     fn added_shortcut_uses_signals_when_keyboard_is_unavailable() {
         let draft = SettingsDraft::new(AppConfig::default());
 
-        let shortcut = draft.add_shortcut(ShortcutTriggerCapabilities::SignalsOnly);
+        let shortcut = draft.add_shortcut(
+            ShortcutTriggerCapabilities::SignalsOnly,
+            DEFAULT_MODEL_ID.to_string(),
+        );
 
         assert_eq!(shortcut.trigger, ShortcutTrigger::default_linux_signal());
     }
@@ -189,7 +234,10 @@ mod tests {
         let draft = SettingsDraft::new(AppConfig::default());
         draft.coerce_trigger_capabilities(ShortcutTriggerCapabilities::SignalsOnly);
 
-        let shortcut = draft.add_shortcut(ShortcutTriggerCapabilities::SignalsOnly);
+        let shortcut = draft.add_shortcut(
+            ShortcutTriggerCapabilities::SignalsOnly,
+            DEFAULT_MODEL_ID.to_string(),
+        );
 
         assert_eq!(shortcut.trigger, ShortcutTrigger::default_linux_signal());
         assert!(!shortcut.enabled);
@@ -211,7 +259,10 @@ mod tests {
     #[test]
     fn disables_duplicate_signal_profiles_after_keyboard_coercion() {
         let draft = SettingsDraft::new(AppConfig::default());
-        let added = draft.add_shortcut(ShortcutTriggerCapabilities::KeyboardAndSignals);
+        let added = draft.add_shortcut(
+            ShortcutTriggerCapabilities::KeyboardAndSignals,
+            DEFAULT_MODEL_ID.to_string(),
+        );
 
         draft.coerce_trigger_capabilities(ShortcutTriggerCapabilities::SignalsOnly);
 

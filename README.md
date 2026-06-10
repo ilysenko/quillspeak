@@ -134,14 +134,13 @@ Backend values:
   Linux signal triggers still work.
 - `x11`: force app-side X11 capture.
 
-Linux signal triggers are text fields. Common aliases such as `usr1`, `User 1`,
-and `SIGUSR1` resolve to `SIGUSR1`; arbitrary non-empty text is saved, and if it
-cannot be resolved to a Linux signal at runtime the app logs a diagnostic and
-skips that binding. Using the same signal for start and stop makes that signal a
-state-aware start/stop trigger: idle starts, the active shortcut stops. Each
-received signal is handled once. `SIGUSR1` and `SIGUSR2` are always registered
-as safe guard signals, so an unmatched external signal is logged at debug level
-and ignored instead of terminating the app.
+Linux signal triggers are dropdowns with exact supported signal names:
+`SIGUSR1`, `SIGUSR2`, `SIGALRM`, and `SIGWINCH`. Aliases, numeric values, and
+custom text are not accepted. Using the same signal for start and stop makes
+that signal a state-aware start/stop trigger: idle starts, the active shortcut
+stops. Each received signal is handled once. `SIGUSR1` and `SIGUSR2` are always
+registered as safe guard signals, so an unmatched external signal is logged at
+debug level and ignored instead of terminating the app.
 
 Signal examples:
 
@@ -282,38 +281,34 @@ Generated defaults are display-aware. On X11-capable sessions the app creates
 the keyboard default plus a signal shortcut:
 
 ```toml
-schema_version = 12
+schema_version = 14
 
 [general]
 mode = "push_to_talk"
 hotkey_backend = "auto"
-default_model_id = "large-v3-turbo-q5_0"
-default_language = "auto"
+audio_input = { type = "system_default" }
 compute_backend = "auto"
 keep_model_loaded = true
-mute_output_while_recording = false
-default_input = { type = "system_default" }
-default_output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 
 [[shortcuts]]
 id = "default"
 name = "Default"
 enabled = true
 trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
-model_id = "default"
-language = "default"
-mute_output = { type = "default" }
-output = { type = "default" }
+model_id = "large-v3-turbo-q5_0"
+language = "auto"
+mute_output_while_recording = false
+output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 
 [[shortcuts]]
 id = "signal"
 name = "Signal"
 enabled = true
 trigger = { type = "linux_signal", start_signal = "SIGUSR1", stop_signal = "SIGUSR2" }
-model_id = "default"
-language = "default"
-mute_output = { type = "default" }
-output = { type = "default" }
+model_id = "large-v3-turbo-q5_0"
+language = "auto"
+mute_output_while_recording = false
+output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 ```
 
 On Wayland or mixed Wayland/X11 sessions, the generated default shortcut uses
@@ -335,20 +330,20 @@ Supported `compute_backend` values are `auto`, `cpu`, `vulkan`, `cuda`, and
 `rocm`. OpenVINO is not currently supported by this whisper-rs integration and
 is not offered in Settings.
 
-Settings has `General`, `Models`, one page per shortcut profile, and `Add New`
-pages. `Models` manages downloaded whisper.cpp ggml models under
-`~/.local/share/myapp/models`. Shortcut pages choose only ready models, or
-`Default` to inherit the general model.
+Settings has `Status`, `General`, `Models`, one page per shortcut profile, and
+`Add New` pages. `Models` manages downloaded whisper.cpp ggml models under
+`~/.local/share/myapp/models`. Shortcut pages choose only ready models; each
+shortcut owns its model, language, mute, script, clipboard, and paste settings.
 
-Each shortcut profile has its own trigger, model override, language override,
-and output pipeline. Triggers can be keyboard shortcuts or Linux signals.
+Each shortcut profile has its own trigger, model, language, and output pipeline.
+Triggers can be keyboard shortcuts or Linux signals.
 
 TOML output examples:
 
 ```toml
-default_output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
-output = { type = "custom", copy_to_clipboard = false, paste_from_clipboard = true, paste_shortcut = "ctrl_shift_v", script = { path = "/home/igor/myapp-polite-english.sh" } }
-output = { type = "custom", copy_to_clipboard = false, paste_from_clipboard = true, paste_shortcut = "custom", paste_custom_x11 = "ctrl+v", paste_custom_wayland = "29:1 47:1 47:0 29:0" }
+output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
+output = { copy_to_clipboard = false, paste_from_clipboard = true, paste_shortcut = "ctrl_shift_v", script = { path = "/home/igor/myapp-polite-english.sh" } }
+output = { copy_to_clipboard = false, paste_from_clipboard = true, paste_shortcut = "custom", paste_custom_x11 = "ctrl+v", paste_custom_wayland = "29:1 47:1 47:0 29:0" }
 ```
 
 ## Verification

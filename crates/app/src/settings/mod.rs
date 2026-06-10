@@ -39,6 +39,7 @@ pub struct SettingsWindow {
     sidebar: sidebar::SettingsSidebar,
     toast_overlay: adw::ToastOverlay,
     state: SettingsState,
+    status_page: Rc<RefCell<Option<pages::status::StatusPage>>>,
     general_page: Rc<RefCell<Option<pages::general::GeneralPage>>>,
     models_page: Rc<RefCell<Option<pages::models::ModelsPage>>>,
 }
@@ -133,6 +134,7 @@ impl SettingsWindow {
             sidebar,
             toast_overlay,
             state,
+            status_page: Rc::new(RefCell::new(None)),
             general_page: Rc::new(RefCell::new(None)),
             models_page: Rc::new(RefCell::new(None)),
         };
@@ -150,6 +152,12 @@ impl SettingsWindow {
         self.state
             .draft
             .coerce_trigger_capabilities(self.state.shortcut_trigger_capabilities);
+        self.render(visible);
+    }
+
+    pub fn assign_factory_model_to_shortcuts(&self, model_id: &str) {
+        let visible = self.stack.visible_child_name().map(|name| name.to_string());
+        self.state.draft.assign_factory_model_to_shortcuts(model_id);
         self.render(visible);
     }
 
@@ -212,6 +220,7 @@ impl SettingsWindow {
             &self.sidebar,
             &self.state,
             preferred_page,
+            &self.status_page,
             &self.general_page,
             &self.models_page,
         );
@@ -241,9 +250,11 @@ fn render_stack(
     settings_sidebar: &sidebar::SettingsSidebar,
     state: &SettingsState,
     preferred_page: Option<String>,
+    status_page_slot: &Rc<RefCell<Option<pages::status::StatusPage>>>,
     general_page_slot: &Rc<RefCell<Option<pages::general::GeneralPage>>>,
     models_page_slot: &Rc<RefCell<Option<pages::models::ModelsPage>>>,
 ) {
+    status_page_slot.replace(None);
     general_page_slot.replace(None);
     models_page_slot.replace(None);
     while let Some(child) = stack.first_child() {
@@ -255,6 +266,7 @@ fn render_stack(
         let stack = stack.clone();
         let settings_sidebar = settings_sidebar.clone();
         let state = state.clone();
+        let status_page_slot = Rc::clone(status_page_slot);
         let general_page_slot = Rc::clone(general_page_slot);
         let models_page_slot = Rc::clone(models_page_slot);
         move |preferred_page| {
@@ -263,6 +275,7 @@ fn render_stack(
                 &settings_sidebar,
                 &state,
                 preferred_page,
+                &status_page_slot,
                 &general_page_slot,
                 &models_page_slot,
             )
@@ -271,16 +284,23 @@ fn render_stack(
 
     let ready_model_ids = state.ready_model_ids.borrow().clone();
     let app_pages = vec![
+        sidebar::SidebarPage::new("status", "Status"),
         sidebar::SidebarPage::new("general", "General"),
         sidebar::SidebarPage::new("models", "Models"),
     ];
     let mut shortcut_pages = Vec::new();
 
+    let status_page = pages::status::build(state.whisper_runtime_status.borrow().clone());
+    stack.add_titled(
+        &widgets::scrollable_page(status_page.widget()),
+        Some("status"),
+        "Status",
+    );
+    status_page_slot.replace(Some(status_page));
+
     let general_page = pages::general::build(
         &config,
         state.audio_input_devices.borrow().clone(),
-        ready_model_ids.clone(),
-        state.whisper_runtime_status.borrow().clone(),
         state.draft.clone(),
     );
     stack.add_titled(general_page.widget(), Some("general"), "General");
@@ -335,7 +355,7 @@ fn render_stack(
 
     let target = preferred_page
         .filter(|name| stack.child_by_name(name).is_some())
-        .unwrap_or_else(|| "general".to_string());
+        .unwrap_or_else(|| "status".to_string());
     stack.set_visible_child_name(&target);
     settings_sidebar.set_sections(
         &[

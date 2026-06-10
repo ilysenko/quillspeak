@@ -1169,12 +1169,18 @@ impl AppRuntime {
 
         match effect {
             FinishEffect::Completed => {
+                let had_ready_models = !self.model_store.ready_model_ids().is_empty();
                 match self.model_store.mark_ready(&model_id) {
-                    Ok(ready_model_ids) => info!(
-                        model_id,
-                        ready_model_count = ready_model_ids.len(),
-                        "model download completed"
-                    ),
+                    Ok(ready_model_ids) => {
+                        info!(
+                            model_id,
+                            ready_model_count = ready_model_ids.len(),
+                            "model download completed"
+                        );
+                        if !had_ready_models {
+                            self.assign_first_ready_model_to_factory_shortcuts(&model_id);
+                        }
+                    }
                     Err(error) => {
                         warn!(?error, model_id, "failed to update model inventory");
                         self.download_manager
@@ -1194,6 +1200,35 @@ impl AppRuntime {
             }
             FinishEffect::Stale => {}
         }
+    }
+
+    fn assign_first_ready_model_to_factory_shortcuts(&self, model_id: &str) {
+        let Some(config) =
+            config_with_factory_shortcut_models(self.config.borrow().clone(), model_id)
+        else {
+            warn!(
+                model_id,
+                "failed to assign first ready model because no factory model shortcut exists"
+            );
+            return;
+        };
+
+        if let Err(error) = self.config_store.save(&config) {
+            warn!(
+                ?error,
+                model_id, "failed to persist first ready model on factory model shortcuts"
+            );
+            return;
+        }
+
+        self.config.replace(config.clone());
+        if let Some(window) = self.settings_window.borrow().as_ref() {
+            window.assign_factory_model_to_shortcuts(model_id);
+        }
+        info!(
+            model_id,
+            "assigned first ready model to factory model shortcuts"
+        );
     }
 
     fn refresh_model_rows(&self) {
@@ -1293,7 +1328,7 @@ impl AppRuntime {
             mode = %config.general.mode.as_str(),
             configured_hotkey_backend = %configured_backend_name(&config),
             effective_hotkey_backend = %effective_backend_name(&config),
-            default_input = %config.general.default_input.display_label(),
+            audio_input = %config.general.audio_input.display_label(),
             keep_model_loaded = config.general.keep_model_loaded,
             whisper_compute = %config.general.compute_backend.as_str(),
             compiled_whisper_backends = %whisper_backends.display_label(),
@@ -1313,6 +1348,17 @@ impl AppRuntime {
             .set(recording_id.checked_add(1).unwrap_or(1));
         recording_id
     }
+}
+
+fn config_with_factory_shortcut_models(mut config: AppConfig, model_id: &str) -> Option<AppConfig> {
+    let mut changed = false;
+    for shortcut in &mut config.shortcuts {
+        if shortcut.model_id == shared::DEFAULT_MODEL_ID {
+            shortcut.model_id = model_id.to_string();
+            changed = true;
+        }
+    }
+    changed.then_some(config)
 }
 
 fn spawn_shutdown_worker(command_tx: mpsc::Sender<AppCommand>, services: ShutdownServices) {
@@ -1410,5 +1456,37 @@ mod tests {
         assert!(!pending.matches(7, "default", OutputCompletion::ClipboardCopy));
         assert!(!pending.matches_recording(8, "default"));
         assert!(!pending.matches_recording(7, "other"));
+    }
+
+    #[test]
+    fn config_with_factory_shortcut_models_updates_all_factory_model_shortcuts() {
+        let mut config = AppConfig::default();
+        config.shortcuts.push(shared::ShortcutProfile::new_profile(
+            "signal".to_string(),
+            "Signal".to_string(),
+            shared::DEFAULT_MODEL_ID.to_string(),
+        ));
+
+        let updated = config_with_factory_shortcut_models(config, "small-q8_0")
+            .expect("factory model shortcuts exist");
+
+        assert_eq!(updated.default_shortcut().model_id, "small-q8_0");
+        assert_eq!(updated.shortcuts[1].model_id, "small-q8_0");
+    }
+
+    #[test]
+    fn config_with_factory_shortcut_models_preserves_custom_model_shortcuts() {
+        let mut config = AppConfig::default();
+        config.shortcuts.push(shared::ShortcutProfile::new_profile(
+            "custom".to_string(),
+            "Custom".to_string(),
+            "tiny".to_string(),
+        ));
+
+        let updated = config_with_factory_shortcut_models(config, "small-q8_0")
+            .expect("factory model shortcut exists");
+
+        assert_eq!(updated.default_shortcut().model_id, "small-q8_0");
+        assert_eq!(updated.shortcuts[1].model_id, "tiny");
     }
 }

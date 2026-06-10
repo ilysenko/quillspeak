@@ -77,10 +77,8 @@ impl ModelStatus {
 
 pub fn referenced_models(config: &AppConfig) -> HashSet<String> {
     let mut referenced = HashSet::new();
-    referenced.insert(config.general.default_model_id.clone());
     for shortcut in &config.shortcuts {
-        let model_id = config.resolved_model_id(shortcut);
-        referenced.insert(model_id.to_string());
+        referenced.insert(shortcut.model_id.clone());
     }
     referenced
 }

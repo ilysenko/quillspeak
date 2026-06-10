@@ -14,15 +14,14 @@ pub use language::{
     AUTO_LANGUAGE_VALUE, SUPPORTED_LANGUAGES, SupportedLanguage, supported_language_label,
 };
 pub use model::{DEFAULT_MODEL_ID, MODEL_CATALOG, ModelCatalogEntry, model_catalog_entry};
-pub use output::{OutputAction, PasteShortcut, ResolvedOutput, ScriptOutput, ShortcutOutput};
+pub use output::{OutputAction, PasteShortcut, ScriptOutput};
 pub use shortcut::{
-    DEFAULT_SHORTCUT_ID, DEFAULT_SHORTCUT_NAME, LinuxSignal, ShortcutChord, ShortcutKey,
-    ShortcutModifiers, ShortcutMuteOutput, ShortcutProfile, ShortcutTrigger, next_shortcut_id,
-    normalize_accelerator,
+    DEFAULT_SHORTCUT_ID, DEFAULT_SHORTCUT_NAME, LinuxSignal, LinuxSignalSpec,
+    SUPPORTED_LINUX_SIGNALS, ShortcutChord, ShortcutKey, ShortcutModifiers, ShortcutProfile,
+    ShortcutTrigger, next_shortcut_id, normalize_accelerator,
 };
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 12;
-pub const INHERIT_VALUE: &str = "default";
+pub const CONFIG_SCHEMA_VERSION: u32 = 14;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConfigError {
@@ -58,6 +57,8 @@ pub enum ConfigError {
     EmptyScriptPath,
     #[error("linux signal trigger cannot be empty")]
     EmptySignal,
+    #[error("unsupported linux signal trigger: {0}")]
+    UnsupportedSignal(String),
     #[error("{0} paste shortcut cannot be empty")]
     EmptyPasteShortcut(&'static str),
 }
@@ -163,20 +164,13 @@ impl TryFrom<&str> for ComputeBackend {
 pub struct GeneralConfig {
     pub mode: HotkeyMode,
     pub hotkey_backend: HotkeyBackend,
-    pub default_input: AudioInputRef,
-    pub default_model_id: String,
-    pub default_language: String,
+    pub audio_input: AudioInputRef,
     pub compute_backend: ComputeBackend,
     pub keep_model_loaded: bool,
-    pub mute_output_while_recording: bool,
-    pub default_output: OutputAction,
 }
 
 impl GeneralConfig {
-    fn normalized(mut self) -> Result<Self, ConfigError> {
-        self.default_model_id = normalize_model_id(&self.default_model_id)?;
-        self.default_language = normalize_language_ref(&self.default_language, false)?;
-        self.default_output.validate()?;
+    fn normalized(self) -> Result<Self, ConfigError> {
         Ok(self)
     }
 }
@@ -186,13 +180,9 @@ impl Default for GeneralConfig {
         Self {
             mode: HotkeyMode::PushToTalk,
             hotkey_backend: HotkeyBackend::Auto,
-            default_input: AudioInputRef::SystemDefault,
-            default_model_id: DEFAULT_MODEL_ID.to_string(),
-            default_language: AUTO_LANGUAGE_VALUE.to_string(),
+            audio_input: AudioInputRef::SystemDefault,
             compute_backend: ComputeBackend::Auto,
             keep_model_loaded: true,
-            mute_output_while_recording: false,
-            default_output: OutputAction::default(),
         }
     }
 }
@@ -293,36 +283,6 @@ impl AppConfig {
                     .is_some_and(|accelerator| !accelerator.trim().is_empty())
         })
     }
-
-    pub fn resolved_model_id<'a>(&'a self, shortcut: &'a ShortcutProfile) -> &'a str {
-        if shortcut.model_id == INHERIT_VALUE {
-            &self.general.default_model_id
-        } else {
-            &shortcut.model_id
-        }
-    }
-
-    pub fn resolved_language<'a>(&'a self, shortcut: &'a ShortcutProfile) -> &'a str {
-        if shortcut.language == INHERIT_VALUE {
-            &self.general.default_language
-        } else {
-            &shortcut.language
-        }
-    }
-
-    pub fn resolved_output<'a>(&'a self, shortcut: &'a ShortcutProfile) -> ResolvedOutput<'a> {
-        match &shortcut.output {
-            ShortcutOutput::Default => ResolvedOutput::General(&self.general.default_output),
-            ShortcutOutput::Custom { action } => ResolvedOutput::Custom(action),
-        }
-    }
-
-    pub fn resolved_mute_output_while_recording(&self, shortcut: &ShortcutProfile) -> bool {
-        match shortcut.mute_output {
-            ShortcutMuteOutput::Default => self.general.mute_output_while_recording,
-            ShortcutMuteOutput::Custom { enabled } => enabled,
-        }
-    }
 }
 
 fn unique_shortcut_signals(
@@ -348,10 +308,6 @@ impl Default for AppConfig {
     }
 }
 
-pub(crate) fn inherit_value() -> String {
-    INHERIT_VALUE.to_string()
-}
-
 pub(crate) fn normalize_model_id(input: &str) -> Result<String, ConfigError> {
     let value = input.trim();
     if model_catalog_entry(value).is_some() {
@@ -361,21 +317,9 @@ pub(crate) fn normalize_model_id(input: &str) -> Result<String, ConfigError> {
     }
 }
 
-pub(crate) fn normalize_model_ref(input: &str) -> Result<String, ConfigError> {
-    let value = input.trim();
-    if value == INHERIT_VALUE || model_catalog_entry(value).is_some() {
-        Ok(value.to_string())
-    } else {
-        Err(ConfigError::UnsupportedModel(value.to_string()))
-    }
-}
-
-pub(crate) fn normalize_language_ref(
-    input: &str,
-    allow_inherit: bool,
-) -> Result<String, ConfigError> {
+pub(crate) fn normalize_language_ref(input: &str) -> Result<String, ConfigError> {
     let value = input.trim().to_ascii_lowercase();
-    if language::is_supported_language_ref(&value, allow_inherit) {
+    if language::is_supported_language_ref(&value) {
         Ok(value)
     } else {
         Err(ConfigError::UnsupportedLanguage(input.to_string()))
@@ -393,16 +337,15 @@ mod tests {
         assert_eq!(config.schema_version, CONFIG_SCHEMA_VERSION);
         assert_eq!(config.general.mode, HotkeyMode::PushToTalk);
         assert_eq!(config.general.hotkey_backend, HotkeyBackend::Auto);
-        assert_eq!(config.general.default_input, AudioInputRef::SystemDefault);
+        assert_eq!(config.general.audio_input, AudioInputRef::SystemDefault);
         assert!(config.general.keep_model_loaded);
-        assert!(!config.general.mute_output_while_recording);
         assert_eq!(config.shortcuts.len(), 1);
         assert_eq!(config.default_shortcut().id, DEFAULT_SHORTCUT_ID);
         assert_eq!(config.default_shortcut().name, DEFAULT_SHORTCUT_NAME);
-        assert_eq!(
-            config.default_shortcut().mute_output,
-            ShortcutMuteOutput::Default
-        );
+        assert_eq!(config.default_shortcut().model_id, DEFAULT_MODEL_ID);
+        assert_eq!(config.default_shortcut().language, AUTO_LANGUAGE_VALUE);
+        assert!(!config.default_shortcut().mute_output_while_recording);
+        assert_eq!(config.default_shortcut().output, OutputAction::default());
     }
 
     #[test]
@@ -416,6 +359,7 @@ mod tests {
 
         assert_eq!(decoded, config);
         assert!(encoded.contains("[general]"));
+        assert!(encoded.contains("audio_input"));
         assert!(encoded.contains("[[shortcuts]]"));
         assert!(encoded.contains("id = \"default\""));
     }
@@ -447,30 +391,26 @@ hotkey = "Ctrl-Alt-F"
     }
 
     #[test]
-    fn rejects_schema_without_default_input() {
+    fn rejects_schema_without_audio_input() {
         let result = toml::from_str::<AppConfig>(
             r#"
-	schema_version = 12
+	schema_version = 14
 
 	[general]
 	mode = "push_to_talk"
 	hotkey_backend = "auto"
-	default_model_id = "large-v3-turbo-q5_0"
-	default_language = "auto"
 	compute_backend = "auto"
 	keep_model_loaded = true
-	mute_output_while_recording = false
-	default_output = { copy_to_clipboard = true }
 
 	[[shortcuts]]
 	id = "default"
 	name = "Default"
 	enabled = true
 	trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
-	model_id = "default"
-	language = "default"
-	mute_output = { type = "default" }
-	output = { type = "default" }
+	model_id = "large-v3-turbo-q5_0"
+	language = "auto"
+	mute_output_while_recording = false
+	output = { copy_to_clipboard = true }
 	"#,
         );
 
@@ -481,27 +421,23 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_schema_without_keep_model_loaded() {
         let result = toml::from_str::<AppConfig>(
             r#"
-	schema_version = 12
+	schema_version = 14
 
 	[general]
 	mode = "push_to_talk"
 	hotkey_backend = "auto"
-	default_input = { type = "system_default" }
-	default_model_id = "large-v3-turbo-q5_0"
-	default_language = "auto"
+	audio_input = { type = "system_default" }
 	compute_backend = "auto"
-	mute_output_while_recording = false
-	default_output = { copy_to_clipboard = true }
 
 	[[shortcuts]]
 	id = "default"
 	name = "Default"
 	enabled = true
 	trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
-	model_id = "default"
-	language = "default"
-	mute_output = { type = "default" }
-	output = { type = "default" }
+	model_id = "large-v3-turbo-q5_0"
+	language = "auto"
+	mute_output_while_recording = false
+	output = { copy_to_clipboard = true }
 	"#,
         );
 
@@ -509,30 +445,26 @@ hotkey = "Ctrl-Alt-F"
     }
 
     #[test]
-    fn rejects_schema_without_mute_output_setting() {
+    fn rejects_schema_without_shortcut_mute_output_setting() {
         let result = toml::from_str::<AppConfig>(
             r#"
-	schema_version = 12
+	schema_version = 14
 
 	[general]
 	mode = "push_to_talk"
 	hotkey_backend = "auto"
-	default_input = { type = "system_default" }
-	default_model_id = "large-v3-turbo-q5_0"
-	default_language = "auto"
+	audio_input = { type = "system_default" }
 	compute_backend = "auto"
 	keep_model_loaded = true
-	default_output = { copy_to_clipboard = true }
 
 	[[shortcuts]]
 	id = "default"
 	name = "Default"
 	enabled = true
 	trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
-	model_id = "default"
-	language = "default"
-	mute_output = { type = "default" }
-	output = { type = "default" }
+	model_id = "large-v3-turbo-q5_0"
+	language = "auto"
+	output = { copy_to_clipboard = true }
 	"#,
         );
 
@@ -551,52 +483,48 @@ hotkey = "Ctrl-Alt-F"
     }
 
     #[test]
-    fn rejects_removed_auto_paste_output() {
-        let mut config = AppConfig::default();
-        config.general.default_output.copy_to_clipboard = false;
-
+    fn rejects_removed_general_default_fields() {
+        let config = AppConfig::default();
         let encoded = toml::to_string(&config).expect("config should encode");
         let mut value = toml::from_str::<toml::Value>(&encoded).expect("config should parse");
         value
             .get_mut("general")
-            .and_then(|general| general.get_mut("default_output"))
-            .and_then(|output| output.as_table_mut())
-            .expect("default output should be a table")
-            .insert("auto_paste".to_string(), toml::Value::Boolean(true));
+            .and_then(|general| general.as_table_mut())
+            .expect("general should be a table")
+            .insert(
+                "default_model_id".to_string(),
+                toml::Value::String(DEFAULT_MODEL_ID.to_string()),
+            );
         let encoded = toml::to_string(&value).expect("config should encode");
 
         let decoded = toml::from_str::<AppConfig>(&encoded)
-            .expect_err("auto_paste is not part of the current output schema");
+            .expect_err("general defaults are not part of the current schema");
 
-        assert!(decoded.to_string().contains("auto_paste"));
+        assert!(decoded.to_string().contains("default_model_id"));
     }
 
     #[test]
     fn rejects_removed_daemon_backend() {
         let result = toml::from_str::<AppConfig>(
             r#"
-	schema_version = 12
+	schema_version = 14
 
 	[general]
 	mode = "push_to_talk"
 	hotkey_backend = "daemon"
-	default_input = { type = "system_default" }
-	default_model_id = "large-v3-turbo-q5_0"
-	default_language = "auto"
+	audio_input = { type = "system_default" }
 	compute_backend = "auto"
 	keep_model_loaded = true
-	mute_output_while_recording = false
-	default_output = { copy_to_clipboard = true }
 
 	[[shortcuts]]
 	id = "default"
 	name = "Default"
 	enabled = true
 	trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
-	model_id = "default"
-	language = "default"
-	mute_output = { type = "default" }
-	output = { type = "default" }
+	model_id = "large-v3-turbo-q5_0"
+	language = "auto"
+	mute_output_while_recording = false
+	output = { copy_to_clipboard = true }
 	"#,
         );
 
@@ -608,28 +536,24 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_removed_portal_backend() {
         let result = toml::from_str::<AppConfig>(
             r#"
-	schema_version = 12
+	schema_version = 14
 
 	[general]
 	mode = "push_to_talk"
 	hotkey_backend = "portal"
-	default_input = { type = "system_default" }
-	default_model_id = "large-v3-turbo-q5_0"
-	default_language = "auto"
+	audio_input = { type = "system_default" }
 	compute_backend = "auto"
 	keep_model_loaded = true
-	mute_output_while_recording = false
-	default_output = { copy_to_clipboard = true }
 
 	[[shortcuts]]
 	id = "default"
 	name = "Default"
 	enabled = true
 	trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
-	model_id = "default"
-	language = "default"
-	mute_output = { type = "default" }
-	output = { type = "default" }
+	model_id = "large-v3-turbo-q5_0"
+	language = "auto"
+	mute_output_while_recording = false
+	output = { copy_to_clipboard = true }
 	"#,
         );
 
@@ -640,7 +564,7 @@ hotkey = "Ctrl-Alt-F"
     #[test]
     fn config_round_trips_copy_output() {
         let mut config = AppConfig::default();
-        config.general.default_output = OutputAction {
+        config.shortcuts[0].output = OutputAction {
             copy_to_clipboard: true,
             ..OutputAction::default()
         };
@@ -719,10 +643,10 @@ hotkey = "Ctrl-Alt-F"
             name: "Second".to_string(),
             enabled: true,
             trigger: config.default_shortcut().trigger.clone(),
-            model_id: INHERIT_VALUE.to_string(),
-            language: INHERIT_VALUE.to_string(),
-            mute_output: ShortcutMuteOutput::Default,
-            output: ShortcutOutput::Default,
+            model_id: DEFAULT_MODEL_ID.to_string(),
+            language: AUTO_LANGUAGE_VALUE.to_string(),
+            mute_output_while_recording: false,
+            output: OutputAction::default(),
         });
 
         assert!(matches!(
@@ -747,18 +671,35 @@ hotkey = "Ctrl-Alt-F"
     #[test]
     fn rejects_empty_script_path() {
         let mut config = AppConfig::default();
-        config.shortcuts[0].output = ShortcutOutput::custom(OutputAction::script(String::new()));
+        config.shortcuts[0].output = OutputAction::script(String::new());
 
         assert_eq!(config.normalized(), Err(ConfigError::EmptyScriptPath));
     }
 
     #[test]
-    fn normalizes_linux_signal_aliases() {
+    fn rejects_removed_default_model_and_language_references() {
+        let mut config = AppConfig::default();
+        config.shortcuts[0].model_id = "default".to_string();
+        assert_eq!(
+            config.clone().normalized(),
+            Err(ConfigError::UnsupportedModel("default".to_string()))
+        );
+
+        config.shortcuts[0].model_id = DEFAULT_MODEL_ID.to_string();
+        config.shortcuts[0].language = "default".to_string();
+        assert_eq!(
+            config.normalized(),
+            Err(ConfigError::UnsupportedLanguage("default".to_string()))
+        );
+    }
+
+    #[test]
+    fn accepts_supported_linux_signals_without_rewriting() {
         let trigger = toml::from_str::<ShortcutTrigger>(
             r#"
 type = "linux_signal"
-start_signal = "User 1"
-stop_signal = "SIGUSR2"
+start_signal = "SIGALRM"
+stop_signal = "SIGWINCH"
 "#,
         )
         .expect("signal trigger should decode");
@@ -766,8 +707,8 @@ stop_signal = "SIGUSR2"
         assert_eq!(
             trigger,
             ShortcutTrigger::LinuxSignal {
-                start_signal: LinuxSignal::new("User 1"),
-                stop_signal: LinuxSignal::new("SIGUSR2"),
+                start_signal: LinuxSignal::sigalrm(),
+                stop_signal: LinuxSignal::sigwinch(),
             }
         );
 
@@ -779,8 +720,8 @@ stop_signal = "SIGUSR2"
         assert_eq!(
             normalized.default_shortcut().trigger,
             ShortcutTrigger::LinuxSignal {
-                start_signal: LinuxSignal::sigusr1(),
-                stop_signal: LinuxSignal::sigusr2(),
+                start_signal: LinuxSignal::sigalrm(),
+                stop_signal: LinuxSignal::sigwinch(),
             }
         );
     }
@@ -805,10 +746,10 @@ stop_signal = "SIGUSR2"
             name: "Second".to_string(),
             enabled: true,
             trigger: ShortcutTrigger::default_linux_signal(),
-            model_id: INHERIT_VALUE.to_string(),
-            language: INHERIT_VALUE.to_string(),
-            mute_output: ShortcutMuteOutput::Default,
-            output: ShortcutOutput::Default,
+            model_id: DEFAULT_MODEL_ID.to_string(),
+            language: AUTO_LANGUAGE_VALUE.to_string(),
+            mute_output_while_recording: false,
+            output: OutputAction::default(),
         });
 
         assert_eq!(
@@ -818,10 +759,10 @@ stop_signal = "SIGUSR2"
     }
 
     #[test]
-    fn duplicate_supported_linux_signal_aliases_are_rejected() {
+    fn duplicate_supported_linux_signals_are_rejected() {
         let mut config = AppConfig::default();
         config.shortcuts[0].trigger = ShortcutTrigger::LinuxSignal {
-            start_signal: LinuxSignal::new("ALARM"),
+            start_signal: LinuxSignal::sigalrm(),
             stop_signal: LinuxSignal::sigusr1(),
         };
         config.shortcuts.push(ShortcutProfile {
@@ -829,13 +770,13 @@ stop_signal = "SIGUSR2"
             name: "Second".to_string(),
             enabled: true,
             trigger: ShortcutTrigger::LinuxSignal {
-                start_signal: LinuxSignal::new("SIGALRM"),
+                start_signal: LinuxSignal::sigalrm(),
                 stop_signal: LinuxSignal::sigusr2(),
             },
-            model_id: INHERIT_VALUE.to_string(),
-            language: INHERIT_VALUE.to_string(),
-            mute_output: ShortcutMuteOutput::Default,
-            output: ShortcutOutput::Default,
+            model_id: DEFAULT_MODEL_ID.to_string(),
+            language: AUTO_LANGUAGE_VALUE.to_string(),
+            mute_output_while_recording: false,
+            output: OutputAction::default(),
         });
 
         assert_eq!(
@@ -845,24 +786,19 @@ stop_signal = "SIGUSR2"
     }
 
     #[test]
-    fn arbitrary_non_empty_linux_signal_text_is_allowed() {
-        let mut config = AppConfig::default();
-        config.shortcuts[0].trigger = ShortcutTrigger::LinuxSignal {
-            start_signal: LinuxSignal::new("MY_SIGNAL_A"),
-            stop_signal: LinuxSignal::new("MY_SIGNAL_B"),
-        };
+    fn rejects_unsupported_linux_signal_text() {
+        for signal in ["USR1", "User 1", "ALARM", "SIGTERM", "12", "MY_SIGNAL_A"] {
+            let mut config = AppConfig::default();
+            config.shortcuts[0].trigger = ShortcutTrigger::LinuxSignal {
+                start_signal: LinuxSignal::new(signal),
+                stop_signal: LinuxSignal::sigusr2(),
+            };
 
-        let normalized = config
-            .normalized()
-            .expect("arbitrary signal text should persist");
-
-        assert_eq!(
-            normalized.default_shortcut().trigger,
-            ShortcutTrigger::LinuxSignal {
-                start_signal: LinuxSignal::new("MY_SIGNAL_A"),
-                stop_signal: LinuxSignal::new("MY_SIGNAL_B"),
-            }
-        );
+            assert_eq!(
+                config.normalized(),
+                Err(ConfigError::UnsupportedSignal(signal.to_string()))
+            );
+        }
     }
 
     #[test]
@@ -924,15 +860,5 @@ stop_signal = "SIGUSR2"
     fn catalog_contains_default_and_ukrainian() {
         assert!(model_catalog_entry(DEFAULT_MODEL_ID).is_some());
         assert_eq!(supported_language_label("uk"), Some("Ukrainian"));
-    }
-
-    #[test]
-    fn resolves_shortcut_mute_output_from_default_or_override() {
-        let mut config = AppConfig::default();
-        config.general.mute_output_while_recording = true;
-        assert!(config.resolved_mute_output_while_recording(config.default_shortcut()));
-
-        config.shortcuts[0].mute_output = ShortcutMuteOutput::custom(false);
-        assert!(!config.resolved_mute_output_while_recording(config.default_shortcut()));
     }
 }

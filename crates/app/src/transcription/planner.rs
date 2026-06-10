@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow, ensure};
-use shared::{AppConfig, ModelCatalogEntry, OutputAction, ResolvedOutput, model_catalog_entry};
+use shared::{AppConfig, ModelCatalogEntry, model_catalog_entry};
 
 use crate::transcription::types::TranscriptionPlan;
 
@@ -16,7 +16,7 @@ pub fn build_transcription_plan(
     let shortcut = config
         .shortcut_by_id(shortcut_id)
         .ok_or_else(|| anyhow!("unknown shortcut {shortcut_id}"))?;
-    let model_id = config.resolved_model_id(shortcut).to_string();
+    let model_id = shortcut.model_id.clone();
     let entry =
         model_catalog_entry(&model_id).ok_or_else(|| anyhow!("unknown model {model_id}"))?;
     ensure!(
@@ -29,7 +29,6 @@ pub fn build_transcription_plan(
         "model file is missing even though inventory marks it ready: {}",
         model_path.display()
     );
-    let output = resolved_output_action(config.resolved_output(shortcut));
 
     Ok(TranscriptionPlan {
         recording_id,
@@ -37,19 +36,12 @@ pub fn build_transcription_plan(
         shortcut_name: shortcut.name.clone(),
         model_id,
         model_path,
-        language: config.resolved_language(shortcut).to_string(),
+        language: shortcut.language.clone(),
         compute_backend: config.general.compute_backend,
-        mute_output_while_recording: config.resolved_mute_output_while_recording(shortcut),
-        output,
-        input: config.general.default_input.clone(),
+        mute_output_while_recording: shortcut.mute_output_while_recording,
+        output: shortcut.output.clone(),
+        input: config.general.audio_input.clone(),
     })
-}
-
-fn resolved_output_action(output: ResolvedOutput<'_>) -> OutputAction {
-    match output {
-        ResolvedOutput::General(action) => action.clone(),
-        ResolvedOutput::Custom(action) => action.clone(),
-    }
 }
 
 #[cfg(test)]
@@ -97,16 +89,16 @@ mod tests {
         assert_eq!(plan.shortcut_id, DEFAULT_SHORTCUT_ID);
         assert_eq!(plan.model_id, DEFAULT_MODEL_ID);
         assert_eq!(plan.model_path, model_path);
-        assert_eq!(plan.input, config.general.default_input);
+        assert_eq!(plan.input, config.general.audio_input);
         assert!(!plan.mute_output_while_recording);
 
         let _ = fs::remove_file(plan.model_path);
     }
 
     #[test]
-    fn plan_snapshots_resolved_mute_output() {
+    fn plan_snapshots_shortcut_mute_output() {
         let mut config = AppConfig::default();
-        config.general.mute_output_while_recording = true;
+        config.shortcuts[0].mute_output_while_recording = true;
         let ready_model_ids = HashSet::from([DEFAULT_MODEL_ID.to_string()]);
         let model_path = temp_model_path();
         fs::write(&model_path, b"model").expect("test model file should be writable");

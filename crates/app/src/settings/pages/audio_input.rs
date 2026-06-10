@@ -33,8 +33,11 @@ pub fn audio_input_dropdown_row(
     }
 
     let row = adw::ActionRow::builder()
-        .title("Default input")
-        .subtitle(selected_input.display_label())
+        .title("Audio input")
+        .subtitle(format!(
+            "Microphone source used for every recording. System Default is resolved at recording time.\nCurrent: {}",
+            selected_input.display_label()
+        ))
         .build();
     let label_refs = labels.iter().map(String::as_str).collect::<Vec<_>>();
     let dropdown = gtk::DropDown::from_strings(&label_refs);

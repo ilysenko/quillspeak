@@ -1,17 +1,16 @@
 use gtk::gdk;
 use gtk4 as gtk;
-use libadwaita as adw;
 use libadwaita::prelude::*;
 use shared::normalize_accelerator;
 
-pub fn connect_record_button(record_button: &gtk::Button, shortcut_entry: &adw::EntryRow) {
+pub fn connect_record_button(record_button: &gtk::Button, shortcut_entry: &gtk::Entry) {
     let shortcut_entry = shortcut_entry.clone();
     record_button.connect_clicked(move |_| {
         show_shortcut_recorder(&shortcut_entry);
     });
 }
 
-fn show_shortcut_recorder(shortcut_entry: &adw::EntryRow) {
+fn show_shortcut_recorder(shortcut_entry: &gtk::Entry) {
     let content = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(16)

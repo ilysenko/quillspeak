@@ -4,8 +4,8 @@ use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use shared::{
-    AUTO_LANGUAGE_VALUE, ComputeBackend, HotkeyBackend, INHERIT_VALUE, MODEL_CATALOG,
-    ModelCatalogEntry, SUPPORTED_LANGUAGES, model_catalog_entry, supported_language_label,
+    AUTO_LANGUAGE_VALUE, ComputeBackend, HotkeyBackend, ModelCatalogEntry, SUPPORTED_LANGUAGES,
+    model_catalog_entry, supported_language_label,
 };
 
 #[derive(Clone)]
@@ -14,17 +14,27 @@ pub struct DropDownRow {
     pub dropdown: gtk::DropDown,
 }
 
+#[derive(Clone)]
 pub struct ValueDropDownRow {
     pub row: adw::ActionRow,
     pub dropdown: gtk::DropDown,
     pub values: Vec<String>,
 }
 
+#[derive(Clone)]
+pub struct TextRow {
+    pub row: adw::ActionRow,
+    pub entry: gtk::Entry,
+}
+
 pub fn preferences_page(title: &str) -> adw::PreferencesPage {
     adw::PreferencesPage::builder().title(title).build()
 }
 
-pub fn scrollable_page(page: &adw::PreferencesPage) -> gtk::ScrolledWindow {
+pub fn scrollable_page<W>(page: &W) -> gtk::ScrolledWindow
+where
+    W: gtk::glib::object::IsA<gtk::Widget>,
+{
     gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
@@ -43,8 +53,13 @@ pub fn property_row(title: &str, value: &str) -> adw::ActionRow {
     row
 }
 
-pub fn dropdown_row(title: &str, labels: &[&str], selected: u32) -> DropDownRow {
-    let row = adw::ActionRow::builder().title(title).build();
+pub fn dropdown_row_with_help(
+    title: &str,
+    help: &str,
+    labels: &[&str],
+    selected: u32,
+) -> DropDownRow {
+    let row = action_row(title, help);
     let dropdown = gtk::DropDown::from_strings(labels);
     dropdown.set_selected(selected);
     dropdown.set_valign(gtk::Align::Center);
@@ -53,87 +68,91 @@ pub fn dropdown_row(title: &str, labels: &[&str], selected: u32) -> DropDownRow 
     DropDownRow { row, dropdown }
 }
 
-pub fn model_dropdown_row(
+pub fn switch_row(title: &str, help: &str, active: bool) -> (adw::ActionRow, gtk::Switch) {
+    let row = action_row(title, help);
+    let switch = gtk::Switch::builder()
+        .active(active)
+        .valign(gtk::Align::Center)
+        .build();
+    row.add_suffix(&switch);
+    row.set_activatable_widget(Some(&switch));
+    (row, switch)
+}
+
+pub fn text_row(title: &str, help: &str, text: &str) -> TextRow {
+    let row = action_row(title, help);
+    let entry = gtk::Entry::builder()
+        .text(text)
+        .valign(gtk::Align::Center)
+        .hexpand(false)
+        .width_chars(24)
+        .build();
+    row.add_suffix(&entry);
+    row.set_activatable_widget(Some(&entry));
+    TextRow { row, entry }
+}
+
+pub fn shortcut_model_dropdown_row(
     title: &str,
+    help: &str,
     models: &[ModelCatalogEntry],
     selected_model_id: &str,
 ) -> ValueDropDownRow {
-    let mut values = models
-        .iter()
-        .map(|entry| entry.id.to_string())
-        .collect::<Vec<_>>();
-    let mut labels = models
-        .iter()
-        .map(|entry| entry.label.to_string())
-        .collect::<Vec<_>>();
+    let mut labels = Vec::new();
+    let mut values = Vec::new();
+    for model in models {
+        labels.push(model.label.to_string());
+        values.push(model.id.to_string());
+    }
     if !selected_model_id.trim().is_empty()
         && !values.iter().any(|value| value == selected_model_id)
     {
         labels.push(format!("Missing: {selected_model_id}"));
         values.push(selected_model_id.to_string());
     }
-    value_dropdown_row_owned(title, labels, values, selected_model_id)
+    value_dropdown_row_owned(title, help, labels, values, selected_model_id)
 }
 
-pub fn all_model_entries() -> Vec<ModelCatalogEntry> {
-    MODEL_CATALOG
-        .iter()
-        .filter_map(|entry| model_catalog_entry(entry.id))
-        .collect()
-}
-
-pub fn shortcut_model_dropdown_row(
-    title: &str,
-    models: &[ModelCatalogEntry],
-    selected_model_id: &str,
-) -> ValueDropDownRow {
-    let mut labels = vec!["Default".to_string()];
-    let mut values = vec![INHERIT_VALUE.to_string()];
-    for model in models {
-        labels.push(model.label.to_string());
-        values.push(model.id.to_string());
-    }
-    if selected_model_id != INHERIT_VALUE && !values.iter().any(|value| value == selected_model_id)
-    {
-        labels.push(format!("Missing: {selected_model_id}"));
-        values.push(selected_model_id.to_string());
-    }
-    value_dropdown_row_owned(title, labels, values, selected_model_id)
-}
-
-pub fn language_dropdown_row(
-    title: &str,
-    allow_default: bool,
-    selected_language: &str,
-) -> ValueDropDownRow {
+pub fn language_dropdown_row(title: &str, help: &str, selected_language: &str) -> ValueDropDownRow {
     let mut labels = Vec::new();
     let mut values = Vec::new();
-    if allow_default {
-        labels.push("Default".to_string());
-        values.push(INHERIT_VALUE.to_string());
-    }
     labels.push("Auto Detect".to_string());
     values.push(AUTO_LANGUAGE_VALUE.to_string());
     for language in SUPPORTED_LANGUAGES {
         labels.push(language.label.to_string());
         values.push(language.code.to_string());
     }
-    value_dropdown_row_owned(title, labels, values, selected_language)
+    value_dropdown_row_owned(title, help, labels, values, selected_language)
 }
 
-fn value_dropdown_row_owned(
+pub fn value_dropdown_row(
     title: &str,
+    help: &str,
     labels: Vec<String>,
     values: Vec<String>,
     selected_value: &str,
 ) -> ValueDropDownRow {
+    value_dropdown_row_owned(title, help, labels, values, selected_value)
+}
+
+fn value_dropdown_row_owned(
+    title: &str,
+    help: &str,
+    labels: Vec<String>,
+    values: Vec<String>,
+    selected_value: &str,
+) -> ValueDropDownRow {
+    let selected_label = supported_language_label(selected_value)
+        .or_else(|| model_catalog_entry(selected_value).map(|entry| entry.label))
+        .unwrap_or(selected_value);
+    let subtitle = if help.trim().is_empty() {
+        selected_label.to_string()
+    } else {
+        format!("{help}\nCurrent: {selected_label}")
+    };
     let row = adw::ActionRow::builder()
         .title(title)
-        .subtitle(
-            supported_language_label(selected_value)
-                .or_else(|| model_catalog_entry(selected_value).map(|entry| entry.label))
-                .unwrap_or(selected_value),
-        )
+        .subtitle(&subtitle)
         .build();
     let label_refs = labels.iter().map(String::as_str).collect::<Vec<_>>();
     let dropdown = gtk::DropDown::from_strings(&label_refs);
@@ -149,6 +168,15 @@ fn value_dropdown_row_owned(
         row,
         dropdown,
         values,
+    }
+}
+
+fn action_row(title: &str, help: &str) -> adw::ActionRow {
+    let builder = adw::ActionRow::builder().title(title);
+    if help.trim().is_empty() {
+        builder.build()
+    } else {
+        builder.subtitle(help).build()
     }
 }
 
