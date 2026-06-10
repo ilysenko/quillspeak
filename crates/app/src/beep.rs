@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, Stream};
+use shared::{MAX_BEEP_VOLUME_PERCENT, MIN_BEEP_VOLUME_PERCENT};
 use tracing::{debug, warn};
 
 use crate::command::AppCommand;
@@ -15,7 +16,7 @@ const HIGH_TONE_HZ: f32 = 880.0;
 const TONE_DURATION: Duration = Duration::from_millis(90);
 const GAP_DURATION: Duration = Duration::from_millis(35);
 const FADE_DURATION: Duration = Duration::from_millis(8);
-const AMPLITUDE: f32 = 0.18;
+const MAX_AMPLITUDE: f32 = 0.18;
 const PLAYBACK_TIMEOUT_PADDING: Duration = Duration::from_secs(1);
 
 pub struct BeepService {
@@ -42,23 +43,35 @@ impl BeepService {
         })
     }
 
-    pub fn play_start_cue(&self, recording_id: u64, shortcut_id: &str) -> Result<()> {
+    pub fn play_start_cue(
+        &self,
+        recording_id: u64,
+        shortcut_id: &str,
+        volume_percent: u8,
+    ) -> Result<()> {
         self.worker_tx
             .send(BeepCommand::Play {
                 recording_id,
                 shortcut_id: shortcut_id.to_string(),
                 cue: BeepCue::Start,
+                volume_percent,
                 notify_start_completion: true,
             })
             .map_err(|_| anyhow!("beep worker is not running"))
     }
 
-    pub fn play_stop_cue(&self, recording_id: u64, shortcut_id: &str) -> Result<()> {
+    pub fn play_stop_cue(
+        &self,
+        recording_id: u64,
+        shortcut_id: &str,
+        volume_percent: u8,
+    ) -> Result<()> {
         self.worker_tx
             .send(BeepCommand::Play {
                 recording_id,
                 shortcut_id: shortcut_id.to_string(),
                 cue: BeepCue::Stop,
+                volume_percent,
                 notify_start_completion: false,
             })
             .map_err(|_| anyhow!("beep worker is not running"))
@@ -79,6 +92,7 @@ enum BeepCommand {
         recording_id: u64,
         shortcut_id: String,
         cue: BeepCue,
+        volume_percent: u8,
         notify_start_completion: bool,
     },
     Shutdown,
@@ -91,9 +105,10 @@ fn beep_worker_loop(worker_rx: mpsc::Receiver<BeepCommand>, command_tx: mpsc::Se
                 recording_id,
                 shortcut_id,
                 cue,
+                volume_percent,
                 notify_start_completion,
             } => {
-                let result = play_cue(cue).map_err(|error| format!("{error:#}"));
+                let result = play_cue(cue, volume_percent).map_err(|error| format!("{error:#}"));
                 if notify_start_completion {
                     let _ = command_tx.send(AppCommand::RecordingStartCueFinished {
                         recording_id,
@@ -112,7 +127,7 @@ fn beep_worker_loop(worker_rx: mpsc::Receiver<BeepCommand>, command_tx: mpsc::Se
     }
 }
 
-fn play_cue(cue: BeepCue) -> Result<()> {
+fn play_cue(cue: BeepCue, volume_percent: u8) -> Result<()> {
     let (device, device_label) = resolve_default_output_device()?;
     let supported_config = device
         .default_output_config()
@@ -122,7 +137,7 @@ fn play_cue(cue: BeepCue) -> Result<()> {
     anyhow::ensure!(sample_rate > 0, "output device reported zero sample rate");
     anyhow::ensure!(channels > 0, "output device reported zero channels");
 
-    let samples = cue_samples(cue, sample_rate, channels);
+    let samples = cue_samples(cue, sample_rate, channels, volume_percent);
     let playback_duration = playback_duration_for_samples(samples.len(), sample_rate, channels);
     let (done_tx, done_rx) = mpsc::channel();
     let err_label = device_label.clone();
@@ -245,13 +260,19 @@ where
     )?)
 }
 
-fn cue_samples(cue: BeepCue, sample_rate: u32, channels: u16) -> Vec<f32> {
+fn cue_samples(cue: BeepCue, sample_rate: u32, channels: u16, volume_percent: u8) -> Vec<f32> {
     let tones = cue_tones(cue);
+    let amplitude = amplitude_for_volume_percent(volume_percent);
     let mut samples = Vec::new();
-    append_tone(&mut samples, tones[0], sample_rate, channels);
+    append_tone(&mut samples, tones[0], sample_rate, channels, amplitude);
     append_silence(&mut samples, sample_rate, channels);
-    append_tone(&mut samples, tones[1], sample_rate, channels);
+    append_tone(&mut samples, tones[1], sample_rate, channels, amplitude);
     samples
+}
+
+fn amplitude_for_volume_percent(volume_percent: u8) -> f32 {
+    let volume_percent = volume_percent.clamp(MIN_BEEP_VOLUME_PERCENT, MAX_BEEP_VOLUME_PERCENT);
+    MAX_AMPLITUDE * f32::from(volume_percent) / f32::from(MAX_BEEP_VOLUME_PERCENT)
 }
 
 fn cue_tones(cue: BeepCue) -> [f32; 2] {
@@ -261,13 +282,19 @@ fn cue_tones(cue: BeepCue) -> [f32; 2] {
     }
 }
 
-fn append_tone(samples: &mut Vec<f32>, frequency_hz: f32, sample_rate: u32, channels: u16) {
+fn append_tone(
+    samples: &mut Vec<f32>,
+    frequency_hz: f32,
+    sample_rate: u32,
+    channels: u16,
+    amplitude: f32,
+) {
     let frames = duration_frames(TONE_DURATION, sample_rate);
     let fade_frames = duration_frames(FADE_DURATION, sample_rate).max(1);
     for frame in 0..frames {
         let phase = TAU * frequency_hz * frame as f32 / sample_rate as f32;
         let envelope = fade_envelope(frame, frames, fade_frames);
-        let value = phase.sin() * AMPLITUDE * envelope;
+        let value = phase.sin() * amplitude * envelope;
         for _ in 0..channels {
             samples.push(value);
         }
@@ -318,11 +345,26 @@ mod tests {
 
     #[test]
     fn cue_samples_are_interleaved_for_all_channels() {
-        let samples = cue_samples(BeepCue::Start, 1_000, 2);
+        let samples = cue_samples(BeepCue::Start, 1_000, 2, 100);
 
         assert_eq!(samples.len() % 2, 0);
         for frame in samples.chunks_exact(2) {
             assert_eq!(frame[0], frame[1]);
         }
+    }
+
+    #[test]
+    fn cue_samples_scale_with_volume_percent() {
+        let full_volume = cue_samples(BeepCue::Start, 8_000, 1, 100)
+            .into_iter()
+            .map(f32::abs)
+            .fold(0.0, f32::max);
+        let half_volume = cue_samples(BeepCue::Start, 8_000, 1, 50)
+            .into_iter()
+            .map(f32::abs)
+            .fold(0.0, f32::max);
+
+        assert!(full_volume > 0.0);
+        assert!((half_volume - full_volume * 0.5).abs() < 0.001);
     }
 }

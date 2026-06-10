@@ -5,8 +5,8 @@ use gtk4 as gtk;
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use shared::{
-    DEFAULT_SHORTCUT_ID, LinuxSignal, MODEL_CATALOG, SUPPORTED_LINUX_SIGNALS, ShortcutProfile,
-    ShortcutTrigger, model_catalog_entry,
+    DEFAULT_SHORTCUT_ID, LinuxSignal, MAX_BEEP_VOLUME_PERCENT, MIN_BEEP_VOLUME_PERCENT,
+    MODEL_CATALOG, SUPPORTED_LINUX_SIGNALS, ShortcutProfile, ShortcutTrigger, model_catalog_entry,
 };
 
 use crate::hotkey::ShortcutTriggerCapabilities;
@@ -14,8 +14,8 @@ use crate::settings::SettingsDraft;
 use crate::settings::pages::output_controls::add_shortcut_output_controls;
 use crate::settings::shortcut_recorder::connect_record_button;
 use crate::settings::widgets::{
-    dropdown_row_with_help, language_dropdown_row, preferences_page, shortcut_model_dropdown_row,
-    switch_row, text_row, value_dropdown_row,
+    dropdown_row_with_help, language_dropdown_row, percent_slider_row, preferences_page,
+    shortcut_model_dropdown_row, switch_row, text_row, value_dropdown_row,
 };
 
 pub fn build(
@@ -256,16 +256,42 @@ pub fn build(
         "Play a short two-tone cue before recording starts and after recording stops.",
         shortcut.beep_on_recording,
     );
+    let beep_volume = percent_slider_row(
+        "Beep volume",
+        "Controls the cue loudness for this shortcut.",
+        shortcut.beep_volume_percent,
+        MIN_BEEP_VOLUME_PERCENT,
+        MAX_BEEP_VOLUME_PERCENT,
+        5,
+    );
+    beep_volume.row.set_visible(shortcut.beep_on_recording);
+    beep_volume.row.set_sensitive(shortcut.beep_on_recording);
     beep_switch.connect_active_notify({
         let draft = draft.clone();
         let shortcut_id = shortcut_id.clone();
+        let beep_volume_row = beep_volume.row.clone();
         move |switch| {
+            let active = switch.is_active();
+            beep_volume_row.set_visible(active);
+            beep_volume_row.set_sensitive(active);
             draft.update_shortcut(&shortcut_id, |shortcut| {
-                shortcut.beep_on_recording = switch.is_active();
+                shortcut.beep_on_recording = active;
             });
         }
     });
     group.add(&beep_row);
+    beep_volume.scale.connect_value_changed({
+        let draft = draft.clone();
+        let shortcut_id = shortcut_id.clone();
+        move |scale| {
+            let volume_percent = scale.value().round() as u8;
+            draft.update_shortcut(&shortcut_id, |shortcut| {
+                shortcut.beep_volume_percent =
+                    volume_percent.clamp(MIN_BEEP_VOLUME_PERCENT, MAX_BEEP_VOLUME_PERCENT);
+            });
+        }
+    });
+    group.add(&beep_volume.row);
 
     add_shortcut_output_controls(&group, &shortcut_id, &shortcut.output, draft.clone());
 

@@ -27,6 +27,12 @@ pub struct TextRow {
     pub entry: gtk::Entry,
 }
 
+#[derive(Clone)]
+pub struct SliderRow {
+    pub row: adw::ActionRow,
+    pub scale: gtk::Scale,
+}
+
 pub fn preferences_page(title: &str) -> adw::PreferencesPage {
     adw::PreferencesPage::builder().title(title).build()
 }
@@ -90,6 +96,33 @@ pub fn text_row(title: &str, help: &str, text: &str) -> TextRow {
     row.add_suffix(&entry);
     row.set_activatable_widget(Some(&entry));
     TextRow { row, entry }
+}
+
+pub fn percent_slider_row(
+    title: &str,
+    help: &str,
+    value: u8,
+    min: u8,
+    max: u8,
+    step: u8,
+) -> SliderRow {
+    let row = action_row(title, help);
+    let value = value.clamp(min, max);
+    let scale = gtk::Scale::with_range(
+        gtk::Orientation::Horizontal,
+        f64::from(min),
+        f64::from(max),
+        f64::from(step),
+    );
+    scale.set_value(f64::from(value));
+    scale.set_digits(0);
+    scale.set_draw_value(true);
+    scale.set_value_pos(gtk::PositionType::Right);
+    scale.set_width_request(220);
+    scale.set_valign(gtk::Align::Center);
+    row.add_suffix(&scale);
+    row.set_activatable_widget(Some(&scale));
+    SliderRow { row, scale }
 }
 
 pub fn shortcut_model_dropdown_row(

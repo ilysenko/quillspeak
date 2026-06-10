@@ -15,6 +15,7 @@ pub struct TranscriptionPlan {
     pub compute_backend: ComputeBackend,
     pub mute_output_while_recording: bool,
     pub beep_on_recording: bool,
+    pub beep_volume_percent: u8,
     pub output: OutputAction,
     pub input: AudioInputRef,
 }
@@ -30,6 +31,7 @@ impl TranscriptionPlan {
             language: self.language,
             compute_backend: self.compute_backend,
             beep_on_recording: self.beep_on_recording,
+            beep_volume_percent: self.beep_volume_percent,
             output: self.output,
             audio,
         }
@@ -46,6 +48,7 @@ pub struct TranscriptionRequest {
     pub language: String,
     pub compute_backend: ComputeBackend,
     pub beep_on_recording: bool,
+    pub beep_volume_percent: u8,
     pub output: OutputAction,
     pub audio: CapturedAudio,
 }

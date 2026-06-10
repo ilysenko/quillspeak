@@ -40,6 +40,7 @@ pub fn build_transcription_plan(
         compute_backend: config.general.compute_backend,
         mute_output_while_recording: shortcut.mute_output_while_recording,
         beep_on_recording: shortcut.beep_on_recording,
+        beep_volume_percent: shortcut.beep_volume_percent,
         output: shortcut.output.clone(),
         input: config.general.audio_input.clone(),
     })
@@ -93,6 +94,10 @@ mod tests {
         assert_eq!(plan.input, config.general.audio_input);
         assert!(!plan.mute_output_while_recording);
         assert!(!plan.beep_on_recording);
+        assert_eq!(
+            plan.beep_volume_percent,
+            config.default_shortcut().beep_volume_percent
+        );
 
         let _ = fs::remove_file(plan.model_path);
     }
@@ -122,6 +127,7 @@ mod tests {
     fn plan_snapshots_shortcut_beep_setting() {
         let mut config = AppConfig::default();
         config.shortcuts[0].beep_on_recording = true;
+        config.shortcuts[0].beep_volume_percent = 35;
         let ready_model_ids = HashSet::from([DEFAULT_MODEL_ID.to_string()]);
         let model_path = temp_model_path();
         fs::write(&model_path, b"model").expect("test model file should be writable");
@@ -136,6 +142,7 @@ mod tests {
         .expect("ready model should build a plan");
 
         assert!(plan.beep_on_recording);
+        assert_eq!(plan.beep_volume_percent, 35);
         let _ = fs::remove_file(plan.model_path);
     }
 

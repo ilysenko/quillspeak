@@ -73,6 +73,11 @@ pub enum AppCommand {
     },
     AudioInputDevicesRefreshed(Vec<crate::audio::AudioInputDevice>),
     ClearHistory,
+    CopyHistoryText {
+        recording_id: u64,
+        shortcut_id: String,
+        text: String,
+    },
     SaveConfig(AppConfig),
     DownloadModel(String),
     CancelModelDownload(String),

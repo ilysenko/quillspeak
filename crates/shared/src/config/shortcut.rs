@@ -7,6 +7,9 @@ use super::{
 
 pub const DEFAULT_SHORTCUT_ID: &str = "default";
 pub const DEFAULT_SHORTCUT_NAME: &str = "Default";
+pub const DEFAULT_BEEP_VOLUME_PERCENT: u8 = 100;
+pub const MIN_BEEP_VOLUME_PERCENT: u8 = 10;
+pub const MAX_BEEP_VOLUME_PERCENT: u8 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinuxSignalSpec {
@@ -44,6 +47,7 @@ pub struct ShortcutProfile {
     pub language: String,
     pub mute_output_while_recording: bool,
     pub beep_on_recording: bool,
+    pub beep_volume_percent: u8,
     pub output: OutputAction,
 }
 
@@ -58,6 +62,7 @@ impl ShortcutProfile {
             language: AUTO_LANGUAGE_VALUE.to_string(),
             mute_output_while_recording: false,
             beep_on_recording: false,
+            beep_volume_percent: DEFAULT_BEEP_VOLUME_PERCENT,
             output: OutputAction::default(),
         }
     }
@@ -74,6 +79,7 @@ impl ShortcutProfile {
             language: AUTO_LANGUAGE_VALUE.to_string(),
             mute_output_while_recording: false,
             beep_on_recording: false,
+            beep_volume_percent: DEFAULT_BEEP_VOLUME_PERCENT,
             output: OutputAction::default(),
         }
     }
@@ -90,6 +96,9 @@ impl ShortcutProfile {
         self.trigger = self.trigger.normalized(self.enabled)?;
         self.model_id = normalize_model_id(&self.model_id)?;
         self.language = normalize_language_ref(&self.language)?;
+        self.beep_volume_percent = self
+            .beep_volume_percent
+            .clamp(MIN_BEEP_VOLUME_PERCENT, MAX_BEEP_VOLUME_PERCENT);
         self.output.validate()?;
         Ok(self)
     }

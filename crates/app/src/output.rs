@@ -198,6 +198,22 @@ impl OutputService {
             }
         }
     }
+
+    pub fn copy_history_text(
+        &self,
+        recording_id: u64,
+        shortcut_id: &str,
+        text: &str,
+    ) -> OutputDelivery {
+        self.copy_final_text_if_requested(
+            ClipboardCopySource::History {
+                recording_id,
+                shortcut_id: shortcut_id.to_string(),
+            },
+            &OutputAction::clipboard(),
+            text,
+        )
+    }
 }
 
 fn clipboard_transport_text_for_output<'a>(
@@ -230,22 +246,26 @@ pub enum ClipboardCopySource {
         shortcut_id: String,
         script_path: String,
     },
+    History {
+        recording_id: u64,
+        shortcut_id: String,
+    },
 }
 
 impl ClipboardCopySource {
     pub(crate) fn recording_id(&self) -> u64 {
         match self {
-            Self::Transcription { recording_id, .. } | Self::ScriptStdout { recording_id, .. } => {
-                *recording_id
-            }
+            Self::Transcription { recording_id, .. }
+            | Self::ScriptStdout { recording_id, .. }
+            | Self::History { recording_id, .. } => *recording_id,
         }
     }
 
     pub(crate) fn shortcut_id(&self) -> &str {
         match self {
-            Self::Transcription { shortcut_id, .. } | Self::ScriptStdout { shortcut_id, .. } => {
-                shortcut_id
-            }
+            Self::Transcription { shortcut_id, .. }
+            | Self::ScriptStdout { shortcut_id, .. }
+            | Self::History { shortcut_id, .. } => shortcut_id,
         }
     }
 
@@ -253,12 +273,13 @@ impl ClipboardCopySource {
         match self {
             Self::Transcription { .. } => "transcription",
             Self::ScriptStdout { .. } => "script_stdout",
+            Self::History { .. } => "history",
         }
     }
 
     pub(crate) fn script_path(&self) -> Option<&str> {
         match self {
-            Self::Transcription { .. } => None,
+            Self::Transcription { .. } | Self::History { .. } => None,
             Self::ScriptStdout { script_path, .. } => Some(script_path),
         }
     }
@@ -1128,6 +1149,19 @@ mod tests {
         assert_eq!(source.shortcut_id(), "default");
         assert_eq!(source.kind(), "script_stdout");
         assert_eq!(source.script_path(), Some("/tmp/script"));
+    }
+
+    #[test]
+    fn clipboard_copy_source_tracks_history_context() {
+        let source = ClipboardCopySource::History {
+            recording_id: 44,
+            shortcut_id: "default".to_string(),
+        };
+
+        assert_eq!(source.recording_id(), 44);
+        assert_eq!(source.shortcut_id(), "default");
+        assert_eq!(source.kind(), "history");
+        assert_eq!(source.script_path(), None);
     }
 
     #[test]

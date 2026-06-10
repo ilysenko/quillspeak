@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -95,7 +95,7 @@ struct AppRuntime {
     recording: RefCell<RecordingService>,
     recording_phase: Cell<RecordingPhase>,
     pending_recording_start: RefCell<Option<PendingRecordingStart>>,
-    pending_stop_cues: RefCell<HashSet<(u64, String)>>,
+    pending_stop_cues: RefCell<HashMap<(u64, String), u8>>,
     pending_output: RefCell<Option<PendingOutputDelivery>>,
     next_recording_id: Cell<u64>,
     is_quitting: Cell<bool>,
@@ -258,7 +258,7 @@ impl AppRuntime {
             recording: RefCell::new(RecordingService::default()),
             recording_phase: Cell::new(RecordingPhase::Idle),
             pending_recording_start: RefCell::new(None),
-            pending_stop_cues: RefCell::new(HashSet::new()),
+            pending_stop_cues: RefCell::new(HashMap::new()),
             pending_output: RefCell::new(None),
             next_recording_id: Cell::new(1),
             is_quitting: Cell::new(false),
@@ -373,6 +373,11 @@ impl AppRuntime {
                 self.update_audio_input_devices(devices)
             }
             AppCommand::ClearHistory => self.clear_history(),
+            AppCommand::CopyHistoryText {
+                recording_id,
+                shortcut_id,
+                text,
+            } => self.copy_history_text(recording_id, &shortcut_id, &text),
             AppCommand::SaveConfig(config) => self.save_config(config),
             AppCommand::DownloadModel(model_id) => self.download_model(model_id),
             AppCommand::CancelModelDownload(model_id) => self.cancel_model_download(model_id),
@@ -585,6 +590,7 @@ impl AppRuntime {
     fn queue_start_cue_for_plan(&self, plan: TranscriptionPlan) -> Result<(), String> {
         let recording_id = plan.recording_id;
         let shortcut_id = plan.shortcut_id.clone();
+        let volume_percent = plan.beep_volume_percent;
         self.pending_recording_start
             .replace(Some(PendingRecordingStart {
                 recording_id,
@@ -597,7 +603,7 @@ impl AppRuntime {
             .borrow()
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("beep worker is shut down"))
-            .and_then(|service| service.play_start_cue(recording_id, &shortcut_id));
+            .and_then(|service| service.play_start_cue(recording_id, &shortcut_id, volume_percent));
 
         if let Err(error) = result {
             warn!(
@@ -835,14 +841,17 @@ impl AppRuntime {
             );
             return;
         }
-        let play_stop_cue = result
-            .as_ref()
-            .ok()
-            .is_some_and(|request| request.beep_on_recording);
-        if play_stop_cue {
-            self.queue_stop_cue_after_speaker_restore(recording_id, shortcut_id);
+        let stop_cue_volume = result.as_ref().ok().and_then(|request| {
+            request
+                .beep_on_recording
+                .then_some(request.beep_volume_percent)
+        });
+        if let Some(volume_percent) = stop_cue_volume {
+            self.queue_stop_cue_after_speaker_restore(recording_id, shortcut_id, volume_percent);
         }
-        if !self.restore_speakers_for_recording(recording_id, shortcut_id) && play_stop_cue {
+        if !self.restore_speakers_for_recording(recording_id, shortcut_id)
+            && stop_cue_volume.is_some()
+        {
             self.play_queued_stop_cue_if_needed(recording_id, shortcut_id);
         }
 
@@ -1092,21 +1101,30 @@ impl AppRuntime {
         recording_id: u64,
         shortcut_id: &str,
     ) -> bool {
-        let enabled = self
-            .config
-            .borrow()
-            .shortcut_by_id(shortcut_id)
-            .is_some_and(|shortcut| shortcut.beep_on_recording);
-        if enabled {
-            self.queue_stop_cue_after_speaker_restore(recording_id, shortcut_id);
+        let volume_percent =
+            self.config
+                .borrow()
+                .shortcut_by_id(shortcut_id)
+                .and_then(|shortcut| {
+                    shortcut
+                        .beep_on_recording
+                        .then_some(shortcut.beep_volume_percent)
+                });
+        if let Some(volume_percent) = volume_percent {
+            self.queue_stop_cue_after_speaker_restore(recording_id, shortcut_id, volume_percent);
         }
-        enabled
+        volume_percent.is_some()
     }
 
-    fn queue_stop_cue_after_speaker_restore(&self, recording_id: u64, shortcut_id: &str) {
+    fn queue_stop_cue_after_speaker_restore(
+        &self,
+        recording_id: u64,
+        shortcut_id: &str,
+        volume_percent: u8,
+    ) {
         self.pending_stop_cues
             .borrow_mut()
-            .insert((recording_id, shortcut_id.to_string()));
+            .insert((recording_id, shortcut_id.to_string()), volume_percent);
     }
 
     fn speaker_restore_finished(&self, recording_id: u64, shortcut_id: &str) {
@@ -1114,22 +1132,22 @@ impl AppRuntime {
     }
 
     fn play_queued_stop_cue_if_needed(&self, recording_id: u64, shortcut_id: &str) {
-        if self
+        if let Some(volume_percent) = self
             .pending_stop_cues
             .borrow_mut()
             .remove(&(recording_id, shortcut_id.to_string()))
         {
-            self.play_stop_cue(recording_id, shortcut_id);
+            self.play_stop_cue(recording_id, shortcut_id, volume_percent);
         }
     }
 
-    fn play_stop_cue(&self, recording_id: u64, shortcut_id: &str) {
+    fn play_stop_cue(&self, recording_id: u64, shortcut_id: &str, volume_percent: u8) {
         let result = self
             .beep_service
             .borrow()
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("beep worker is shut down"))
-            .and_then(|service| service.play_stop_cue(recording_id, shortcut_id));
+            .and_then(|service| service.play_stop_cue(recording_id, shortcut_id, volume_percent));
         if let Err(error) = result {
             warn!(
                 ?error,
@@ -1273,6 +1291,16 @@ impl AppRuntime {
             ),
         }
 
+        if copy_source == "history"
+            && let Some(window) = self.settings_window.borrow().as_ref()
+        {
+            if copy_failed {
+                window.update_save_status("Failed to copy history item");
+            } else {
+                window.update_save_status("Copied history item to clipboard");
+            }
+        }
+
         let pending_completion = self
             .pending_output
             .borrow()
@@ -1287,6 +1315,35 @@ impl AppRuntime {
                 self.finish_pending_output(recording_id, shortcut_id, "clipboard copy failed");
             }
             _ => {}
+        }
+    }
+
+    fn copy_history_text(&self, recording_id: u64, shortcut_id: &str, text: &str) {
+        let delivery = self
+            .output_service
+            .borrow()
+            .as_ref()
+            .map(|service| service.copy_history_text(recording_id, shortcut_id, text));
+        match delivery {
+            Some(OutputDelivery::Queued(_)) => {}
+            Some(OutputDelivery::NotQueued) => {
+                warn!(
+                    recording_id,
+                    shortcut_id, "history clipboard copy was not queued"
+                );
+                if let Some(window) = self.settings_window.borrow().as_ref() {
+                    window.update_save_status("Failed to copy history item");
+                }
+            }
+            None => {
+                warn!(
+                    recording_id,
+                    shortcut_id, "output worker is not running for history clipboard copy"
+                );
+                if let Some(window) = self.settings_window.borrow().as_ref() {
+                    window.update_save_status("Failed to copy history item");
+                }
+            }
         }
     }
 

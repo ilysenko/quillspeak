@@ -594,6 +594,7 @@ mod tests {
             language: "auto".to_string(),
             compute_backend: ComputeBackend::Auto,
             beep_on_recording: false,
+            beep_volume_percent: 100,
             output: OutputAction::default(),
             audio: CapturedAudio {
                 samples: prepared.samples.clone(),

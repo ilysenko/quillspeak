@@ -117,6 +117,7 @@ fn default_signal_shortcut_profile() -> ShortcutProfile {
         language: shared::AUTO_LANGUAGE_VALUE.to_string(),
         mute_output_while_recording: false,
         beep_on_recording: false,
+        beep_volume_percent: shared::DEFAULT_BEEP_VOLUME_PERCENT,
         output: shared::OutputAction::default(),
     }
 }
@@ -436,14 +437,14 @@ output = { type = "default" }
     }
 
     #[test]
-    fn schema_v14_config_is_discarded_instead_of_migrated() {
+    fn schema_v15_config_is_discarded_instead_of_migrated() {
         let root = temp_config_root();
         let path = root.join("config.toml");
         fs::create_dir_all(&root).expect("test config dir should be writable");
         fs::write(
             &path,
             r#"
-schema_version = 14
+schema_version = 15
 
 [general]
 mode = "push_to_talk"
@@ -463,12 +464,12 @@ mute_output_while_recording = true
 output = { copy_to_clipboard = false, paste_from_clipboard = true, paste_shortcut = "ctrl_v" }
 "#,
         )
-        .expect("v14 config should be writable");
+        .expect("v15 config should be writable");
         let store = ConfigStore::for_path(path.clone());
 
         let config = store
             .load_or_create_default()
-            .expect("v14 config should be discarded");
+            .expect("v15 config should be discarded");
         let contents = fs::read_to_string(&path).expect("replacement config should be readable");
 
         assert_eq!(
@@ -479,10 +480,11 @@ output = { copy_to_clipboard = false, paste_from_clipboard = true, paste_shortcu
             config_schema_version(&contents),
             Some(CONFIG_SCHEMA_VERSION)
         );
-        assert!(contents.contains("schema_version = 15"));
+        assert!(contents.contains("schema_version = 16"));
         assert!(contents.contains("audio_input"));
         assert!(contents.contains("mute_output_while_recording = false"));
         assert!(contents.contains("beep_on_recording = false"));
+        assert!(contents.contains("beep_volume_percent = 100"));
         assert!(!contents.contains("paste_from_clipboard = true"));
         let _ = fs::remove_dir_all(root);
     }

@@ -50,7 +50,7 @@ pub fn build(entries: Vec<HistoryEntry>, command_tx: mpsc::Sender<AppCommand>) -
         );
     } else {
         for entry in entries.iter().rev() {
-            group.add(&history_row(entry));
+            group.add(&history_row(entry, command_tx.clone()));
         }
     }
 
@@ -58,8 +58,8 @@ pub fn build(entries: Vec<HistoryEntry>, command_tx: mpsc::Sender<AppCommand>) -
     HistoryPage { page }
 }
 
-fn history_row(entry: &HistoryEntry) -> adw::ActionRow {
-    adw::ActionRow::builder()
+fn history_row(entry: &HistoryEntry, command_tx: mpsc::Sender<AppCommand>) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
         .title(format!(
             "{} - {} - {}",
             format_timestamp(entry.created_at_unix_ms),
@@ -70,7 +70,26 @@ fn history_row(entry: &HistoryEntry) -> adw::ActionRow {
             "{}\nModel: {}   Language: {}",
             entry.text, entry.model_id, entry.language
         ))
-        .build()
+        .build();
+    let copy_button = gtk::Button::builder()
+        .icon_name("edit-copy-symbolic")
+        .tooltip_text("Copy to Clipboard")
+        .valign(gtk::Align::Center)
+        .build();
+    copy_button.connect_clicked({
+        let recording_id = entry.recording_id;
+        let shortcut_id = entry.shortcut_id.clone();
+        let text = entry.text.clone();
+        move |_| {
+            let _ = command_tx.send(AppCommand::CopyHistoryText {
+                recording_id,
+                shortcut_id: shortcut_id.clone(),
+                text: text.clone(),
+            });
+        }
+    });
+    row.add_suffix(&copy_button);
+    row
 }
 
 fn confirm_clear_history(parent: &gtk::Button, command_tx: mpsc::Sender<AppCommand>) {

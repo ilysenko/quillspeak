@@ -16,12 +16,13 @@ pub use language::{
 pub use model::{DEFAULT_MODEL_ID, MODEL_CATALOG, ModelCatalogEntry, model_catalog_entry};
 pub use output::{OutputAction, PasteShortcut, ScriptOutput};
 pub use shortcut::{
-    DEFAULT_SHORTCUT_ID, DEFAULT_SHORTCUT_NAME, LinuxSignal, LinuxSignalSpec,
-    SUPPORTED_LINUX_SIGNALS, ShortcutChord, ShortcutKey, ShortcutModifiers, ShortcutProfile,
-    ShortcutTrigger, next_shortcut_id, normalize_accelerator,
+    DEFAULT_BEEP_VOLUME_PERCENT, DEFAULT_SHORTCUT_ID, DEFAULT_SHORTCUT_NAME, LinuxSignal,
+    LinuxSignalSpec, MAX_BEEP_VOLUME_PERCENT, MIN_BEEP_VOLUME_PERCENT, SUPPORTED_LINUX_SIGNALS,
+    ShortcutChord, ShortcutKey, ShortcutModifiers, ShortcutProfile, ShortcutTrigger,
+    next_shortcut_id, normalize_accelerator,
 };
 
-pub const CONFIG_SCHEMA_VERSION: u32 = 15;
+pub const CONFIG_SCHEMA_VERSION: u32 = 16;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConfigError {
@@ -346,6 +347,10 @@ mod tests {
         assert_eq!(config.default_shortcut().language, AUTO_LANGUAGE_VALUE);
         assert!(!config.default_shortcut().mute_output_while_recording);
         assert!(!config.default_shortcut().beep_on_recording);
+        assert_eq!(
+            config.default_shortcut().beep_volume_percent,
+            DEFAULT_BEEP_VOLUME_PERCENT
+        );
         assert_eq!(config.default_shortcut().output, OutputAction::default());
     }
 
@@ -395,7 +400,7 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_schema_without_audio_input() {
         let result = toml::from_str::<AppConfig>(
             r#"
-	schema_version = 15
+	schema_version = 16
 
 	[general]
 	mode = "push_to_talk"
@@ -412,6 +417,7 @@ hotkey = "Ctrl-Alt-F"
 	language = "auto"
 	mute_output_while_recording = false
 	beep_on_recording = false
+	beep_volume_percent = 100
 	output = { copy_to_clipboard = true }
 	"#,
         );
@@ -423,13 +429,72 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_schema_without_keep_model_loaded() {
         let result = toml::from_str::<AppConfig>(
             r#"
-	schema_version = 15
+	schema_version = 16
 
 	[general]
 	mode = "push_to_talk"
 	hotkey_backend = "auto"
 	audio_input = { type = "system_default" }
 	compute_backend = "auto"
+
+	[[shortcuts]]
+	id = "default"
+	name = "Default"
+	enabled = true
+	trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
+	model_id = "large-v3-turbo-q5_0"
+	language = "auto"
+	mute_output_while_recording = false
+	beep_on_recording = false
+	beep_volume_percent = 100
+	output = { copy_to_clipboard = true }
+	"#,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_schema_without_shortcut_mute_output_setting() {
+        let result = toml::from_str::<AppConfig>(
+            r#"
+	schema_version = 16
+
+	[general]
+	mode = "push_to_talk"
+	hotkey_backend = "auto"
+	audio_input = { type = "system_default" }
+	compute_backend = "auto"
+	keep_model_loaded = true
+
+	[[shortcuts]]
+	id = "default"
+	name = "Default"
+	enabled = true
+	trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
+	model_id = "large-v3-turbo-q5_0"
+	language = "auto"
+	beep_on_recording = false
+	beep_volume_percent = 100
+	output = { copy_to_clipboard = true }
+	"#,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejects_schema_without_shortcut_beep_volume() {
+        let result = toml::from_str::<AppConfig>(
+            r#"
+	schema_version = 16
+
+	[general]
+	mode = "push_to_talk"
+	hotkey_backend = "auto"
+	audio_input = { type = "system_default" }
+	compute_backend = "auto"
+	keep_model_loaded = true
 
 	[[shortcuts]]
 	id = "default"
@@ -448,37 +513,31 @@ hotkey = "Ctrl-Alt-F"
     }
 
     #[test]
-    fn rejects_schema_without_shortcut_mute_output_setting() {
-        let result = toml::from_str::<AppConfig>(
-            r#"
-	schema_version = 15
+    fn normalizes_shortcut_beep_volume_bounds() {
+        let mut config = AppConfig::default();
+        config.shortcuts[0].beep_volume_percent = 1;
 
-	[general]
-	mode = "push_to_talk"
-	hotkey_backend = "auto"
-	audio_input = { type = "system_default" }
-	compute_backend = "auto"
-	keep_model_loaded = true
-
-	[[shortcuts]]
-	id = "default"
-	name = "Default"
-	enabled = true
-	trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
-	model_id = "large-v3-turbo-q5_0"
-	language = "auto"
-	output = { copy_to_clipboard = true }
-	"#,
+        let normalized = config.normalized().expect("volume should clamp low");
+        assert_eq!(
+            normalized.default_shortcut().beep_volume_percent,
+            MIN_BEEP_VOLUME_PERCENT
         );
 
-        assert!(result.is_err());
+        let mut config = AppConfig::default();
+        config.shortcuts[0].beep_volume_percent = 255;
+
+        let normalized = config.normalized().expect("volume should clamp high");
+        assert_eq!(
+            normalized.default_shortcut().beep_volume_percent,
+            MAX_BEEP_VOLUME_PERCENT
+        );
     }
 
     #[test]
     fn rejects_schema_without_shortcut_beep_setting() {
         let result = toml::from_str::<AppConfig>(
             r#"
-	schema_version = 15
+	schema_version = 16
 
 	[general]
 	mode = "push_to_talk"
@@ -495,6 +554,7 @@ hotkey = "Ctrl-Alt-F"
 	model_id = "large-v3-turbo-q5_0"
 	language = "auto"
 	mute_output_while_recording = false
+	beep_volume_percent = 100
 	output = { copy_to_clipboard = true }
 	"#,
         );
@@ -538,7 +598,7 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_removed_daemon_backend() {
         let result = toml::from_str::<AppConfig>(
             r#"
-	schema_version = 15
+	schema_version = 16
 
 	[general]
 	mode = "push_to_talk"
@@ -556,6 +616,7 @@ hotkey = "Ctrl-Alt-F"
 	language = "auto"
 	mute_output_while_recording = false
 	beep_on_recording = false
+	beep_volume_percent = 100
 	output = { copy_to_clipboard = true }
 	"#,
         );
@@ -568,7 +629,7 @@ hotkey = "Ctrl-Alt-F"
     fn rejects_removed_portal_backend() {
         let result = toml::from_str::<AppConfig>(
             r#"
-	schema_version = 15
+	schema_version = 16
 
 	[general]
 	mode = "push_to_talk"
@@ -586,6 +647,7 @@ hotkey = "Ctrl-Alt-F"
 	language = "auto"
 	mute_output_while_recording = false
 	beep_on_recording = false
+	beep_volume_percent = 100
 	output = { copy_to_clipboard = true }
 	"#,
         );
@@ -680,6 +742,7 @@ hotkey = "Ctrl-Alt-F"
             language: AUTO_LANGUAGE_VALUE.to_string(),
             mute_output_while_recording: false,
             beep_on_recording: false,
+            beep_volume_percent: DEFAULT_BEEP_VOLUME_PERCENT,
             output: OutputAction::default(),
         });
 
@@ -784,6 +847,7 @@ stop_signal = "SIGWINCH"
             language: AUTO_LANGUAGE_VALUE.to_string(),
             mute_output_while_recording: false,
             beep_on_recording: false,
+            beep_volume_percent: DEFAULT_BEEP_VOLUME_PERCENT,
             output: OutputAction::default(),
         });
 
@@ -812,6 +876,7 @@ stop_signal = "SIGWINCH"
             language: AUTO_LANGUAGE_VALUE.to_string(),
             mute_output_while_recording: false,
             beep_on_recording: false,
+            beep_volume_percent: DEFAULT_BEEP_VOLUME_PERCENT,
             output: OutputAction::default(),
         });
 

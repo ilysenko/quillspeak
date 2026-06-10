@@ -476,6 +476,7 @@ mod tests {
             compute_backend: ComputeBackend::Cpu,
             mute_output_while_recording: false,
             beep_on_recording: false,
+            beep_volume_percent: 100,
             output: OutputAction::default(),
             input: AudioInputRef::SystemDefault,
         }

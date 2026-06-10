@@ -309,7 +309,7 @@ Generated defaults are display-aware. On X11-capable sessions the app creates
 the keyboard default plus a signal shortcut:
 
 ```toml
-schema_version = 15
+schema_version = 16
 
 [general]
 mode = "push_to_talk"
@@ -327,6 +327,7 @@ model_id = "large-v3-turbo-q5_0"
 language = "auto"
 mute_output_while_recording = false
 beep_on_recording = false
+beep_volume_percent = 100
 output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 
 [[shortcuts]]
@@ -338,6 +339,7 @@ model_id = "large-v3-turbo-q5_0"
 language = "auto"
 mute_output_while_recording = false
 beep_on_recording = false
+beep_volume_percent = 100
 output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 ```
 
@@ -363,9 +365,10 @@ is not offered in Settings.
 Settings has `Status`, `General`, `Models`, `History`, one page per shortcut
 profile, and `Add New` pages. `Models` manages downloaded whisper.cpp ggml
 models under `~/.local/share/myapp/models`. `History` shows saved final text
-from `~/.local/share/myapp/history.jsonl` and can clear it after confirmation.
+from `~/.local/share/myapp/history.jsonl`, can copy individual items, and can
+clear it after confirmation.
 Shortcut pages choose only ready models; each shortcut owns its model,
-language, mute, beep, script, clipboard, and paste settings.
+language, mute, beep, beep volume, script, clipboard, and paste settings.
 
 Each shortcut profile has its own trigger, model, language, and output pipeline.
 Triggers can be keyboard shortcuts or Linux signals.
