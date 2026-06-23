@@ -65,7 +65,7 @@ pub fn run() -> gtk::glib::ExitCode {
                     runtime_slot.replace(Some(runtime));
                 }
                 Err(error) => {
-                    error!(?error, "failed to start MyApp");
+                    error!(?error, "failed to start QuillSpeak");
                     application.quit();
                 }
             }
@@ -231,7 +231,7 @@ impl AppRuntime {
             Err(error) => {
                 warn!(
                     ?error,
-                    "failed to start external trigger command socket; myapp trigger commands are disabled"
+                    "failed to start external trigger command socket; quillspeak trigger commands are disabled"
                 );
                 None
             }
@@ -292,7 +292,7 @@ impl AppRuntime {
         if self.is_quitting.get()
             && !matches!(command, AppCommand::ShutdownComplete | AppCommand::Quit)
         {
-            if let Some(command) = command.reject_pending_reply("MyApp is quitting") {
+            if let Some(command) = command.reject_pending_reply("QuillSpeak is quitting") {
                 debug!(?command, "ignoring command while app is quitting");
             }
             return;
@@ -505,7 +505,7 @@ impl AppRuntime {
                 "External trigger expired before the runtime processed it; ignoring"
             );
             let _ = response_tx.send(ExternalTriggerResponse::rejected(
-                "trigger request expired before MyApp processed it",
+                "trigger request expired before QuillSpeak processed it",
             ));
             return;
         }
@@ -1808,7 +1808,7 @@ impl AppRuntime {
     fn request_audio_input_refresh(&self) {
         let command_tx = self.command_sender();
         if let Err(error) = thread::Builder::new()
-            .name("myapp-audio-devices".to_string())
+            .name("quillspeak-audio-devices".to_string())
             .spawn(move || {
                 let devices = list_input_devices();
                 let _ = command_tx.send(AppCommand::AudioInputDevicesRefreshed(devices));
@@ -1887,7 +1887,7 @@ impl AppRuntime {
             return;
         }
 
-        info!("Quitting MyApp");
+        info!("Quitting QuillSpeak");
         let download_handles = self.download_manager.borrow_mut().cancel_all();
         if !download_handles.is_empty() {
             info!(
@@ -1913,7 +1913,7 @@ impl AppRuntime {
     }
 
     fn finish_shutdown(&self) {
-        info!("MyApp shutdown complete");
+        info!("QuillSpeak shutdown complete");
         self.tray.borrow_mut().take();
         self.hold_guard.borrow_mut().take();
         self.application.quit();
@@ -1936,7 +1936,7 @@ impl AppRuntime {
             compiled_whisper_backends = %whisper_backends.display_label(),
             whisper_gpu_compiled = whisper_backends.has_gpu(),
             model_dir = %self.model_store.root().display(),
-            "MyApp started in foreground development mode"
+            "QuillSpeak started in foreground development mode"
         );
     }
 
@@ -1968,7 +1968,7 @@ fn spawn_shutdown_worker(command_tx: mpsc::Sender<AppCommand>, services: Shutdow
     let worker_services = Arc::clone(&services);
     let worker_command_tx = command_tx.clone();
     match thread::Builder::new()
-        .name("myapp-shutdown".to_string())
+        .name("quillspeak-shutdown".to_string())
         .spawn(move || {
             if let Some(services) = take_shutdown_services(&worker_services) {
                 services.shutdown();

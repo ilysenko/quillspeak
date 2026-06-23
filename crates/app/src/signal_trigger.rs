@@ -25,7 +25,7 @@ impl SignalTriggerService {
             .context("failed to register Linux signal trigger handlers")?;
         let handle = signals.handle();
         let join_handle = thread::Builder::new()
-            .name("myapp-signal-trigger".to_string())
+            .name("quillspeak-signal-trigger".to_string())
             .spawn(move || {
                 for signal in signals.forever() {
                     debug!(signal, "received Linux signal trigger");

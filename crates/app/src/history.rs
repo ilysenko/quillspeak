@@ -45,7 +45,7 @@ impl HistoryStore {
     pub fn new() -> Result<Self> {
         let base_dirs = BaseDirs::new().context("failed to resolve user data directory")?;
         Ok(Self {
-            path: base_dirs.data_dir().join("myapp/history.jsonl"),
+            path: base_dirs.data_dir().join("quillspeak/history.jsonl"),
         })
     }
 
@@ -183,7 +183,7 @@ mod tests {
 
     fn temp_root() -> PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("myapp-history-test-{id}"));
+        let root = std::env::temp_dir().join(format!("quillspeak-history-test-{id}"));
         let _ = fs::remove_dir_all(&root);
         root
     }

@@ -11,12 +11,12 @@ const TRAY_RECORDING_COLOR: [u8; 4] = [239, 68, 68, 255];
 const TRAY_PROCESSING_COLOR: [u8; 4] = [245, 158, 11, 255];
 
 pub struct Tray {
-    handle: KsniHandle<MyAppTray>,
+    handle: KsniHandle<QuillSpeakTray>,
 }
 
 impl Tray {
     pub fn new(command_tx: mpsc::Sender<AppCommand>) -> Result<Self, ksni::Error> {
-        let tray = MyAppTray {
+        let tray = QuillSpeakTray {
             command_tx,
             recording_phase: RecordingPhase::Idle,
             refresh_nonce: 0,
@@ -49,21 +49,21 @@ impl Drop for Tray {
     }
 }
 
-struct MyAppTray {
+struct QuillSpeakTray {
     command_tx: mpsc::Sender<AppCommand>,
     recording_phase: RecordingPhase,
     refresh_nonce: u8,
 }
 
-impl MyAppTray {
+impl QuillSpeakTray {
     fn send(&self, command: AppCommand) {
         let _ = self.command_tx.send(command);
     }
 }
 
-impl ksni::Tray for MyAppTray {
+impl ksni::Tray for QuillSpeakTray {
     fn id(&self) -> String {
-        "myapp".to_string()
+        "quillspeak".to_string()
     }
 
     fn category(&self) -> ksni::Category {
@@ -72,10 +72,10 @@ impl ksni::Tray for MyAppTray {
 
     fn title(&self) -> String {
         match self.recording_phase {
-            RecordingPhase::Idle => "MyApp".to_string(),
-            RecordingPhase::Arming => "MyApp - Recording".to_string(),
-            RecordingPhase::Recording => "MyApp - Recording".to_string(),
-            RecordingPhase::Processing => "MyApp - Processing".to_string(),
+            RecordingPhase::Idle => "QuillSpeak".to_string(),
+            RecordingPhase::Arming => "QuillSpeak - Recording".to_string(),
+            RecordingPhase::Recording => "QuillSpeak - Recording".to_string(),
+            RecordingPhase::Processing => "QuillSpeak - Processing".to_string(),
         }
     }
 
@@ -119,7 +119,7 @@ impl ksni::Tray for MyAppTray {
     }
 }
 
-fn recording_menu_item(phase: RecordingPhase) -> ksni::menu::StandardItem<MyAppTray> {
+fn recording_menu_item(phase: RecordingPhase) -> ksni::menu::StandardItem<QuillSpeakTray> {
     let (label, icon_name, enabled) = match phase {
         RecordingPhase::Idle => ("Start Recording", "media-record", true),
         RecordingPhase::Arming => ("Stop Recording", "media-playback-stop", true),
@@ -131,7 +131,7 @@ fn recording_menu_item(phase: RecordingPhase) -> ksni::menu::StandardItem<MyAppT
         label: label.to_string(),
         icon_name: icon_name.to_string(),
         enabled,
-        activate: Box::new(|tray: &mut MyAppTray| tray.send(AppCommand::ToggleRecording)),
+        activate: Box::new(|tray: &mut QuillSpeakTray| tray.send(AppCommand::ToggleRecording)),
         ..Default::default()
     }
 }

@@ -1,7 +1,9 @@
 # Distribution Plan
 
-Research-backed plan for packaging and distributing MyApp on Linux.
-Status: plan only — nothing below is implemented yet (researched 2026-06).
+Research-backed plan and implementation tracker for packaging and distributing
+QuillSpeak on Linux.
+Status: Phase 1 packaging/docs automation is partially implemented as of
+2026-06-23. Remaining items are called out below.
 
 ## Summary
 
@@ -35,7 +37,7 @@ Key version facts discovered during research:
 
 ## Phase 1 — v1: Vulkan `.deb` on GitHub Releases
 
-### 1.1 Upgrade whisper-rs
+### 1.1 Upgrade whisper-rs — pending
 
 - Bump to `whisper-rs = "=0.16.0"` / `whisper-rs-sys = "=0.15.0"`
   (whisper.cpp 1.8.3) in the workspace `Cargo.toml`.
@@ -44,7 +46,7 @@ Key version facts discovered during research:
 - Drop the direct `whisper-rs-sys` dependency from `crates/app` if it is no
   longer needed after the upgrade.
 
-### 1.2 Portable compilation flags
+### 1.2 Portable compilation flags — implemented in release CI
 
 - Set `GGML_NATIVE=OFF` for release/package builds so the CPU path does not
   use build-host ISA extensions. whisper-rs-sys forwards `WHISPER_*` /
@@ -52,36 +54,38 @@ Key version facts discovered during research:
   env rather than developer builds.
 - Accept the CPU-path speed loss; Vulkan is the primary inference path.
 
-### 1.3 Desktop integration assets (currently missing entirely)
+### 1.3 Desktop integration assets — implemented
 
-- `assets/myapp.desktop` — `Type=Application`, `Categories=Utility;`,
-  `Icon=myapp`, no window on launch is fine for a tray app.
+- `assets/quillspeak.desktop` — `Type=Application`, `Categories=Utility;`,
+  `Icon=quillspeak`, no window on launch is fine for a tray app.
 - Icons under `assets/icons/hicolor/` (at least scalable SVG + 256x256 PNG).
-- AppStream metainfo `assets/myapp.metainfo.xml` (required later for
-  Flathub, improves GNOME Software / KDE Discover listing for the deb too).
+- AppStream metainfo `assets/io.github.quillspeak.QuillSpeak.metainfo.xml`
+  (required later for Flathub, improves GNOME Software / KDE Discover listing
+  for the deb too).
 - Optional autostart: ship the same `.desktop` for
   `/etc/xdg/autostart/` and/or a systemd user unit for
-  `/usr/lib/systemd/user/myapp.service` as plain package assets. Do not
-  auto-enable; document `systemctl --user enable myapp`.
+  `/usr/lib/systemd/user/quillspeak.service` as plain package assets. Do not
+  auto-enable; document `systemctl --user enable quillspeak`.
 
-### 1.4 cargo-deb metadata
+### 1.4 cargo-deb metadata — implemented
 
-Add to `crates/app/Cargo.toml`:
+Implemented in `crates/app/Cargo.toml`:
 
 ```toml
 [package.metadata.deb]
-name = "myapp"
+name = "quillspeak"
 depends = "$auto"
 recommends = "wl-clipboard, xclip"
 suggests = "xdotool, ydotool"
 section = "sound"
 features = ["whisper-vulkan"]
 assets = [
-    ["target/release/myapp", "usr/bin/", "755"],
-    ["../../assets/myapp.desktop", "usr/share/applications/", "644"],
-    ["../../assets/icons/hicolor/scalable/apps/myapp.svg",
+    ["target/release/quillspeak", "usr/bin/", "755"],
+    ["../../assets/quillspeak.desktop", "usr/share/applications/", "644"],
+    ["../../assets/icons/hicolor/scalable/apps/quillspeak.svg",
      "usr/share/icons/hicolor/scalable/apps/", "644"],
-    ["../../assets/myapp.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["../../assets/io.github.quillspeak.QuillSpeak.metainfo.xml",
+     "usr/share/metainfo/", "644"],
 ]
 ```
 
@@ -93,21 +97,23 @@ Notes:
   hence the debian:12 container requirement.
 - `swhkd` is not in Debian/Ubuntu archives; document it in README instead of
   referencing it in package relationships.
+- CPU-only variant: implemented as `quillspeak-cpu` for systems that should not
+  build or install the Vulkan backend.
 - CUDA later: add `[package.metadata.deb.variants.cuda]` overriding
-  `name = "myapp-cuda"`, `features = ["whisper-cuda"]`, plus
-  `conflicts`/`provides` against `myapp`. Built with
-  `cargo deb -p app --variant=cuda`.
+  `name = "quillspeak-cuda"`, `features = ["whisper-cuda"]`, plus
+  `conflicts`/`provides` against `quillspeak`. Built with
+  `cargo deb --manifest-path crates/app/Cargo.toml --variant cuda`.
 
-### 1.5 CI release pipeline (GitHub Actions)
+### 1.5 CI release pipeline (GitHub Actions) — implemented
 
 - `runs-on: ubuntu-latest` with `container: debian:12`.
 - Install: `build-essential pkg-config cmake clang libclang-dev
   libasound2-dev libpulse-dev libpipewire-0.3-dev libgtk-4-dev
   libadwaita-1-dev libvulkan-dev glslc dpkg-dev`.
 - Steps: rust toolchain → `Swatinem/rust-cache` (the whisper.cpp cmake build
-  dominates compile time) → `cargo deb -p app` with `GGML_NATIVE=OFF` →
-  upload `.deb` + a plain tarball (binary, .desktop, icon, metainfo,
-  install.sh) via `softprops/action-gh-release` on tag push.
+  dominates compile time) → `cargo deb --manifest-path crates/app/Cargo.toml`
+  with `GGML_NATIVE=OFF` → upload `.deb`, `SHA256SUMS`, and
+  `release-manifest.json` via `softprops/action-gh-release` on tag push.
 - Future CUDA leg: matrix `backend: [vulkan, cuda]`; the CUDA job uses an
   `nvidia/cuda:12.x-devel-ubuntu22.04`-class container or
   `Jimver/cuda-toolkit` (no GPU needed to compile). Do not block v1 on this.
@@ -120,9 +126,9 @@ Notes:
 - `depends=(gtk4 libadwaita pipewire vulkan-icd-loader)`,
   `optdepends=(wl-clipboard xclip xdotool ydotool swhkd)` — all available on
   Arch, unlike Debian.
-- Optionally a second `myapp-bin` AUR package repacking the GitHub release.
+- Optionally a second `quillspeak-bin` AUR package repacking the GitHub release.
 
-### 1.7 README / docs updates
+### 1.7 README / docs updates — implemented
 
 - Document supported distros (Debian 12+, Ubuntu 24.04+; Ubuntu 22.04
   unsupported due to libadwaita 1.2 floor).
@@ -134,7 +140,7 @@ Notes:
 - Self-hosted apt repository (aptly or reprepro, GPG-signed, served from
   GitHub Pages or S3) so users get updates via `apt upgrade`. GitHub
   Releases alone has no update story.
-- Ship the `myapp-cuda` deb variant if NVIDIA users ask for more speed than
+- Ship the `quillspeak-cuda` deb variant if NVIDIA users ask for more speed than
   Vulkan provides (expected gap roughly 1.2–2x on NVIDIA; the CUDA runtime
   payload is ~370 MB compressed — keep it out of the default artifact).
 
@@ -160,9 +166,9 @@ What already works in a Flatpak with no code changes (verified in research):
 - Microphone: `--socket=pulseaudio` (pipewire-pulse compatible).
 - Vulkan: `--device=dri` + runtime Mesa; ship the Vulkan backend only
   (CUDA on Flathub requires separate addon flatpaks — out of scope).
-- Command socket: `--filesystem=xdg-run/myapp:create` exposes
-  `$XDG_RUNTIME_DIR/myapp` at the same path to host and sandbox; the host
-  needs a tiny `myapp trigger` shim (or socat) since the binary lives in
+- Command socket: `--filesystem=xdg-run/quillspeak:create` exposes
+  `$XDG_RUNTIME_DIR/quillspeak` at the same path to host and sandbox; the host
+  needs a tiny `quillspeak trigger` shim (or socat) since the binary lives in
   the sandbox.
 - Host-side `pkill -USR1` still reaches the sandboxed process (one-way PID
   namespace isolation).
@@ -214,7 +220,7 @@ Revisit only if per-backend deb variants prove insufficient.
 - Flathub policy on host command execution: flatpak-builder-lint
   `finish-args-flatpak-spawn-access`, docs.flathub.org linter/requirements.
 - Peer apps: cjpais/Handy (Vulkan-only static, signals on Wayland —
-  same trigger architecture as MyApp), thewh1teagle/vibe (deb/rpm,
+  same trigger architecture as QuillSpeak), thewh1teagle/vibe (deb/rpm,
   Vulkan), mkiol SpeechNote (Flathub, portals, CUDA as addon flatpaks),
   zugaldia/speedofsound (portal-native GTK4).
 - Tooling: kornelski/cargo-deb (variants, `$auto` depends, systemd units),

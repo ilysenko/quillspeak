@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+  GGML_NATIVE: "OFF"
+
+jobs:
+  package-deb:
+    name: Build ${{ matrix.label }} deb
+    runs-on: ubuntu-latest
+    container: debian:12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Vulkan
+            artifact: deb-vulkan
+            cargo_deb_args: ""
+          - label: CPU
+            artifact: deb-cpu
+            cargo_deb_args: "--variant cpu"
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git xz-utils file \
+            build-essential pkg-config cmake clang libclang-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev \
+            libgtk-4-dev libadwaita-1-dev \
+            libvulkan-dev glslc dpkg-dev liblzma-dev
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build output
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+
+      - name: Build Debian package
+        run: cargo deb --manifest-path crates/app/Cargo.toml ${{ matrix.cargo_deb_args }} -- --locked
+
+      - name: Collect package
+        run: |
+          mkdir -p dist
+          find target -path "*/debian/*.deb" -type f -exec cp {} dist/ \;
+          ls -lh dist
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*.deb
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: package-deb
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: deb-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums and manifest
+        run: |
+          cd dist
+          sha256sum *.deb > SHA256SUMS
+          version="${GITHUB_REF_NAME#v}"
+          printf '{\n  "tag": "%s",\n  "version": "%s",\n  "packages": [\n' "$GITHUB_REF_NAME" "$version" > release-manifest.json
+          first=1
+          for deb in *.deb; do
+            checksum="$(sha256sum "$deb" | cut -d ' ' -f 1)"
+            size="$(stat -c '%s' "$deb")"
+            if [ "$first" -eq 0 ]; then
+              printf ',\n' >> release-manifest.json
+            fi
+            first=0
+            printf '    {"name": "%s", "sha256": "%s", "size": %s}' "$deb" "$checksum" "$size" >> release-manifest.json
+          done
+          printf '\n  ]\n}\n' >> release-manifest.json
+          ls -lh
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ startsWith(github.ref_name, 'v0.0.') }}

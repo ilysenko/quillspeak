@@ -79,7 +79,7 @@ mod tests {
 
     fn temp_root() -> PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = env::temp_dir().join(format!("myapp-atomic-write-test-{id}"));
+        let root = env::temp_dir().join(format!("quillspeak-atomic-write-test-{id}"));
         let _ = fs::remove_dir_all(&root);
         root
     }

@@ -1,10 +1,10 @@
-# MyApp AGENTS.md
+# QuillSpeak AGENTS.md
 
 Guidance for AI coding agents working in this repository.
 
 ## Project Goal
 
-MyApp is a Rust Linux desktop prototype for a future push-to-talk voice
+QuillSpeak is a Rust Linux desktop prototype for a future push-to-talk voice
 transcription utility. It should feel like a background desktop app to the
 user, but during development the main app remains a normal foreground process
 so logs stay visible and Ctrl-C works.
@@ -24,21 +24,21 @@ The current prototype includes:
 - whisper-rs/whisper.cpp transcription on downloaded ggml models,
 - real Linux clipboard output and script output actions.
 
-Do not add Electron or Tauri. Do not add a MyApp input daemon, D-Bus hotkey
+Do not add Electron or Tauri. Do not add a QuillSpeak input daemon, D-Bus hotkey
 bridge, evdev capture, uinput paste worker, direct text insertion without
 clipboard transport, XDG portal shortcuts, Flatpak packaging, or `.deb`
 packaging unless explicitly requested.
 
 ## Workspace
 
-- `crates/app`: builds `myapp`, the GTK4/libadwaita desktop app.
+- `crates/app`: builds `quillspeak`, the GTK4/libadwaita desktop app.
 - `crates/shared`: shared config structs, model catalog, shortcut parsing,
   languages, output action types, persistence helpers, and app constants.
 
 The app is intentionally not daemonized. Start it with:
 
 ```sh
-cargo run -p app --bin myapp
+cargo run -p quillspeak --bin quillspeak
 ```
 
 It starts with no visible window, owns a GTK application hold, shows the tray
@@ -76,7 +76,7 @@ indicator, and exits through the same quit path for tray `Quit` and Ctrl-C.
 - `crates/app/src/config_store.rs`: app config load/save under the XDG config
   directory.
 - `crates/app/src/external_trigger.rs`: single-binary command mode and
-  app-owned Unix socket for `myapp trigger <shortcut> <start|stop>` requests.
+  app-owned Unix socket for `quillspeak trigger <shortcut> <start|stop>` requests.
 - `crates/app/src/hotkey/mod.rs`: pluggable app hotkey backend boundary and
   backend resolution.
 - `crates/app/src/hotkey/x11.rs`: app-side X11 passive grab backend.
@@ -154,14 +154,14 @@ script execution and clipboard copy/verification.
 The app is the source of truth for user settings. Current app config path:
 
 ```text
-~/.config/myapp/config.toml
+~/.config/quillspeak/config.toml
 ```
 
 Current schema. Generated defaults are display-aware; on X11-capable sessions
 the app creates the keyboard default plus a signal shortcut:
 
 ```toml
-schema_version = 14
+schema_version = 16
 
 [general]
 mode = "push_to_talk"
@@ -178,6 +178,8 @@ trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }
 model_id = "large-v3-turbo-q5_0"
 language = "auto"
 mute_output_while_recording = false
+beep_on_recording = false
+beep_volume_percent = 100
 output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 
 [[shortcuts]]
@@ -188,6 +190,8 @@ trigger = { type = "linux_signal", start_signal = "SIGUSR1", stop_signal = "SIGU
 model_id = "large-v3-turbo-q5_0"
 language = "auto"
 mute_output_while_recording = false
+beep_on_recording = false
+beep_volume_percent = 100
 output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 ```
 
@@ -195,7 +199,7 @@ On Wayland or mixed Wayland/X11 sessions, generated defaults use
 `linux_signal` on the permanent `Default` shortcut and Settings shows only
 signal trigger controls.
 
-Only schema v14 is supported during development. Do not add old-config
+Only schema v16 is supported during development. Do not add old-config
 migration paths unless explicitly requested. If the schema changes during
 active development, update the current schema and tests directly instead of
 layering legacy compatibility; older schemas, including v10, are discarded and
@@ -214,7 +218,7 @@ clipboard as transport and then sends a configured `xdotool` or `ydotool`
 shortcut.
 
 If a local development config is from an older schema, remove
-`~/.config/myapp/config.toml` and restart the app to generate the current
+`~/.config/quillspeak/config.toml` and restart the app to generate the current
 default config, or let the app replace unsupported schemas automatically.
 
 ## Settings UI
@@ -273,7 +277,7 @@ remote file sizes can differ from catalog estimates.
 Model files live under:
 
 ```text
-~/.local/share/myapp/models
+~/.local/share/quillspeak/models
 ```
 
 Readiness rules:
@@ -317,7 +321,7 @@ Current audio behavior:
 - the default app build enables CPAL's native PipeWire and PulseAudio hosts,
 - on modern Ubuntu desktops, prefer native PipeWire and fall back to
   PulseAudio through pipewire-pulse when PipeWire is unavailable,
-- audio capture runs on the `myapp-audio-capture` worker thread, not on the GTK
+- audio capture runs on the `quillspeak-audio-capture` worker thread, not on the GTK
   main thread,
 - the CPAL callback writes only to a short ring buffer; the capture worker
   drains it into a bounded session buffer capped by the maximum recording
@@ -339,8 +343,8 @@ Current transcription behavior:
 - unusable short captures return `TranscriptionStatus::Skipped`, do not load
   Whisper, and do not trigger output actions,
 - empty recognized text should warn with segment count and audio RMS/peak,
-- `MYAPP_DEBUG_SAVE_AUDIO=1` writes debug WAV/TOML files under
-  `/tmp/myapp-audio-debug`; setting it to a directory path writes there
+- `QUILLSPEAK_DEBUG_SAVE_AUDIO=1` writes debug WAV/TOML files under
+  `/tmp/quillspeak-audio-debug`; setting it to a directory path writes there
   instead.
 
 Auto language mode should allow whisper.cpp to auto-detect while continuing to
@@ -382,25 +386,25 @@ X11 capture lives in the app and uses passive X11 grabs. The X11 backend sends
 `StartRecording(shortcut_id)` on key down and `StopRecording(shortcut_id)` when
 the required chord is no longer pressed.
 
-Wayland capture is external to MyApp. Prefer external utilities such as `swhkd`
-calling the existing binary in command mode: `myapp trigger <shortcut-id-or-name>
-start`, `myapp trigger <shortcut-id-or-name> stop`, or
-`myapp trigger <shortcut-id-or-name> toggle`. Command mode sends one line to the
-running app through `$XDG_RUNTIME_DIR/myapp/command.sock`; shortcut selectors
+Wayland capture is external to QuillSpeak. Prefer external utilities such as `swhkd`
+calling the existing binary in command mode: `quillspeak trigger <shortcut-id-or-name>
+start`, `quillspeak trigger <shortcut-id-or-name> stop`, or
+`quillspeak trigger <shortcut-id-or-name> toggle`. Command mode sends one line to the
+running app through `$XDG_RUNTIME_DIR/quillspeak/command.sock`; shortcut selectors
 resolve by exact id first, then exact unique display name. Disabled, missing,
 and ambiguous shortcuts are rejected, and commands that do not change recording
 state (start while busy, stop with no active recording, toggle while
 processing) are rejected with an error exit code. If the command socket cannot be created,
-the main app should continue running and `myapp trigger` remains unavailable
+the main app should continue running and `quillspeak trigger` remains unavailable
 until a later app start successfully creates the socket.
 
 Linux signal triggers remain available as a lower-level fallback. Configure
-shortcut profiles as `linux_signal`, then send Linux signals to the `myapp`
+shortcut profiles as `linux_signal`, then send Linux signals to the `quillspeak`
 process. Signal controls are dropdowns, not free-text fields. The supported
 exact values are `SIGUSR1`, `SIGUSR2`, `SIGALRM`, and `SIGWINCH`; aliases,
 numeric values, reserved process-control signals, and custom names are not
 supported. `SIGUSR1` and `SIGUSR2` are always registered as guard signals; if
-either signal does not match an enabled shortcut, MyApp logs the received signal
+either signal does not match an enabled shortcut, QuillSpeak logs the received signal
 at debug level and continues running.
 
 When a shortcut uses the same start and stop signal, each received signal is
@@ -411,9 +415,9 @@ shortcuts or processing state are ignored with debug logging.
 Example external trigger commands:
 
 ```sh
-myapp trigger Default start
-myapp trigger Default stop
-myapp trigger Default toggle
+quillspeak trigger Default start
+quillspeak trigger Default stop
+quillspeak trigger Default toggle
 ```
 
 The main app should never be run with sudo.
@@ -445,19 +449,19 @@ sudo apt install wl-clipboard xclip xdotool ydotool
 The app must not invoke package managers or auto-install these tools; if a
 required tool is missing, log a clear output failure message with the package
 hint. `xdotool` handles X11 paste shortcuts. `ydotool` handles Wayland paste
-shortcuts and may require its own daemon/permissions outside MyApp.
+shortcuts and may require its own daemon/permissions outside QuillSpeak.
 
 Run commands:
 
 ```sh
-cargo run -p app --bin myapp
-cargo run -p app --bin myapp --no-default-features --features audio-pulseaudio
-cargo run -p app --no-default-features --bin myapp
-MYAPP_DEV_LOG=1 cargo run -p app --bin myapp
-MYAPP_DEBUG_SAVE_AUDIO=1 MYAPP_DEV_LOG=1 cargo run -p app --features whisper-vulkan --bin myapp
+cargo run -p quillspeak --bin quillspeak
+cargo run -p quillspeak --bin quillspeak --no-default-features --features audio-pulseaudio
+cargo run -p quillspeak --no-default-features --bin quillspeak
+QUILLSPEAK_DEV_LOG=1 cargo run -p quillspeak --bin quillspeak
+QUILLSPEAK_DEBUG_SAVE_AUDIO=1 QUILLSPEAK_DEV_LOG=1 cargo run -p quillspeak --features whisper-vulkan --bin quillspeak
 ```
 
-`MYAPP_DEV_LOG=1` enables debug logs for MyApp crates while keeping dependency
+`QUILLSPEAK_DEV_LOG=1` enables debug logs for QuillSpeak crates while keeping dependency
 crates at info level. A global `RUST_LOG=debug` is intentionally noisy and may
 include PulseAudio internals.
 
@@ -513,8 +517,8 @@ Serial `-- --test-threads=1` runs are only for debugging.
 For signal changes, also smoke-test the running app manually:
 
 ```sh
-pkill -USR1 -x myapp
-pkill -USR2 -x myapp
+pkill -USR1 -x quillspeak
+pkill -USR2 -x quillspeak
 ```
 
 For a same-signal shortcut, send the same signal twice: the first signal should

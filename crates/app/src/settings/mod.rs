@@ -129,7 +129,7 @@ impl SettingsWindow {
 
         let window = adw::ApplicationWindow::builder()
             .application(application)
-            .title("MyApp Settings")
+            .title("QuillSpeak Settings")
             .default_width(900)
             .default_height(940)
             .content(&toast_overlay)

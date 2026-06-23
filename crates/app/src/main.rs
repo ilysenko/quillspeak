@@ -18,7 +18,8 @@ mod tray;
 use std::env;
 
 const APP_LOG_FILTER: &str = "info,pulseaudio::client::reactor=off";
-const APP_DEV_LOG_FILTER: &str = "myapp=debug,shared=debug,info,pulseaudio::client::reactor=off";
+const APP_DEV_LOG_FILTER: &str =
+    "quillspeak=debug,shared=debug,info,pulseaudio::client::reactor=off";
 
 fn main() -> gtk4::glib::ExitCode {
     init_logging();
@@ -55,7 +56,7 @@ fn log_filter() -> tracing_subscriber::EnvFilter {
         return filter;
     }
 
-    if env_flag("MYAPP_DEV_LOG") {
+    if env_flag("QUILLSPEAK_DEV_LOG") {
         tracing_subscriber::EnvFilter::new(APP_DEV_LOG_FILTER)
     } else {
         tracing_subscriber::EnvFilter::new(APP_LOG_FILTER)

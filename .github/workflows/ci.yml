@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust checks
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake clang libclang-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev \
+            libgtk-4-dev libadwaita-1-dev \
+            libvulkan-dev glslc desktop-file-utils appstream
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build output
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Check workspace
+        run: cargo check --workspace
+
+      - name: Check Vulkan package feature
+        env:
+          GGML_NATIVE: "OFF"
+        run: cargo check -p quillspeak --features whisper-vulkan
+
+      - name: Test workspace
+        run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Validate desktop file
+        run: desktop-file-validate assets/quillspeak.desktop
+
+      - name: Validate AppStream metadata
+        run: appstreamcli validate --no-net assets/io.github.quillspeak.QuillSpeak.metainfo.xml
+
+      - name: Diff whitespace check
+        run: git diff --check

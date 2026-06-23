@@ -151,6 +151,6 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("myapp-test-model-{suffix}.bin"))
+        std::env::temp_dir().join(format!("quillspeak-test-model-{suffix}.bin"))
     }
 }

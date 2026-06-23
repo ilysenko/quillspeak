@@ -34,7 +34,7 @@ impl BeepService {
     pub fn spawn(command_tx: mpsc::Sender<AppCommand>) -> Result<Self> {
         let (worker_tx, worker_rx) = mpsc::channel();
         let join_handle = thread::Builder::new()
-            .name("myapp-beep".to_string())
+            .name("quillspeak-beep".to_string())
             .spawn(move || beep_worker_loop(worker_rx, command_tx))
             .map_err(|error| anyhow!("failed to spawn beep worker: {error}"))?;
         Ok(Self {

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.quillspeak.QuillSpeak</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.quillspeak">
+    <name>Igor Lysenko</name>
+  </developer>
+  <name>QuillSpeak</name>
+  <summary>Local push-to-talk voice transcription for Linux desktops</summary>
+  <description>
+    <p>
+      QuillSpeak is a GTK4/libadwaita desktop utility for Linux voice typing.
+      Hold a configured trigger, speak, release, and QuillSpeak transcribes
+      locally with whisper.cpp models.
+    </p>
+    <p>
+      X11 sessions can use app-owned keyboard grabs. Wayland sessions use
+      external hotkey tools that call the QuillSpeak trigger command, with
+      Linux signal triggers available as a lower-level fallback.
+    </p>
+    <p>
+      Output actions can copy text to the system clipboard, run an optional
+      script transform, and send a paste shortcut through external Linux tools.
+    </p>
+  </description>
+  <launchable type="desktop-id">quillspeak.desktop</launchable>
+  <provides>
+    <binary>quillspeak</binary>
+  </provides>
+  <categories>
+    <category>Audio</category>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>voice</keyword>
+    <keyword>transcription</keyword>
+    <keyword>dictation</keyword>
+    <keyword>speech-to-text</keyword>
+    <keyword>whisper</keyword>
+  </keywords>
+  <url type="homepage">https://github.com/ilysenko/quillspeak</url>
+  <url type="bugtracker">https://github.com/ilysenko/quillspeak/issues</url>
+  <releases>
+    <release version="0.0.1" date="2026-06-23">
+      <description>
+        <p>Initial public packaging and documentation automation.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>

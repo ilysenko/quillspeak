@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=QuillSpeak
+GenericName=Voice Transcription
+Comment=Local push-to-talk voice transcription for Linux desktops
+Exec=quillspeak
+Icon=quillspeak
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=voice;transcription;dictation;whisper;speech;clipboard;
+StartupNotify=false
+X-GNOME-UsesNotifications=false

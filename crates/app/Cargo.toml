@@ -1,12 +1,14 @@
 [package]
-name = "app"
+name = "quillspeak"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Local-first push-to-talk voice transcription for Linux desktops"
+readme = "../../README.md"
 
 [[bin]]
-name = "myapp"
+name = "quillspeak"
 path = "src/main.rs"
 
 [dependencies]
@@ -40,3 +42,50 @@ audio-pulseaudio = ["cpal/pulseaudio"]
 whisper-cuda = ["whisper-rs/cuda"]
 whisper-rocm = ["whisper-rs/hipblas"]
 whisper-vulkan = ["whisper-rs/vulkan"]
+
+[package.metadata.deb]
+name = "quillspeak"
+maintainer = "Igor Lysenko <quillspeak@users.noreply.github.com>"
+copyright = "2026, Igor Lysenko"
+license-file = ["../../LICENSE", "0"]
+depends = "$auto"
+recommends = "wl-clipboard, xclip"
+suggests = "xdotool, ydotool, wireplumber, pipewire-bin"
+section = "sound"
+priority = "optional"
+features = ["whisper-vulkan"]
+extended-description = """\
+QuillSpeak is a local-first Linux desktop voice transcription utility.
+Hold a configured trigger, speak, release, and QuillSpeak transcribes with
+whisper.cpp models and sends the final text through script, clipboard, and
+optional paste actions.
+
+The default package is built with the Vulkan whisper.cpp backend and falls back
+to CPU transcription when a Vulkan runtime is not available."""
+assets = [
+    ["target/release/quillspeak", "usr/bin/", "755"],
+    ["../../assets/quillspeak.desktop", "usr/share/applications/", "644"],
+    ["../../assets/icons/hicolor/scalable/apps/quillspeak.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["../../assets/io.github.quillspeak.QuillSpeak.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["../../README.md", "usr/share/doc/quillspeak/README.md", "644"],
+    ["../../LICENSE", "usr/share/doc/quillspeak/LICENSE", "644"],
+]
+
+[package.metadata.deb.variants.cpu]
+name = "quillspeak-cpu"
+conflicts = "quillspeak"
+provides = "quillspeak"
+replaces = "quillspeak"
+features = []
+extended-description = """\
+QuillSpeak is a local-first Linux desktop voice transcription utility.
+This CPU-only package avoids GPU backend build/runtime requirements while
+keeping the same X11, Wayland, clipboard, script, tray, and shortcut behavior."""
+assets = [
+    ["target/release/quillspeak", "usr/bin/", "755"],
+    ["../../assets/quillspeak.desktop", "usr/share/applications/", "644"],
+    ["../../assets/icons/hicolor/scalable/apps/quillspeak.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["../../assets/io.github.quillspeak.QuillSpeak.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["../../README.md", "usr/share/doc/quillspeak-cpu/README.md", "644"],
+    ["../../LICENSE", "usr/share/doc/quillspeak-cpu/LICENSE", "644"],
+]

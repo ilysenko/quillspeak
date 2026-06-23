@@ -90,7 +90,7 @@ pub(super) fn maybe_write_debug_audio(
 }
 
 fn debug_audio_dir() -> Option<PathBuf> {
-    let value = env::var_os("MYAPP_DEBUG_SAVE_AUDIO")?;
+    let value = env::var_os("QUILLSPEAK_DEBUG_SAVE_AUDIO")?;
     if value.is_empty() {
         return None;
     }
@@ -98,7 +98,7 @@ fn debug_audio_dir() -> Option<PathBuf> {
     let value_text = value.to_string_lossy();
     match value_text.to_ascii_lowercase().as_str() {
         "0" | "false" | "off" | "no" => None,
-        "1" | "true" | "on" | "yes" => Some(env::temp_dir().join("myapp-audio-debug")),
+        "1" | "true" | "on" | "yes" => Some(env::temp_dir().join("quillspeak-audio-debug")),
         _ => Some(PathBuf::from(value)),
     }
 }
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn write_f32_wav_writes_readable_float_wav() {
         let path = env::temp_dir().join(format!(
-            "myapp-debug-wav-test-{}-{}.wav",
+            "quillspeak-debug-wav-test-{}-{}.wav",
             std::process::id(),
             unix_timestamp_millis()
         ));

@@ -21,7 +21,7 @@ impl RecordingPipeline {
     pub fn spawn(command_tx: mpsc::Sender<AppCommand>) -> Result<Self> {
         let (worker_tx, worker_rx) = mpsc::channel();
         let join_handle = thread::Builder::new()
-            .name("myapp-audio-capture".to_string())
+            .name("quillspeak-audio-capture".to_string())
             .spawn(move || recording_worker_loop(worker_rx, command_tx))
             .map_err(|error| anyhow!("failed to spawn audio capture worker: {error}"))?;
         Ok(Self {
@@ -471,7 +471,7 @@ mod tests {
             shortcut_id: DEFAULT_SHORTCUT_ID.to_string(),
             shortcut_name: "Default".to_string(),
             model_id: DEFAULT_MODEL_ID.to_string(),
-            model_path: PathBuf::from("/tmp/myapp-test-model.bin"),
+            model_path: PathBuf::from("/tmp/quillspeak-test-model.bin"),
             language: "auto".to_string(),
             compute_backend: ComputeBackend::Cpu,
             mute_output_while_recording: false,

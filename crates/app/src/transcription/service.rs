@@ -18,7 +18,7 @@ impl TranscriptionService {
     pub fn spawn(command_tx: mpsc::Sender<AppCommand>, keep_model_loaded: bool) -> Result<Self> {
         let (worker_tx, worker_rx) = mpsc::channel();
         thread::Builder::new()
-            .name("myapp-transcription".to_string())
+            .name("quillspeak-transcription".to_string())
             .spawn(move || transcription_worker_loop(worker_rx, command_tx, keep_model_loaded))
             .context("failed to spawn transcription worker")
             .map(|join_handle| Self {

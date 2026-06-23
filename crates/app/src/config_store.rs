@@ -24,7 +24,7 @@ impl ConfigStore {
     pub fn new() -> Result<Self> {
         let base_dirs = BaseDirs::new().context("failed to resolve user config directory")?;
         Ok(Self {
-            path: base_dirs.config_dir().join("myapp/config.toml"),
+            path: base_dirs.config_dir().join("quillspeak/config.toml"),
             shortcut_trigger_capabilities: shortcut_trigger_capabilities(),
         })
     }
@@ -494,6 +494,6 @@ output = { copy_to_clipboard = false, paste_from_clipboard = true, paste_shortcu
             .duration_since(UNIX_EPOCH)
             .expect("system time should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("myapp-config-store-test-{suffix}"))
+        std::env::temp_dir().join(format!("quillspeak-config-store-test-{suffix}"))
     }
 }

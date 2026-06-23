@@ -1,7 +1,7 @@
 pub mod config;
 pub mod persistence;
 
-pub const APP_ID: &str = "org.example.MyApp";
+pub const APP_ID: &str = "io.github.quillspeak.QuillSpeak";
 
 pub use config::{
     AUTO_LANGUAGE_VALUE, AppConfig, AudioInputRef, CONFIG_SCHEMA_VERSION, ComputeBackend,

@@ -73,7 +73,7 @@ impl OutputService {
         let cancel_requested = Arc::new(AtomicBool::new(false));
         let worker_cancel_requested = Arc::clone(&cancel_requested);
         let join_handle = thread::Builder::new()
-            .name("myapp-output".to_string())
+            .name("quillspeak-output".to_string())
             .spawn(move || output_worker_loop(worker_rx, command_tx, worker_cancel_requested))
             .map_err(|error| anyhow!("failed to spawn output worker: {error}"))?;
         Ok(Self {
@@ -839,7 +839,7 @@ where
     R: Read + Send + 'static,
 {
     thread::Builder::new()
-        .name(format!("myapp-output-{stream_name}"))
+        .name(format!("quillspeak-output-{stream_name}"))
         .spawn(move || {
             let mut bytes = Vec::new();
             reader.read_to_end(&mut bytes)?;
@@ -868,7 +868,7 @@ fn spawn_stdin_writer(
     description: &str,
 ) -> Result<thread::JoinHandle<io::Result<()>>> {
     thread::Builder::new()
-        .name("myapp-output-stdin".to_string())
+        .name("quillspeak-output-stdin".to_string())
         .spawn(move || stdin.write_all(text.as_bytes()))
         .with_context(|| format!("failed to spawn {description} stdin writer"))
 }
@@ -1380,8 +1380,8 @@ mod tests {
     #[test]
     #[ignore = "requires a real Wayland session and mutates the system clipboard"]
     fn wayland_clipboard_copy_round_trips_text() {
-        let text = format!("myapp clipboard smoke {}", unique_test_suffix());
-        let second_text = format!("myapp clipboard smoke second {}", unique_test_suffix());
+        let text = format!("quillspeak clipboard smoke {}", unique_test_suffix());
+        let second_text = format!("quillspeak clipboard smoke second {}", unique_test_suffix());
         let _restore_guard = ClipboardRestoreGuard::new(
             read_external_clipboard(ClipboardBackend::Wayland, never_cancel()).ok(),
         );
@@ -1455,7 +1455,7 @@ mod tests {
     impl TestScript {
         fn new(name: &str, body: &str) -> Self {
             let dir = std::env::temp_dir().join(format!(
-                "myapp-output-script-test-{name}-{}",
+                "quillspeak-output-script-test-{name}-{}",
                 unique_test_suffix()
             ));
             fs::create_dir_all(&dir).expect("test script dir should be writable");

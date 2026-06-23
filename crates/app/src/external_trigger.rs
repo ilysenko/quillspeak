@@ -14,14 +14,15 @@ use tracing::{debug, warn};
 
 use crate::command::AppCommand;
 
-const SOCKET_DIR_NAME: &str = "myapp";
+const SOCKET_DIR_NAME: &str = "quillspeak";
 const SOCKET_FILE_NAME: &str = "command.sock";
 const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(2);
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const COMMAND_RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_EXTERNAL_TRIGGER_CLIENTS: usize = 16;
-const USAGE: &str = "usage: myapp\n       myapp trigger <shortcut-id-or-name> <start|stop|toggle>";
+const USAGE: &str =
+    "usage: quillspeak\n       quillspeak trigger <shortcut-id-or-name> <start|stop|toggle>";
 
 pub fn usage() -> &'static str {
     USAGE
@@ -134,7 +135,7 @@ impl ExternalTriggerService {
         let worker_shutdown = Arc::clone(&shutdown_requested);
         let worker_socket_path = socket_path.clone();
         let join_handle = thread::Builder::new()
-            .name("myapp-external-trigger".to_string())
+            .name("quillspeak-external-trigger".to_string())
             .spawn(move || {
                 command_socket_loop(listener, command_tx, worker_shutdown, max_clients);
                 if let Err(error) = fs::remove_file(&worker_socket_path)
@@ -228,8 +229,9 @@ pub fn resolve_shortcut_selector(config: &AppConfig, selector: &str) -> Result<S
 }
 
 fn command_socket_path() -> Result<PathBuf> {
-    let runtime_dir = env::var_os("XDG_RUNTIME_DIR")
-        .ok_or_else(|| anyhow!("XDG_RUNTIME_DIR is not set; cannot locate MyApp command socket"))?;
+    let runtime_dir = env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| {
+        anyhow!("XDG_RUNTIME_DIR is not set; cannot locate QuillSpeak command socket")
+    })?;
     Ok(PathBuf::from(runtime_dir)
         .join(SOCKET_DIR_NAME)
         .join(SOCKET_FILE_NAME))
@@ -252,7 +254,7 @@ fn prepare_socket_path(socket_path: &Path) -> Result<()> {
 
     match UnixStream::connect(socket_path) {
         Ok(_) => Err(anyhow!(
-            "command socket is already active at {}; is MyApp already running?",
+            "command socket is already active at {}; is QuillSpeak already running?",
             socket_path.display()
         )),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -293,7 +295,7 @@ fn command_socket_loop(
 
                 let connection_command_tx = command_tx.clone();
                 match thread::Builder::new()
-                    .name("myapp-external-trigger-client".to_string())
+                    .name("quillspeak-external-trigger-client".to_string())
                     .spawn(move || handle_connection(stream, &connection_command_tx))
                 {
                     Ok(join_handle) => client_handlers.push(join_handle),
@@ -409,7 +411,7 @@ fn send_trigger_request_to_path(
 ) -> Result<()> {
     let mut stream = UnixStream::connect(socket_path).with_context(|| {
         format!(
-            "failed to connect to MyApp command socket {}; is MyApp running?",
+            "failed to connect to QuillSpeak command socket {}; is QuillSpeak running?",
             socket_path.display()
         )
     })?;
@@ -428,9 +430,9 @@ fn send_trigger_request_to_path(
     let mut response = String::new();
     let bytes = reader
         .read_line(&mut response)
-        .context("failed to read MyApp command response")?;
+        .context("failed to read QuillSpeak command response")?;
     if bytes == 0 {
-        bail!("MyApp closed the command socket without a response");
+        bail!("QuillSpeak closed the command socket without a response");
     }
     parse_protocol_response(&response)
 }
@@ -460,7 +462,7 @@ fn parse_protocol_response(line: &str) -> Result<()> {
     if let Some(message) = line.strip_prefix("error\t") {
         bail!("{message}");
     }
-    bail!("invalid MyApp command response");
+    bail!("invalid QuillSpeak command response");
 }
 
 fn sanitize_field(value: &str) -> String {
@@ -480,7 +482,7 @@ fn temp_socket_path() -> PathBuf {
         .expect("system time should be after epoch")
         .as_nanos();
     env::temp_dir()
-        .join(format!("myapp-external-trigger-test-{suffix}"))
+        .join(format!("quillspeak-external-trigger-test-{suffix}"))
         .join(SOCKET_FILE_NAME)
 }
 

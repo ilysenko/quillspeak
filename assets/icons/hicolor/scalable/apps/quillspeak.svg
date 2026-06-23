@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="QuillSpeak icon">
+  <defs>
+    <linearGradient id="body" x1="24" y1="18" x2="104" y2="114" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2dd4bf"/>
+      <stop offset="0.55" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="28" fill="#0f172a"/>
+  <path d="M86 17c-9 2-21 8-32 19C38 52 29 73 27 101c27-3 48-12 64-28 11-11 17-23 20-32 1-5-1-10-4-15-6-7-13-11-21-9Z" fill="url(#body)"/>
+  <path d="M35 93c18-8 34-20 48-37" fill="none" stroke="#f8fafc" stroke-width="8" stroke-linecap="round"/>
+  <path d="M79 34c10 9 14 19 12 30" fill="none" stroke="#99f6e4" stroke-width="7" stroke-linecap="round"/>
+  <path d="M38 99 25 112" fill="none" stroke="#f8fafc" stroke-width="8" stroke-linecap="round"/>
+  <path d="M39 50c-8 7-13 16-16 27" fill="none" stroke="#38bdf8" stroke-width="6" stroke-linecap="round" opacity=".65"/>
+</svg>

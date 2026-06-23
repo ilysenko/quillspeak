@@ -364,7 +364,7 @@ mod tests {
 
     fn temp_model_root() -> PathBuf {
         let id = TEST_ROOT_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("myapp-model-inventory-test-{id}"));
+        let root = std::env::temp_dir().join(format!("quillspeak-model-inventory-test-{id}"));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root

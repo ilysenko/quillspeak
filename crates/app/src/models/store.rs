@@ -26,7 +26,7 @@ pub struct ModelStore {
 impl ModelStore {
     pub fn new() -> Result<Self> {
         let base_dirs = BaseDirs::new().context("failed to resolve user data directory")?;
-        let root = base_dirs.data_dir().join("myapp/models");
+        let root = base_dirs.data_dir().join("quillspeak/models");
         if let Err(error) = remove_orphan_partials(&root) {
             warn!(?error, root = %root.display(), "failed to remove orphan model partials");
         }

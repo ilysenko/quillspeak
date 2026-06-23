@@ -481,7 +481,7 @@ mod tests {
         };
         let request = transcription_request_from_prepared(
             "short",
-            PathBuf::from("/tmp/myapp-model-that-should-not-be-loaded.bin"),
+            PathBuf::from("/tmp/quillspeak-model-that-should-not-be-loaded.bin"),
             "/tmp/short.wav",
             &prepared,
             1,
@@ -514,7 +514,7 @@ mod tests {
         };
         let request = transcription_request_from_prepared(
             "silent",
-            PathBuf::from("/tmp/myapp-model-that-should-not-be-loaded.bin"),
+            PathBuf::from("/tmp/quillspeak-model-that-should-not-be-loaded.bin"),
             "/tmp/silent.wav",
             &prepared,
             2,
@@ -572,15 +572,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "set MYAPP_TEST_WHISPER_MODEL and MYAPP_TEST_WHISPER_WAV to run manually"]
+    #[ignore = "set QUILLSPEAK_TEST_WHISPER_MODEL and QUILLSPEAK_TEST_WHISPER_WAV to run manually"]
     fn debug_whisper_wav_transcribes_with_app_params() {
-        let model_path =
-            PathBuf::from(env::var_os("MYAPP_TEST_WHISPER_MODEL").expect(
-                "MYAPP_TEST_WHISPER_MODEL must point to a downloaded whisper.cpp ggml model",
-            ));
+        let model_path = PathBuf::from(env::var_os("QUILLSPEAK_TEST_WHISPER_MODEL").expect(
+            "QUILLSPEAK_TEST_WHISPER_MODEL must point to a downloaded whisper.cpp ggml model",
+        ));
         let wav_path = PathBuf::from(
-            env::var_os("MYAPP_TEST_WHISPER_WAV")
-                .expect("MYAPP_TEST_WHISPER_WAV must point to a 16 kHz mono f32 debug WAV"),
+            env::var_os("QUILLSPEAK_TEST_WHISPER_WAV")
+                .expect("QUILLSPEAK_TEST_WHISPER_WAV must point to a 16 kHz mono f32 debug WAV"),
         );
         let prepared = read_debug_whisper_wav(&wav_path);
         let now = Instant::now();
@@ -614,7 +613,7 @@ mod tests {
         };
         let model_path = model_path
             .to_str()
-            .expect("MYAPP_TEST_WHISPER_MODEL must be valid UTF-8");
+            .expect("QUILLSPEAK_TEST_WHISPER_MODEL must be valid UTF-8");
         let context = WhisperContext::new_with_params(
             model_path,
             context_params(ComputeBackend::Auto).expect("debug context params should resolve"),
@@ -631,15 +630,14 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "set MYAPP_TEST_WHISPER_MODEL and MYAPP_TEST_WHISPER_WAV to run manually"]
+    #[ignore = "set QUILLSPEAK_TEST_WHISPER_MODEL and QUILLSPEAK_TEST_WHISPER_WAV to run manually"]
     fn debug_whisper_cached_repeated_transcription_survives_short_skip() {
-        let model_path =
-            PathBuf::from(env::var_os("MYAPP_TEST_WHISPER_MODEL").expect(
-                "MYAPP_TEST_WHISPER_MODEL must point to a downloaded whisper.cpp ggml model",
-            ));
+        let model_path = PathBuf::from(env::var_os("QUILLSPEAK_TEST_WHISPER_MODEL").expect(
+            "QUILLSPEAK_TEST_WHISPER_MODEL must point to a downloaded whisper.cpp ggml model",
+        ));
         let wav_path = PathBuf::from(
-            env::var_os("MYAPP_TEST_WHISPER_WAV")
-                .expect("MYAPP_TEST_WHISPER_WAV must point to a 16 kHz mono f32 debug WAV"),
+            env::var_os("QUILLSPEAK_TEST_WHISPER_WAV")
+                .expect("QUILLSPEAK_TEST_WHISPER_WAV must point to a 16 kHz mono f32 debug WAV"),
         );
         let normal_prepared = read_debug_whisper_wav(&wav_path);
         let short_prepared = PreparedAudio {

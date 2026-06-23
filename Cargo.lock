@@ -56,34 +56,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cpal",
- "ctrlc",
- "directories",
- "gtk4",
- "hound",
- "ksni",
- "libadwaita",
- "reqwest",
- "rtrb",
- "rubato",
- "serde",
- "serde_json",
- "sha1",
- "shared",
- "signal-hook",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "whisper-rs",
- "whisper-rs-sys",
- "x11rb",
-]
-
-[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2137,6 +2109,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "quillspeak"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "cpal",
+ "ctrlc",
+ "directories",
+ "gtk4",
+ "hound",
+ "ksni",
+ "libadwaita",
+ "reqwest",
+ "rtrb",
+ "rubato",
+ "serde",
+ "serde_json",
+ "sha1",
+ "shared",
+ "signal-hook",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "whisper-rs",
+ "whisper-rs-sys",
+ "x11rb",
+]
+
+[[package]]
 name = "quinn"
 version = "0.11.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "shared"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "serde",
  "thiserror 2.0.18",

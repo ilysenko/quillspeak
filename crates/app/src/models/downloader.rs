@@ -50,7 +50,7 @@ pub fn start_download(
     let worker_cancel_requested = Arc::clone(&cancel_requested);
     let worker_command_tx = command_tx.clone();
     let worker_model_id = model_id.clone();
-    let thread_name = format!("myapp-model-download-{model_id}");
+    let thread_name = format!("quillspeak-model-download-{model_id}");
     let spawn_result = thread::Builder::new().name(thread_name).spawn(move || {
         let outcome = download_model(
             &root,
