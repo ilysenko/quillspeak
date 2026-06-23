@@ -369,6 +369,11 @@ impl AppRuntime {
                 recording_id,
                 shortcut_id,
             } => self.speaker_restore_finished(recording_id, &shortcut_id),
+            AppCommand::SpeakerMuteFinished {
+                recording_id,
+                shortcut_id,
+                result,
+            } => self.speaker_mute_finished(recording_id, &shortcut_id, result),
             AppCommand::AudioInputDevicesRefreshed(devices) => {
                 self.update_audio_input_devices(devices)
             }
@@ -660,10 +665,16 @@ impl AppRuntime {
     }
 
     fn start_capture_for_plan(&self, plan: TranscriptionPlan) -> Result<(), String> {
+        if plan.mute_output_while_recording {
+            return self.queue_speaker_mute_for_plan(plan);
+        }
+        self.start_capture_without_speaker_mute(plan)
+    }
+
+    fn start_capture_without_speaker_mute(&self, plan: TranscriptionPlan) -> Result<(), String> {
         let recording_id = plan.recording_id;
         let shortcut_id = plan.shortcut_id.clone();
         let input_label = plan.input.display_label().to_string();
-        self.mute_speakers_for_plan(&plan);
 
         let start_result = self
             .recording_pipeline
@@ -698,10 +709,15 @@ impl AppRuntime {
     }
 
     fn stop_recording(&self, shortcut_id: &str) -> Result<(), String> {
-        if let Some(pending) = self.pending_recording_start.borrow().as_ref()
-            && pending.shortcut_id == shortcut_id
-        {
-            let recording_id = pending.recording_id;
+        // Resolve the pending match before mutating: holding the borrow()
+        // across borrow_mut() on the same RefCell aborts inside GLib callbacks.
+        let pending_recording_id = self
+            .pending_recording_start
+            .borrow()
+            .as_ref()
+            .filter(|pending| pending.shortcut_id == shortcut_id)
+            .map(|pending| pending.recording_id);
+        if let Some(recording_id) = pending_recording_id {
             self.pending_recording_start.borrow_mut().take();
             let phase = self
                 .recording
@@ -1059,23 +1075,87 @@ impl AppRuntime {
         self.set_recording_phase(phase);
     }
 
-    fn mute_speakers_for_plan(&self, plan: &TranscriptionPlan) {
-        if !plan.mute_output_while_recording {
-            return;
-        }
+    fn queue_speaker_mute_for_plan(&self, plan: TranscriptionPlan) -> Result<(), String> {
+        let recording_id = plan.recording_id;
+        let shortcut_id = plan.shortcut_id.clone();
+        self.pending_recording_start
+            .replace(Some(PendingRecordingStart {
+                recording_id,
+                shortcut_id: shortcut_id.clone(),
+                plan,
+            }));
+
         let result = self
             .speaker_mute_service
             .borrow()
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("speaker mute worker is shut down"))
-            .and_then(|service| service.mute_for_recording(plan.recording_id, &plan.shortcut_id));
+            .and_then(|service| service.mute_for_recording(recording_id, &shortcut_id));
         if let Err(error) = result {
             warn!(
                 ?error,
-                recording_id = plan.recording_id,
-                shortcut_id = %plan.shortcut_id,
-                "failed to queue speaker mute request"
+                recording_id,
+                shortcut_id,
+                "failed to queue speaker mute request; starting capture without muting playback"
             );
+            self.show_speaker_mute_failure_toast();
+            let Some(pending) = self.pending_recording_start.borrow_mut().take() else {
+                return Err(format!("failed to queue speaker mute request: {error:#}"));
+            };
+            return self.start_capture_without_speaker_mute(pending.plan);
+        }
+
+        info!(
+            recording_id,
+            shortcut_id, "speaker mute queued before audio capture"
+        );
+        Ok(())
+    }
+
+    fn speaker_mute_finished(
+        &self,
+        recording_id: u64,
+        shortcut_id: &str,
+        result: std::result::Result<(), String>,
+    ) {
+        let Some(pending) = self.pending_recording_start.borrow_mut().take() else {
+            debug!(
+                recording_id,
+                shortcut_id, "stale speaker mute result ignored because no start is pending"
+            );
+            if result.is_ok() {
+                self.restore_speakers_for_recording(recording_id, shortcut_id);
+            }
+            return;
+        };
+
+        if pending.recording_id != recording_id || pending.shortcut_id != shortcut_id {
+            debug!(
+                pending_recording_id = pending.recording_id,
+                pending_shortcut_id = %pending.shortcut_id,
+                recording_id,
+                shortcut_id, "stale speaker mute result ignored"
+            );
+            self.pending_recording_start.replace(Some(pending));
+            if result.is_ok() {
+                self.restore_speakers_for_recording(recording_id, shortcut_id);
+            }
+            return;
+        }
+
+        if let Err(error) = &result {
+            warn!(
+                recording_id,
+                shortcut_id, error, "speaker mute failed; continuing with audio capture"
+            );
+            self.show_speaker_mute_failure_toast();
+        }
+        let _ = self.start_capture_without_speaker_mute(pending.plan);
+    }
+
+    fn show_speaker_mute_failure_toast(&self) {
+        if let Some(window) = self.settings_window.borrow().as_ref() {
+            window.update_save_status("Failed to mute playback; recording anyway");
         }
     }
 

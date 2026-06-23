@@ -71,6 +71,11 @@ pub enum AppCommand {
         recording_id: u64,
         shortcut_id: String,
     },
+    SpeakerMuteFinished {
+        recording_id: u64,
+        shortcut_id: String,
+        result: Result<(), String>,
+    },
     AudioInputDevicesRefreshed(Vec<crate::audio::AudioInputDevice>),
     ClearHistory,
     CopyHistoryText {

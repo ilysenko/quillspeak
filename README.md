@@ -39,6 +39,15 @@ shortcuts on Wayland. The app does not install these tools automatically; if a
 required tool is missing, it logs the failing output action with the package
 hint.
 
+The per-shortcut speaker mute option uses `wpctl` plus `pw-dump` on PipeWire
+systems to mute active playback streams and the default sink during recording.
+Install WirePlumber and PipeWire tools if your distribution does not include
+them by default:
+
+```sh
+sudo apt install wireplumber pipewire-bin
+```
+
 The default development build enables CPAL's native PipeWire and PulseAudio
 backends. On modern Ubuntu desktops the app prefers PipeWire, falls back to
 PulseAudio, and keeps ALSA as the explicit low-level debug fallback:

@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 
@@ -9,20 +9,35 @@ use shared::{
 
 use crate::hotkey::ShortcutTriggerCapabilities;
 
+type DirtyListener = Box<dyn Fn(bool)>;
+
 #[derive(Clone)]
 pub struct SettingsDraft {
     config: Rc<RefCell<AppConfig>>,
+    dirty: Rc<Cell<bool>>,
+    dirty_listener: Rc<RefCell<Option<DirtyListener>>>,
 }
 
 impl SettingsDraft {
     pub fn new(config: AppConfig) -> Self {
         Self {
             config: Rc::new(RefCell::new(config)),
+            dirty: Rc::new(Cell::new(false)),
+            dirty_listener: Rc::new(RefCell::new(None)),
         }
     }
 
     pub fn replace(&self, config: AppConfig) {
         self.config.replace(config);
+        self.mark_clean();
+    }
+
+    pub fn set_dirty_listener<F>(&self, listener: F)
+    where
+        F: Fn(bool) + 'static,
+    {
+        self.dirty_listener.replace(Some(Box::new(listener)));
+        self.notify_dirty_listener();
     }
 
     pub fn coerce_trigger_capabilities(&self, capabilities: ShortcutTriggerCapabilities) {
@@ -62,6 +77,7 @@ impl SettingsDraft {
         F: FnOnce(&mut AppConfig),
     {
         update(&mut self.config.borrow_mut());
+        self.mark_dirty();
     }
 
     pub fn update_shortcut<F>(&self, shortcut_id: &str, update: F)
@@ -76,6 +92,7 @@ impl SettingsDraft {
             .find(|shortcut| shortcut.id == shortcut_id)
         {
             update(shortcut);
+            self.mark_dirty();
         }
     }
 
@@ -100,14 +117,20 @@ impl SettingsDraft {
             });
         }
         config.shortcuts.push(shortcut.clone());
+        self.mark_dirty();
         shortcut
     }
 
     pub fn assign_factory_model_to_shortcuts(&self, model_id: &str) {
+        let mut changed = false;
         for shortcut in &mut self.config.borrow_mut().shortcuts {
             if shortcut.model_id == DEFAULT_MODEL_ID {
                 shortcut.model_id = model_id.to_string();
+                changed = true;
             }
+        }
+        if changed {
+            self.mark_dirty();
         }
     }
 
@@ -120,7 +143,29 @@ impl SettingsDraft {
         config
             .shortcuts
             .retain(|shortcut| shortcut.id != shortcut_id);
-        config.shortcuts.len() != original_len
+        let removed = config.shortcuts.len() != original_len;
+        if removed {
+            self.mark_dirty();
+        }
+        removed
+    }
+
+    fn mark_dirty(&self) {
+        if !self.dirty.replace(true) {
+            self.notify_dirty_listener();
+        }
+    }
+
+    fn mark_clean(&self) {
+        if self.dirty.replace(false) {
+            self.notify_dirty_listener();
+        }
+    }
+
+    fn notify_dirty_listener(&self) {
+        if let Some(listener) = self.dirty_listener.borrow().as_ref() {
+            listener(self.dirty.get());
+        }
     }
 }
 
@@ -155,6 +200,9 @@ fn shortcut_signal_keys(shortcut: &ShortcutProfile) -> Option<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use shared::{DEFAULT_MODEL_ID, OutputAction};
 
     use super::*;
@@ -181,6 +229,29 @@ mod tests {
         assert_eq!(config.shortcuts[0].id, DEFAULT_SHORTCUT_ID);
         assert_eq!(config.shortcuts[1].id, second.id);
         assert_eq!(config.shortcuts[1].output, OutputAction::default());
+    }
+
+    #[test]
+    fn dirty_listener_tracks_unsaved_changes_and_replace() {
+        let draft = SettingsDraft::new(AppConfig::default());
+        let events = Rc::new(RefCell::new(Vec::new()));
+        draft.set_dirty_listener({
+            let events = Rc::clone(&events);
+            move |dirty| events.borrow_mut().push(dirty)
+        });
+
+        assert_eq!(*events.borrow(), vec![false]);
+
+        draft.update_shortcut(DEFAULT_SHORTCUT_ID, |shortcut| {
+            shortcut.mute_output_while_recording = true;
+        });
+        draft.update_shortcut(DEFAULT_SHORTCUT_ID, |shortcut| {
+            shortcut.beep_on_recording = true;
+        });
+        assert_eq!(*events.borrow(), vec![false, true]);
+
+        draft.replace(AppConfig::default());
+        assert_eq!(*events.borrow(), vec![false, true, false]);
     }
 
     #[test]

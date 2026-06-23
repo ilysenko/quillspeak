@@ -97,9 +97,9 @@ impl SettingsWindow {
         let header = adw::HeaderBar::new();
         let save_button = gtk::Button::builder()
             .label("Save")
-            .tooltip_text("Save settings")
+            .tooltip_text("No unsaved changes")
+            .sensitive(false)
             .build();
-        save_button.add_css_class("suggested-action");
         header.pack_end(&save_button);
         content.append(&header);
 
@@ -121,6 +121,11 @@ impl SettingsWindow {
 
         let toast_overlay = adw::ToastOverlay::new();
         toast_overlay.set_child(Some(&content));
+        connect_dirty_status(
+            state.draft.clone(),
+            save_button.clone(),
+            toast_overlay.clone(),
+        );
 
         let window = adw::ApplicationWindow::builder()
             .application(application)
@@ -249,6 +254,27 @@ impl SettingsWindow {
             },
         );
     }
+}
+
+fn connect_dirty_status(
+    draft: SettingsDraft,
+    save_button: gtk::Button,
+    toast_overlay: adw::ToastOverlay,
+) {
+    draft.set_dirty_listener(move |dirty| {
+        if dirty {
+            save_button.set_label("Save Changes");
+            save_button.set_tooltip_text(Some("Save settings to apply changes"));
+            save_button.set_sensitive(true);
+            save_button.add_css_class("suggested-action");
+            toast_overlay.add_toast(adw::Toast::new("Save settings to apply changes"));
+        } else {
+            save_button.set_label("Save");
+            save_button.set_tooltip_text(Some("No unsaved changes"));
+            save_button.set_sensitive(false);
+            save_button.remove_css_class("suggested-action");
+        }
+    });
 }
 
 fn connect_save_button(
