@@ -755,9 +755,18 @@ mod tests {
             other => panic!("unexpected command: {other:?}"),
         };
 
-        let second_request =
-            ExternalTriggerRequest::new("Default", ExternalTriggerAction::Stop).unwrap();
-        let error = send_trigger_request_to_path(&socket_path, &second_request)
+        let second_stream = UnixStream::connect(&socket_path)
+            .expect("second client should connect to receive overload response");
+        second_stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("second client read timeout should be set");
+        let mut response_reader = BufReader::new(second_stream);
+        let mut response = String::new();
+        let bytes = response_reader
+            .read_line(&mut response)
+            .expect("second client should read overload response");
+        assert_ne!(bytes, 0, "second client should receive overload response");
+        let error = parse_protocol_response(&response)
             .expect_err("second client should be rejected while first is active");
         assert!(
             error
