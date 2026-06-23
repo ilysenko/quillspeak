@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Settings Reference - QuillSpeak</title>
+    <meta
+      name="description"
+      content="Reference for QuillSpeak settings, models, history, and shortcut profiles."
+    />
+    <link rel="icon" href="./assets/quillspeak.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="QuillSpeak documentation home">
+        <img src="./assets/quillspeak.svg" alt="" />
+        <span>QuillSpeak</span>
+      </a>
+      <nav class="top-nav" aria-label="Primary navigation">
+        <a href="./getting-started.html">Getting Started</a>
+        <a href="./settings.html" aria-current="page">Settings</a>
+        <a href="./triggers.html">Triggers</a>
+        <a href="./output.html">Output</a>
+        <a href="./troubleshooting.html">Troubleshooting</a>
+        <a href="https://github.com/ilysenko/quillspeak">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="page-hero">
+        <p class="eyebrow">Settings Reference</p>
+        <h1>Every runtime, model, history, and shortcut option.</h1>
+        <p class="lead">
+          Settings are edited as an unsaved draft and written only when you
+          press Save Changes. Each shortcut profile owns its own trigger, model,
+          language, audio feedback, script, clipboard, and paste behavior.
+        </p>
+      </section>
+
+      <div class="page-grid">
+        <aside class="toc" aria-label="Page sections">
+          <strong>On this page</strong>
+          <a href="#status">Status</a>
+          <a href="#general">General</a>
+          <a href="#models">Models</a>
+          <a href="#history">History</a>
+          <a href="#shortcuts">Shortcut Profiles</a>
+          <a href="#config">Config Schema</a>
+        </aside>
+
+        <div class="doc-body">
+          <section class="doc-section" id="status">
+            <h2>Status</h2>
+            <p>
+              The Status page summarizes whether QuillSpeak can use the tools
+              needed by the current desktop session. It is the fastest place to
+              check why a shortcut, paste action, or speaker mute option is not
+              ready.
+            </p>
+            <table class="setting-table">
+              <thead>
+                <tr>
+                  <th>Status area</th>
+                  <th>What it means</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Advanced hotkeys</td>
+                  <td>
+                    Shows whether app-owned X11 keyboard shortcuts are active
+                    or whether the session should use Linux signals or external
+                    trigger commands.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Output tools</td>
+                  <td>
+                    Shows missing clipboard or paste tools for the detected
+                    display backend, such as <code>xclip</code>,
+                    <code>wl-copy</code>, <code>wl-paste</code>,
+                    <code>xdotool</code>, or <code>ydotool</code>.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Audio mute tools</td>
+                  <td>
+                    Shows readiness for <code>wpctl</code>,
+                    <code>pw-dump</code>, or the <code>pactl</code> fallback.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Whisper compute</td>
+                  <td>
+                    Shows which compute backends were compiled in and how the
+                    selected backend resolves at runtime.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section class="doc-section" id="general">
+            <h2>General</h2>
+            <div class="content-grid">
+              <div>
+                <p>
+                  General settings apply to the app runtime. They do not provide
+                  inherited defaults for shortcut profiles; every shortcut still
+                  chooses its own model, language, and output pipeline.
+                </p>
+                <table class="setting-table">
+                  <thead>
+                    <tr>
+                      <th>Setting</th>
+                      <th>Values</th>
+                      <th>Use</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Hotkey backend</td>
+                      <td><code>auto</code>, <code>disabled</code>, <code>x11</code></td>
+                      <td>
+                        Controls app-owned global keyboard shortcuts. Auto uses
+                        X11 only on pure X11 sessions. Linux signal shortcuts
+                        and command-mode triggers still work when this is disabled.
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>Audio input</td>
+                      <td>System Default or a discovered CPAL input device</td>
+                      <td>
+                        The microphone source used for recordings. System
+                        Default resolves at recording time, so it follows
+                        desktop audio changes.
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>Whisper compute</td>
+                      <td><code>auto</code>, <code>cpu</code>, <code>vulkan</code>, <code>cuda</code>, <code>rocm</code></td>
+                      <td>
+                        Selects how whisper.cpp initializes inference. Auto
+                        tries a compiled GPU backend when available and falls
+                        back to CPU if runtime GPU initialization fails.
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>Keep model loaded</td>
+                      <td>On or off</td>
+                      <td>
+                        Keeps the last used model context in the transcription
+                        worker after a run. This can make the next transcription
+                        faster, but uses more RAM or GPU memory.
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <figure class="screenshot">
+                <img src="./images/quillspeak-general.png" alt="QuillSpeak General settings" />
+                <figcaption>General settings choose runtime behavior, not per-shortcut defaults.</figcaption>
+              </figure>
+            </div>
+          </section>
+
+          <section class="doc-section" id="models">
+            <h2>Models</h2>
+            <p>
+              The Models page manages the local whisper.cpp model cache. A model
+              becomes ready only after the download completes, the SHA-1 hash is
+              verified, and the final file is renamed into place.
+            </p>
+            <div class="content-grid">
+              <figure class="screenshot">
+                <img src="./images/quillspeak-models.png" alt="QuillSpeak Models page" />
+                <figcaption>Rows show installed, not installed, downloading, canceling, verifying, and ready states.</figcaption>
+              </figure>
+              <div class="callout">
+                <h3>Model Rules</h3>
+                <ul>
+                  <li>Only ready models can be selected as normal shortcut choices.</li>
+                  <li>Removing a model asks for confirmation.</li>
+                  <li>A model referenced by a shortcut is not silently removed.</li>
+                  <li>Completed downloads update shortcut dropdowns without restarting the app.</li>
+                  <li>Catalog size labels are estimates; readiness is based on verified files.</li>
+                </ul>
+              </div>
+            </div>
+          </section>
+
+          <section class="doc-section" id="history">
+            <h2>History</h2>
+            <p>
+              History stores completed transcription outputs locally. Rows show
+              timestamp, shortcut name, output source, text, model, and language.
+              Each row has a copy action, and the page can clear saved history
+              from this computer.
+            </p>
+            <figure class="screenshot">
+              <img src="./images/quillspeak-history.png" alt="QuillSpeak History page" />
+              <figcaption>History is local user data stored under the QuillSpeak XDG data directory.</figcaption>
+            </figure>
+          </section>
+
+          <section class="doc-section" id="shortcuts">
+            <h2>Shortcut Profiles</h2>
+            <p>
+              Shortcut profiles are independent. A profile can be a normal
+              dictation shortcut, a translator shortcut, a terminal paste
+              shortcut, or a no-output transcription profile for history only.
+            </p>
+            <figure class="screenshot">
+              <img src="./images/quillspeak-shortcut-output.png" alt="QuillSpeak shortcut output settings" />
+              <figcaption>Every shortcut owns trigger, model, language, feedback, script, copy, and paste choices.</figcaption>
+            </figure>
+
+            <h3>Core Shortcut Settings</h3>
+            <table class="setting-table">
+              <thead>
+                <tr>
+                  <th>Setting</th>
+                  <th>Use</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Name</td>
+                  <td>Human-readable display name. Trigger commands can select by exact id first, then exact unique name.</td>
+                </tr>
+                <tr>
+                  <td>Enabled</td>
+                  <td>Disabled profiles are ignored by keyboard, command-mode, and signal triggers.</td>
+                </tr>
+                <tr>
+                  <td>Trigger</td>
+                  <td><code>Keyboard</code> on X11, or <code>Linux signal</code> on any Linux session.</td>
+                </tr>
+                <tr>
+                  <td>Shortcut</td>
+                  <td>X11 keyboard accelerator captured by QuillSpeak's passive-grab backend.</td>
+                </tr>
+                <tr>
+                  <td>Start signal / Stop signal</td>
+                  <td>
+                    Linux signals sent by external tools. Supported values are
+                    <code>SIGUSR1</code>, <code>SIGUSR2</code>,
+                    <code>SIGALRM</code>, and <code>SIGWINCH</code>. The same
+                    signal can be used for start and stop to toggle one active
+                    recording.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Model</td>
+                  <td>Ready whisper.cpp model used by this shortcut. Missing configured models are shown as missing so you can fix them.</td>
+                </tr>
+                <tr>
+                  <td>Language</td>
+                  <td>
+                    Language hint passed to Whisper. <code>Auto Detect</code>
+                    lets whisper.cpp choose the spoken language while still
+                    transcribing.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Mute speakers while recording</td>
+                  <td>Temporarily mutes system output during active recording, then restores the previous mute state.</td>
+                </tr>
+                <tr>
+                  <td>Beep on start and stop</td>
+                  <td>Plays a short local cue before recording starts and after recording stops.</td>
+                </tr>
+                <tr>
+                  <td>Beep volume</td>
+                  <td>Controls cue loudness for this shortcut. The config range is 10 to 100 percent.</td>
+                </tr>
+              </tbody>
+            </table>
+
+            <h3>Output Settings</h3>
+            <table class="setting-table">
+              <thead>
+                <tr>
+                  <th>Setting</th>
+                  <th>Use</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Run script</td>
+                  <td>
+                    Runs an executable script after transcription. The transcript
+                    is passed as the first argument. If the script prints stdout,
+                    stdout becomes the final text.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Script path</td>
+                  <td>Absolute path to the executable script used by this shortcut.</td>
+                </tr>
+                <tr>
+                  <td>Copy to clipboard</td>
+                  <td>Copies final text to the real system clipboard and verifies it through external readback.</td>
+                </tr>
+                <tr>
+                  <td>Paste from clipboard</td>
+                  <td>After clipboard verification, sends a paste shortcut to the focused app.</td>
+                </tr>
+                <tr>
+                  <td>Paste shortcut</td>
+                  <td><code>Ctrl+V</code>, <code>Ctrl+Shift+V</code>, or <code>Custom</code>.</td>
+                </tr>
+                <tr>
+                  <td>X11 xdotool keys</td>
+                  <td>Custom <code>xdotool key --clearmodifiers</code> expression used when Custom paste is selected on X11.</td>
+                </tr>
+                <tr>
+                  <td>Wayland ydotool keys</td>
+                  <td>Custom <code>ydotool key</code> keycode sequence used when Custom paste is selected on Wayland.</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section class="doc-section" id="config">
+            <h2>Config Schema</h2>
+            <p>
+              The current development schema is <code>16</code>. QuillSpeak is
+              still a prototype, so old development schemas can be discarded and
+              replaced with current defaults.
+            </p>
+            <pre><code>schema_version = 16
+
+[general]
+mode = "push_to_talk"
+hotkey_backend = "auto"
+audio_input = { type = "system_default" }
+compute_backend = "auto"
+keep_model_loaded = true</code></pre>
+            <p>
+              User-facing config lives at
+              <code>~/.config/quillspeak/config.toml</code>.
+            </p>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <span>QuillSpeak is free software under the MIT License.</span>
+      <span><a href="https://github.com/ilysenko/quillspeak">GitHub repository</a></span>
+    </footer>
+  </body>
+</html>

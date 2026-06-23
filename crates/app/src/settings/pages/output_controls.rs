@@ -122,7 +122,7 @@ impl OutputControls {
             .build();
         let run_script_row = adw::ActionRow::builder()
             .title("Run script")
-            .subtitle("Pass the transcript to an executable script. The script receives the transcript on stdin; if it prints stdout, that text becomes the final output.")
+            .subtitle("Pass the transcript to an executable script as the first argument. If it prints stdout, that text becomes the final output.")
             .build();
         run_script_row.add_suffix(&run_script_switch);
         run_script_row.set_activatable_widget(Some(&run_script_switch));

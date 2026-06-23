@@ -11,9 +11,11 @@ case "$site_dir" in
 esac
 
 rm -rf "$site_dir"
-mkdir -p "$site_dir/releases" "$site_dir/assets"
+mkdir -p "$site_dir/releases" "$site_dir/assets" "$site_dir/images" "$site_dir/examples"
 
-cp docs/index.html docs/styles.css docs/app.js "$site_dir/"
+cp docs/*.html docs/styles.css docs/app.js "$site_dir/"
+cp docs/images/quillspeak-*.png "$site_dir/images/"
+cp docs/examples/* "$site_dir/examples/"
 cp assets/icons/hicolor/scalable/apps/quillspeak.svg "$site_dir/assets/quillspeak.svg"
 touch "$site_dir/.nojekyll"
 

@@ -1,39 +1,49 @@
 # QuillSpeak AGENTS.md
 
-Guidance for AI coding agents working in this repository.
+Guidance for AI coding agents working in this repository. This file is for
+agent orientation, not for end-user documentation.
 
 ## Project Goal
 
-QuillSpeak is a Rust Linux desktop prototype for a future push-to-talk voice
-transcription utility. It should feel like a background desktop app to the
-user, but during development the main app remains a normal foreground process
-so logs stay visible and Ctrl-C works.
+QuillSpeak is a Rust Linux desktop prototype for local push-to-talk voice
+transcription. It should feel like a tray/background desktop app to the user,
+but during development the main app remains a normal foreground process so logs
+stay visible and Ctrl-C works.
 
-The current prototype includes:
+Current user-facing features:
 
-- a Rust workspace with `app` and `shared` crates,
-- a GTK4/libadwaita main app,
-- a StatusNotifierItem tray/top-bar indicator through `ksni`,
-- a settings window opened from the tray,
-- app-owned TOML configuration,
-- multi-shortcut settings,
-- app-side X11 hotkey capture,
-- Linux signal shortcut triggers for external Wayland hotkey utilities,
-- whisper.cpp model catalog and download management,
-- CPAL microphone capture from the configured default input,
-- whisper-rs/whisper.cpp transcription on downloaded ggml models,
-- real Linux clipboard output and script output actions.
+- GTK4/libadwaita settings UI.
+- StatusNotifierItem tray indicator through `ksni`.
+- App-owned TOML config under XDG config.
+- Multi-shortcut profiles.
+- X11 keyboard shortcut capture.
+- Wayland-friendly external trigger command mode.
+- Linux signal shortcut triggers.
+- whisper.cpp model catalog, download, verification, and removal.
+- CPAL microphone capture through PipeWire/PulseAudio hosts.
+- whisper-rs/whisper.cpp transcription on downloaded ggml models.
+- Local transcription history.
+- Script transform, real clipboard copy, and optional paste shortcuts.
+- GitHub Pages documentation and GitHub Release `.deb` packages.
 
 Do not add Electron or Tauri. Do not add a QuillSpeak input daemon, D-Bus hotkey
 bridge, evdev capture, uinput paste worker, direct text insertion without
-clipboard transport, XDG portal shortcuts, Flatpak packaging, or `.deb`
-packaging unless explicitly requested.
+clipboard transport, XDG portal shortcuts, or Flatpak packaging unless
+explicitly requested.
 
-## Workspace
+## Workspace Map
 
-- `crates/app`: builds `quillspeak`, the GTK4/libadwaita desktop app.
-- `crates/shared`: shared config structs, model catalog, shortcut parsing,
-  languages, output action types, persistence helpers, and app constants.
+- `crates/app`: builds the `quillspeak` GTK4/libadwaita desktop app.
+- `crates/shared`: shared config, model catalog, shortcut parsing, languages,
+  output action types, persistence helpers, and app constants.
+- `assets`: desktop file, app icon, and AppStream metadata.
+- `docs`: static GitHub Pages documentation, images, examples, and release UI.
+- `scripts/build-docs.sh`: builds `_site` for Pages.
+- `.github/workflows/ci.yml`: Rust checks.
+- `.github/workflows/pages.yml`: static docs deployment.
+- `.github/workflows/release.yml`: tag-driven Debian package release.
+- `README.md`: short public project overview; detailed docs live in `docs/`.
+- `LICENSE`: MIT license.
 
 The app is intentionally not daemonized. Start it with:
 
@@ -44,64 +54,28 @@ cargo run -p quillspeak --bin quillspeak
 It starts with no visible window, owns a GTK application hold, shows the tray
 indicator, and exits through the same quit path for tray `Quit` and Ctrl-C.
 
-## Current Module Map
+## Important App Modules
 
-- `Cargo.toml`: workspace members, Rust edition/version, shared dependency
-  versions.
-- `crates/shared/src/config/mod.rs`: `AppConfig`, `GeneralConfig`, config
-  schema version, backend/mode/compute enums, validation, normalization, and
-  config resolution helpers.
-- `crates/shared/src/config/model.rs`: whisper.cpp model catalog, model IDs,
-  filenames, URLs, size labels, and SHA-1 hashes.
-- `crates/shared/src/config/shortcut.rs`: shortcut profiles, accelerator
-  normalization, shortcut IDs, shortcut chord parsing, Linux signal names, and
-  shortcut key types.
-- `crates/shared/src/config/language.rs`: supported language list including
-  `auto` and Ukrainian.
-- `crates/shared/src/config/output.rs`: default and per-shortcut output action
-  types for the final-text pipeline: optional script transform and clipboard
-  copy.
-- `crates/shared/src/lib.rs`: shared exports and app-wide constants such as
-  `APP_ID`.
-- `crates/app/src/main.rs`: app module wiring and tracing setup.
-- `crates/app/src/app.rs`: app runtime, command pump, lifecycle hold, Ctrl-C,
-  tray/settings startup, config apply/save, model commands,
-  recording/audio/transcription orchestration, Linux signal command handling, and
-  quit path.
-- `crates/app/src/audio/*`: CPAL input device enumeration, capture stream
-  management, mono conversion, and 16 kHz resampling for Whisper.
-- `crates/app/src/command.rs`: `AppCommand`, download IDs, and model download
-  outcome messages. Worker threads should communicate with app state through
-  these commands.
-- `crates/app/src/config_store.rs`: app config load/save under the XDG config
-  directory.
-- `crates/app/src/external_trigger.rs`: single-binary command mode and
-  app-owned Unix socket for `quillspeak trigger <shortcut> <start|stop>` requests.
-- `crates/app/src/hotkey/mod.rs`: pluggable app hotkey backend boundary and
-  backend resolution.
+- `crates/app/src/app.rs`: runtime command pump, lifecycle hold, Ctrl-C, tray,
+  settings, config apply/save, model commands, recording/audio/transcription
+  orchestration, Linux signal handling, and quit path.
+- `crates/app/src/external_trigger.rs`: single-binary command mode and Unix
+  socket for `quillspeak trigger <shortcut> <start|stop|toggle>`.
+- `crates/app/src/signal_trigger.rs`: pure signal-to-recording action policy.
 - `crates/app/src/hotkey/x11.rs`: app-side X11 passive grab backend.
-- `crates/app/src/output.rs`: output worker for external clipboard copy,
-  clipboard verification, and script execution.
-- `crates/app/src/models/*`: model directory, inventory cache, model row
-  state composition, download management, cancellation, SHA-1 verification,
-  atomic rename, and model deletion.
-- `crates/app/src/settings/*`: `SettingsWindow`, unsaved draft state, pages,
-  shortcut recorder, sidebar, and GTK/libadwaita helper widgets.
-- `crates/app/src/tray.rs`: StatusNotifierItem tray, menu, recording-state
-  labels, and generated color icon.
-- `crates/app/src/recording.rs`: recording state machine and start/stop
-  logging.
-- `crates/app/src/recording/pipeline.rs`: background CPAL capture worker,
-  explicit shutdown, capture start/stop commands, and stream recreation after
-  pause failures.
-- `crates/app/src/signal_trigger.rs`: app-owned Linux signal listener for
-  external hotkey utilities, registered signal calculation, signal name
-  resolution, and pure signal-to-recording action policy.
-- `crates/app/src/transcription/*`: Whisper worker, engine, cache, compute
-  selection, skip policy, debug audio writing, request/result types, and plan
-  construction.
-- `README.md`: user-facing build, run, config, hotkey, and troubleshooting
-  instructions.
+- `crates/app/src/audio/*`: CPAL device enumeration and capture pipeline.
+- `crates/app/src/transcription/*`: Whisper worker, compute selection, model
+  cache, debug audio, request/result types, and plan construction.
+- `crates/app/src/output.rs`: script execution, external clipboard copy,
+  readback verification, and paste shortcuts.
+- `crates/app/src/models/*`: model directory, inventory, downloads,
+  cancellation, SHA-1 verification, atomic rename, and deletion.
+- `crates/app/src/settings/*`: settings window, draft state, pages, shortcut
+  recorder, sidebar, and widgets.
+- `crates/app/src/settings/pages/history.rs`: local transcription history UI.
+- `crates/app/src/tray.rs`: tray menu, recording labels, and generated icon.
+- `crates/shared/src/config/*`: config schema, model catalog, languages,
+  shortcuts, and output action types.
 
 ## Runtime Rules
 
@@ -115,50 +89,30 @@ indicator, and exits through the same quit path for tray `Quit` and Ctrl-C.
 - Worker threads should send commands, not mutate GTK objects or app runtime
   fields directly.
 - Keep Linux signal matching and same-signal start/stop decisions as pure logic
-  in `signal_trigger.rs`; `AppRuntime` should only log and dispatch the selected
-  start/stop action.
-
-## Tray And Recording State
+  in `signal_trigger.rs`.
 
 The tray indicator is user-facing app state:
 
 - white icon means idle,
-- red icon means recording,
+- red icon means recording or arming,
 - orange icon means processing/transcription.
 
-The tray menu contains `Show Settings`, one recording action, and `Quit`.
-Recording action labels are stateful:
-
-- idle: `Start Recording`,
-- arming: `Stop Recording`,
-- recording: `Stop Recording`,
-- processing: disabled `Processing...`.
-
-Manual tray recording uses `AppCommand::ToggleRecording`. Hotkey backends must
-not use the toggle because push-to-talk requires explicit key down/up
-semantics. Linux signal triggers may use the same configured start and stop
-signal; the runtime must handle one received signal once, starting when idle and
-stopping when the same shortcut is active.
-
-Hotkey down snapshots the shortcut model/language/output/input settings and
-requests CPAL audio capture for a shortcut id. Hotkey up stops that same
-shortcut and sends the captured audio to the Whisper worker.
-
-`RecordingService` owns only the state machine. `AppRuntime` owns active
-command orchestration. `RecordingPipeline` owns background CPAL capture.
-`TranscriptionService` owns background Whisper inference. `OutputService` owns
-script execution and clipboard copy/verification.
+Manual tray recording uses `AppCommand::ToggleRecording`. Hotkey and command
+backends should prefer explicit start/stop edges for push-to-talk.
 
 ## Configuration
 
-The app is the source of truth for user settings. Current app config path:
+The app is the source of truth for user settings. Current config path:
 
 ```text
 ~/.config/quillspeak/config.toml
 ```
 
-Current schema. Generated defaults are display-aware; on X11-capable sessions
-the app creates the keyboard default plus a signal shortcut:
+Only schema v16 is supported during active development. Do not add old-config
+migration paths unless explicitly requested. If the schema changes, update the
+current schema and tests directly.
+
+Current core config shape:
 
 ```toml
 schema_version = 16
@@ -181,238 +135,71 @@ mute_output_while_recording = false
 beep_on_recording = false
 beep_volume_percent = 100
 output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
-
-[[shortcuts]]
-id = "signal"
-name = "Signal"
-enabled = true
-trigger = { type = "linux_signal", start_signal = "SIGUSR1", stop_signal = "SIGUSR2" }
-model_id = "large-v3-turbo-q5_0"
-language = "auto"
-mute_output_while_recording = false
-beep_on_recording = false
-beep_volume_percent = 100
-output = { copy_to_clipboard = true, paste_from_clipboard = false, paste_shortcut = "ctrl_v" }
 ```
 
-On Wayland or mixed Wayland/X11 sessions, generated defaults use
-`linux_signal` on the permanent `Default` shortcut and Settings shows only
-signal trigger controls.
+Supported `hotkey_backend` values: `auto`, `disabled`, `x11`.
+Supported `compute_backend` values: `auto`, `cpu`, `vulkan`, `cuda`, `rocm`.
+Do not offer or parse OpenVINO unless whisper-rs support is added later.
 
-Only schema v16 is supported during development. Do not add old-config
-migration paths unless explicitly requested. If the schema changes during
-active development, update the current schema and tests directly instead of
-layering legacy compatibility; older schemas, including v10, are discarded and
-replaced with the current default config.
+Each shortcut owns its model, language, speaker-mute preference, beep settings,
+and output pipeline. No shortcut setting inherits from General or `Default`.
 
-Supported `compute_backend` values are `auto`, `cpu`, `vulkan`, `cuda`, and
-`rocm`. Do not offer or parse OpenVINO unless a future whisper-rs integration
-explicitly supports it.
+Output pipeline:
 
-Each shortcut owns its model, language, speaker-mute preference, and output
-pipeline. Output is one simple pipeline: transcript, optional script transform,
-final text, optional clipboard copy/transport, optional paste shortcut. If
-script is enabled, its stdout is the final text and the original transcript
-must not be copied as a fallback. Paste from clipboard uses the external
-clipboard as transport and then sends a configured `xdotool` or `ydotool`
-shortcut.
+```text
+transcript -> optional script -> final text -> optional clipboard copy -> optional paste
+```
 
-If a local development config is from an older schema, remove
-`~/.config/quillspeak/config.toml` and restart the app to generate the current
-default config, or let the app replace unsupported schemas automatically.
+The output script receives the transcript as the first command-line argument
+(`argv[1]` / `$1`), not stdin. If the script succeeds, stdout becomes final
+text. The original transcript must not be copied as fallback after script
+errors.
 
 ## Settings UI
 
-Settings uses GTK4 and libadwaita. It is hidden, not destroyed, on close. It
+Settings uses GTK4 and libadwaita. It is hidden, not destroyed, on close, and
 should not appear at startup.
 
 Current pages:
 
-- `Status`: runtime/tool readiness and formatted Whisper compute status.
-- `General`: hotkey backend, compute backend, audio input, and model cache
-  behavior.
+- `Status`: runtime/tool readiness and Whisper compute status.
+- `General`: hotkey backend, compute backend, audio input, model cache behavior.
 - `Models`: whisper.cpp model download/remove/status management.
+- `History`: local transcription history, copy row action, clear history.
 - one page per shortcut profile, with `Default` permanent.
 - `Add New`: creates a new shortcut profile.
 
 `SettingsDraft` owns the unsaved mutable copy of config. Saving remains
-explicit through the `Save` button. Do not write config on every UI change.
+explicit through the `Save Changes` button. Do not write config on every UI
+change.
 
 On X11, shortcut pages show both keyboard and Linux signal trigger options. On
 Wayland or mixed Wayland/X11 sessions, shortcut pages show only Linux signal
-trigger controls and new shortcut profiles default to `SIGUSR1` start and
-`SIGUSR2` stop. If the default signal pair is already used by an enabled
-profile, newly added or coerced duplicate signal profiles should be left
-disabled until the user configures unique signals and enables them.
+trigger controls. Display capability coercion belongs in `SettingsDraft` before
+rendering pages.
 
-Display capability coercion belongs in `SettingsDraft` before rendering pages.
-Do not mutate the draft from a page builder just because a widget is being
-rendered; page builders should reflect the current draft and update it only from
-explicit user interactions.
+Shortcut pages should show only ready models as normal choices. If a configured
+model is missing, the UI may show a missing marker so the user can fix it.
 
-Shortcut pages should show only ready models. No shortcut setting inherits from
-General or `Default`; each shortcut owns its model, language, mute, script,
-clipboard, and paste settings. If a selected model is missing, the UI may show a
-missing marker so the user can fix the setting, but unavailable models must not
-be offered as normal choices.
+Avoid raw GTK containers as direct `adw::PreferencesGroup` rows when they cause
+GTK focus/listbox warnings. Prefer `adw::PreferencesRow`, `adw::ActionRow`, or a
+small row controller that owns valid libadwaita rows.
 
-When ready model IDs change, Settings must update all model-dependent controls
-without requiring app restart. Progress-only changes should update existing
-model row controllers. Inventory changes such as completed download or remove
-may rerender the stack to refresh dropdown choices while preserving the visible
-page when possible.
+## Hotkeys, Command Mode, And Signals
 
-Avoid raw GTK containers as direct `adw::PreferencesGroup` rows when they
-trigger GTK focus/listbox warnings. Prefer `adw::PreferencesRow`,
-`adw::ActionRow`, or a small row controller that owns valid libadwaita rows.
-
-## Model Catalog, Downloads, And Inventory
-
-The model catalog lives in `shared/src/config/model.rs`. It contains model IDs,
-labels, filenames, display size labels, URLs, and expected SHA-1 values. The
-catalog `size_bytes` is useful for labels, estimates, and fallback progress
-totals, but it must not be the only source of truth for local readiness because
-remote file sizes can differ from catalog estimates.
-
-Model files live under:
-
-```text
-~/.local/share/quillspeak/models
-```
-
-Readiness rules:
-
-- a model becomes ready only after successful SHA-1 verification and final file
-  rename,
-- model download workers should be named, cancellable, and canceled from the
-  app quit path,
-- startup should remove orphan catalog `.part` files before reconciling ready
-  inventory,
-- after completion, the current process must update in-memory ready model IDs
-  immediately,
-- a later app start should reconcile inventory with the real final file and
-  catalog identity/hash metadata,
-- do not mark a model not ready merely because the real file length differs
-  from catalog `size_bytes` after a verified download,
-- deleting a ready model must update the file, inventory, in-memory ready IDs,
-  model rows, and model dropdown choices.
-
-UI rules:
-
-- while downloading, show stable per-row progress and a `Cancel` action,
-- while canceling, show a disabled canceling state,
-- while verifying, keep progress visible and indicate verification,
-- when ready, show `Remove Model`,
-- `Remove Model` should ask for confirmation before deleting,
-- referenced models should not be silently deleted.
-
-## Audio And Transcription
-
-The app records audio through CPAL. Keep audio capture display-server
-agnostic: X11/Wayland affects global hotkeys, not microphone capture.
-
-Current audio behavior:
-
-- `GeneralConfig.audio_input` stores either `system_default` or a CPAL device
-  reference with `host`, `id`, and human label,
-- Settings > General lists `System Default` first, then discovered input
-  devices,
-- `System Default` resolves to the current host default at recording time,
-- the default app build enables CPAL's native PipeWire and PulseAudio hosts,
-- on modern Ubuntu desktops, prefer native PipeWire and fall back to
-  PulseAudio through pipewire-pulse when PipeWire is unavailable,
-- audio capture runs on the `quillspeak-audio-capture` worker thread, not on the GTK
-  main thread,
-- the CPAL callback writes only to a short ring buffer; the capture worker
-  drains it into a bounded session buffer capped by the maximum recording
-  duration,
-- the input stream must be stopped while idle,
-- app quit must explicitly shut down and join the capture worker.
-
-Current transcription behavior:
-
-- stop recording converts captured audio to 16 kHz mono `f32` with `rubato`,
-- each shortcut resolves its own model, language, compute backend, and output
-  snapshot before the worker starts,
-- only ready/downloaded models may be used,
-- `whisper-rs` is the Rust wrapper over whisper.cpp,
-- model contexts are cached inside the transcription worker as one last-used
-  model path and compute backend when `keep_model_loaded = true`,
-- recognized text is logged at `info`,
-- full request/result metadata is logged at `debug`,
-- unusable short captures return `TranscriptionStatus::Skipped`, do not load
-  Whisper, and do not trigger output actions,
-- empty recognized text should warn with segment count and audio RMS/peak,
-- `QUILLSPEAK_DEBUG_SAVE_AUDIO=1` writes debug WAV/TOML files under
-  `/tmp/quillspeak-audio-debug`; setting it to a directory path writes there
-  instead.
-
-Auto language mode should allow whisper.cpp to auto-detect while continuing to
-transcribe. Do not set `detect_language=true` for normal transcription because
-that whisper.cpp flag exits after language detection and returns no transcript
-segments.
-
-Compute backend is selected from config. `auto` enables whisper.cpp GPU usage
-when the binary is built with a GPU backend, retries CPU if `auto` GPU
-initialization fails at runtime, and otherwise uses CPU behavior. Explicit
-Vulkan/CUDA/ROCm selections should fail clearly if the app was not compiled
-with the matching Cargo feature or if that runtime backend cannot initialize.
-
-Do not block the GTK main thread with audio capture, model loading, inference,
-downloads, hashing, or output execution. Keep those paths worker based and send
-state changes back through `AppCommand`.
-
-## Hotkey Architecture
-
-Hotkey handling is pluggable. Current app-side backend types:
+Hotkey handling is pluggable:
 
 - `DisabledBackend`
 - `X11Backend`
 
-Configured backend values:
+Backend resolution:
 
-- `auto`: resolves to X11 when only `DISPLAY` is present; resolves to disabled
-  on Wayland or when no supported display is present,
-- `disabled`: no app-side global hotkey, tray manual actions and Linux signal
-  triggers still work,
+- `auto`: X11 only when `DISPLAY` is present and `WAYLAND_DISPLAY` is absent.
+- `disabled`: no app-side global hotkey; tray, command mode, and signals still work.
 - `x11`: force app-side X11 passive grabs.
 
-Shortcut trigger capabilities are display-derived, not config-derived: only
-`DISPLAY` without `WAYLAND_DISPLAY` is considered keyboard-capable. X11 sessions
-show keyboard and signal trigger controls. Wayland or mixed Wayland/X11 sessions
-show signal trigger controls only.
-
-X11 capture lives in the app and uses passive X11 grabs. The X11 backend sends
-`StartRecording(shortcut_id)` on key down and `StopRecording(shortcut_id)` when
-the required chord is no longer pressed.
-
-Wayland capture is external to QuillSpeak. Prefer external utilities such as `swhkd`
-calling the existing binary in command mode: `quillspeak trigger <shortcut-id-or-name>
-start`, `quillspeak trigger <shortcut-id-or-name> stop`, or
-`quillspeak trigger <shortcut-id-or-name> toggle`. Command mode sends one line to the
-running app through `$XDG_RUNTIME_DIR/quillspeak/command.sock`; shortcut selectors
-resolve by exact id first, then exact unique display name. Disabled, missing,
-and ambiguous shortcuts are rejected, and commands that do not change recording
-state (start while busy, stop with no active recording, toggle while
-processing) are rejected with an error exit code. If the command socket cannot be created,
-the main app should continue running and `quillspeak trigger` remains unavailable
-until a later app start successfully creates the socket.
-
-Linux signal triggers remain available as a lower-level fallback. Configure
-shortcut profiles as `linux_signal`, then send Linux signals to the `quillspeak`
-process. Signal controls are dropdowns, not free-text fields. The supported
-exact values are `SIGUSR1`, `SIGUSR2`, `SIGALRM`, and `SIGWINCH`; aliases,
-numeric values, reserved process-control signals, and custom names are not
-supported. `SIGUSR1` and `SIGUSR2` are always registered as guard signals; if
-either signal does not match an enabled shortcut, QuillSpeak logs the received signal
-at debug level and continues running.
-
-When a shortcut uses the same start and stop signal, each received signal is
-handled once. If the app is idle it starts that shortcut. If that same shortcut
-is arming or recording, the next received signal stops it. Signals for inactive
-shortcuts or processing state are ignored with debug logging.
-
-Example external trigger commands:
+Wayland capture is external to QuillSpeak. Prefer compositor keybindings or
+`swhkd` calling:
 
 ```sh
 quillspeak trigger Default start
@@ -420,11 +207,83 @@ quillspeak trigger Default stop
 quillspeak trigger Default toggle
 ```
 
-The main app should never be run with sudo.
+Command mode sends one line to:
 
-## Commands
+```text
+$XDG_RUNTIME_DIR/quillspeak/command.sock
+```
 
-Useful checks:
+Shortcut selectors resolve by exact id first, then exact unique display name.
+Disabled, missing, ambiguous, and no-op commands should fail with a non-zero
+exit code.
+
+Linux signal shortcut values are exactly `SIGUSR1`, `SIGUSR2`, `SIGALRM`, and
+`SIGWINCH`. Aliases, numeric values, reserved process-control signals, and
+custom names are not supported.
+
+Same-signal shortcuts are handled once per received signal: when idle, the
+signal starts that shortcut; when that same shortcut is active, the next matching
+signal stops it.
+
+The main app should never be run with `sudo`.
+
+## Audio, Transcription, Models
+
+- Audio capture is display-server agnostic.
+- `System Default` audio input resolves to the current host default at recording time.
+- The default build enables CPAL PipeWire and PulseAudio hosts.
+- CPAL capture runs on the `quillspeak-audio-capture` worker thread.
+- Stop recording converts captured audio to 16 kHz mono `f32` with `rubato`.
+- Only ready/downloaded models may be used.
+- `whisper-rs` is the Rust wrapper over whisper.cpp.
+- `keep_model_loaded = true` caches the last-used model path and compute backend.
+- `QUILLSPEAK_DEBUG_SAVE_AUDIO=1` writes debug WAV/TOML files under
+  `/tmp/quillspeak-audio-debug`; setting it to a directory path writes there.
+- Auto language should let whisper.cpp auto-detect while continuing to
+  transcribe. Do not set `detect_language=true` for normal transcription.
+
+Model files live under:
+
+```text
+~/.local/share/quillspeak/models
+```
+
+Readiness is based on successful SHA-1 verification and final file rename, not
+only on catalog size.
+
+## Output Tools
+
+Clipboard output runs through the output worker. On Linux:
+
+- Wayland copy/readback: `wl-copy` / `wl-paste` with `text/plain;charset=utf-8`.
+- X11 copy/readback: `xclip`.
+- X11 paste: `xdotool key --clearmodifiers ...`.
+- Wayland paste: `ydotool key ...`.
+- Speaker mute: prefer `wpctl` and `pw-dump`; use `pactl` fallback when needed.
+
+Do not use GTK/GDK clipboard self-readback as success proof on Wayland. Do not
+restore the previous clipboard value for copy actions.
+
+## Documentation And Releases
+
+Public docs are static HTML/CSS/JS in `docs/`. Keep README short and link to
+the docs site for detailed instructions.
+
+Docs build:
+
+```sh
+scripts/build-docs.sh _site
+```
+
+The Pages workflow publishes `_site`. The release workflow builds:
+
+- `quillspeak`: default Vulkan-enabled package with CPU fallback.
+- `quillspeak-cpu`: CPU-only package.
+- `SHA256SUMS` and `release-manifest.json`.
+
+Pushing a tag matching `v*` triggers the release workflow.
+
+## Useful Commands
 
 ```sh
 cargo fmt --all --check
@@ -434,22 +293,19 @@ cargo clippy --workspace --all-targets -- -D warnings
 git diff --check
 ```
 
-System dependencies for the full app build on Debian/Ubuntu-style systems:
+System dependencies for full app builds on Debian/Ubuntu-style systems:
 
 ```sh
-sudo apt install build-essential pkg-config cmake clang libclang-dev libasound2-dev libpulse-dev libpipewire-0.3-dev libgtk-4-dev libadwaita-1-dev
+sudo apt install build-essential pkg-config cmake clang libclang-dev \
+  libasound2-dev libpulse-dev libpipewire-0.3-dev \
+  libgtk-4-dev libadwaita-1-dev
 ```
 
-Runtime clipboard output and paste shortcuts also need external tools:
+Runtime clipboard/paste tools:
 
 ```sh
 sudo apt install wl-clipboard xclip xdotool ydotool
 ```
-
-The app must not invoke package managers or auto-install these tools; if a
-required tool is missing, log a clear output failure message with the package
-hint. `xdotool` handles X11 paste shortcuts. `ydotool` handles Wayland paste
-shortcuts and may require its own daemon/permissions outside QuillSpeak.
 
 Run commands:
 
@@ -461,81 +317,25 @@ QUILLSPEAK_DEV_LOG=1 cargo run -p quillspeak --bin quillspeak
 QUILLSPEAK_DEBUG_SAVE_AUDIO=1 QUILLSPEAK_DEV_LOG=1 cargo run -p quillspeak --features whisper-vulkan --bin quillspeak
 ```
 
-`QUILLSPEAK_DEV_LOG=1` enables debug logs for QuillSpeak crates while keeping dependency
-crates at info level. A global `RUST_LOG=debug` is intentionally noisy and may
-include PulseAudio internals.
+`QUILLSPEAK_DEV_LOG=1` enables debug logs for QuillSpeak crates while keeping
+dependency crates quieter than global `RUST_LOG=debug`.
 
-The app crate requires GTK4/libadwaita system development packages. If a build
-fails because `gtk4.pc`, `libadwaita-1.pc`, or related pkg-config files are
-missing, report the missing system package issue instead of rewriting the app
-away from GTK4/libadwaita.
+If a build fails because `gtk4.pc`, `libadwaita-1.pc`, or related pkg-config
+files are missing, report the missing system package issue instead of rewriting
+the app away from GTK4/libadwaita.
 
 ## Coding Conventions
 
 - Keep crates and modules small.
-- Keep shared config/catalog/shortcut types in `shared`; do not duplicate model
-  catalog values or shortcut parsing in app code.
+- Keep shared config/catalog/shortcut types in `shared`.
 - Use `anyhow::Result` at binary/runtime boundaries.
-- Prefer pure tests in `shared`, model logic, hotkey state machines, and
-  non-GTK app modules.
+- Prefer pure tests in `shared`, model logic, hotkey state machines, and non-GTK app modules.
 - Do not touch GTK from worker threads.
 - Do not block the GTK main thread with network, hashing, filesystem-heavy
-  work, model loading, audio capture, or Whisper inference.
-- Clipboard output runs through the output worker. On Linux, use `wl-copy` /
-  `wl-paste` for Wayland and `xclip` for X11, and log success only after an
-  external readback verifies the expected text.
-- Paste from clipboard runs through the output worker after successful clipboard
-  verification. Use `xdotool key --clearmodifiers ...` on X11 and
-  `ydotool key ...` raw key events on Wayland. Do not restore the in-repo daemon
-  or uinput worker for paste.
-- Wayland clipboard commands should explicitly offer/request a text MIME type
-  such as `text/plain;charset=utf-8`.
-- Do not use GTK/GDK clipboard self-readback as success proof on Wayland.
-- Copy-to-clipboard leaves the final output text in the clipboard. Do not
-  restore the previous clipboard value for the copy action.
+  work, model loading, audio capture, Whisper inference, or output execution.
 - Use XDG/directories helpers instead of hardcoded user paths.
-- Keep incomplete output integrations honest: clipboard, script output, and
-  external-tool paste shortcuts are real; direct text insertion is not
-  implemented.
+- Keep clipboard, script output, and external-tool paste shortcuts real; direct
+  text insertion is not implemented.
 - Treat existing user changes as intentional. Do not revert unrelated work.
-- During this development phase, do not preserve legacy config compatibility
-  unless the user explicitly asks for it.
-
-## Current Verification State
-
-The intended verification set is:
-
-- `cargo fmt --all --check`
-- `cargo check --workspace`
-- `cargo test --workspace`
-- `cargo clippy --workspace --all-targets -- -D warnings`
-- `git diff --check`
-
-`cargo test --workspace` should pass with the default parallel test runner.
-Serial `-- --test-threads=1` runs are only for debugging.
-
-For signal changes, also smoke-test the running app manually:
-
-```sh
-pkill -USR1 -x quillspeak
-pkill -USR2 -x quillspeak
-```
-
-For a same-signal shortcut, send the same signal twice: the first signal should
-start recording and the second should stop the active recording without exiting
-the app.
-
-If these fail because system GTK/libadwaita development packages are missing,
-report that accurately. If they fail because of Rust code, fix the code or
-explain the blocker.
-
-## Future Work
-
-Possible later additions, only when requested:
-
-- XDG GlobalShortcuts portal backend,
-- production-grade audio buffering/resampling,
-- streaming/VAD transcription,
-- direct text insertion into the focused app without clipboard transport,
-- Flatpak packaging for the main app,
-- `.deb` packaging for the main app.
+- During active development, do not preserve legacy config compatibility unless
+  the user explicitly asks for it.

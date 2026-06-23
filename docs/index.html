@@ -13,16 +13,17 @@
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="#top" aria-label="QuillSpeak documentation home">
+      <a class="brand" href="./index.html" aria-label="QuillSpeak documentation home">
         <img src="./assets/quillspeak.svg" alt="" />
         <span>QuillSpeak</span>
       </a>
       <nav class="top-nav" aria-label="Primary navigation">
-        <a href="#install">Install</a>
-        <a href="#wayland">Wayland</a>
-        <a href="#x11">X11</a>
-        <a href="#release">Releases</a>
-        <a href="#developers">Developers</a>
+        <a href="./getting-started.html">Getting Started</a>
+        <a href="./settings.html">Settings</a>
+        <a href="./triggers.html">Triggers</a>
+        <a href="./output.html">Output</a>
+        <a href="./troubleshooting.html">Troubleshooting</a>
+        <a href="https://github.com/ilysenko/quillspeak">GitHub</a>
       </nav>
     </header>
 
@@ -39,23 +40,15 @@
           </p>
           <div class="hero-actions">
             <a class="button primary" href="#install">Install packages</a>
-            <a class="button secondary" href="#quick-start">Quick start</a>
+            <a class="button secondary" href="./getting-started.html">Read the guide</a>
           </div>
         </div>
-        <div class="terminal-panel" aria-label="QuillSpeak trigger command example">
-          <div class="terminal-top">
-            <span></span>
-            <span></span>
-            <span></span>
-          </div>
-          <pre><code>quillspeak
-quillspeak trigger Default start
-quillspeak trigger Default stop
-
-# lower-level signal fallback
-pkill -USR1 -x quillspeak
-pkill -USR2 -x quillspeak</code></pre>
-        </div>
+        <figure class="screenshot hero-shot">
+          <img src="./images/quillspeak-models.png" alt="QuillSpeak model manager" />
+          <figcaption>
+            Download a local whisper.cpp model, then assign it to any shortcut profile.
+          </figcaption>
+        </figure>
       </section>
 
       <section class="release-band" id="install">
@@ -68,6 +61,11 @@ pkill -USR2 -x quillspeak</code></pre>
             falls back to CPU transcription. A CPU-only package is published for
             simpler systems.
           </p>
+          <p>
+            Runtime clipboard, paste, and hotkey helpers stay outside the app.
+            QuillSpeak reports missing tools in Settings instead of installing
+            packages by itself.
+          </p>
         </div>
         <div class="release-widget" id="release">
           <h3>Latest Release</h3>
@@ -77,23 +75,23 @@ pkill -USR2 -x quillspeak</code></pre>
         </div>
       </section>
 
-      <section class="content-grid" id="quick-start">
-        <article>
+      <section class="content-grid">
+        <article class="content-card">
           <h2>Quick Start</h2>
           <ol>
             <li>Install the latest <code>.deb</code> from GitHub Releases.</li>
             <li>Start QuillSpeak with <code>quillspeak</code>.</li>
             <li>Open <strong>Show Settings</strong> from the tray indicator.</li>
             <li>Download a ready whisper.cpp model from the Models page.</li>
-            <li>Choose a shortcut profile, model, language, and output action.</li>
-            <li>Hold the trigger, speak, release, and paste or copy the text.</li>
+            <li>Choose a shortcut profile, trigger, model, language, and output action.</li>
+            <li>Hold the trigger, speak, release, then copy or paste the final text.</li>
           </ol>
         </article>
-        <article>
+        <article class="content-card">
           <h2>Runtime Tools</h2>
           <p>
-            Clipboard and paste output intentionally use external Linux tools so
-            X11 and Wayland clients see the real system clipboard.
+            Clipboard and paste output use external Linux tools so X11 and
+            Wayland clients see the real system clipboard.
           </p>
           <pre><code>sudo apt install wl-clipboard xclip xdotool ydotool</code></pre>
           <p>
@@ -104,148 +102,83 @@ pkill -USR2 -x quillspeak</code></pre>
         </article>
       </section>
 
+      <section class="card-grid" aria-label="Documentation sections">
+        <a class="page-card" href="./getting-started.html">
+          <p class="eyebrow">Start here</p>
+          <h3>Getting Started</h3>
+          <p>Install packages, launch the app, download a model, and record your first phrase.</p>
+        </a>
+        <a class="page-card" href="./settings.html">
+          <p class="eyebrow">Reference</p>
+          <h3>Settings</h3>
+          <p>Every General, Models, History, and per-shortcut option explained.</p>
+        </a>
+        <a class="page-card" href="./triggers.html">
+          <p class="eyebrow">X11 and Wayland</p>
+          <h3>Triggers</h3>
+          <p>Keyboard shortcuts, <code>quillspeak trigger</code>, <code>swhkd</code>, and Linux signals.</p>
+        </a>
+        <a class="page-card" href="./output.html">
+          <p class="eyebrow">Final text</p>
+          <h3>Scripts and Paste</h3>
+          <p>Script transforms, clipboard verification, paste shortcuts, and translator examples.</p>
+        </a>
+      </section>
+
+      <section>
+        <p class="eyebrow">Settings tour</p>
+        <h2>What you configure in QuillSpeak</h2>
+        <div class="gallery">
+          <figure class="screenshot">
+            <img src="./images/quillspeak-general.png" alt="QuillSpeak General settings" />
+            <figcaption>General runtime choices: backend, microphone, compute, and model caching.</figcaption>
+          </figure>
+          <figure class="screenshot">
+            <img src="./images/quillspeak-models.png" alt="QuillSpeak Models page" />
+            <figcaption>Model catalog with download, verification, ready, and remove states.</figcaption>
+          </figure>
+          <figure class="screenshot">
+            <img src="./images/quillspeak-history.png" alt="QuillSpeak History page" />
+            <figcaption>Local transcription history with copy actions and a clear-history control.</figcaption>
+          </figure>
+          <figure class="screenshot">
+            <img src="./images/quillspeak-shortcut-output.png" alt="QuillSpeak shortcut output settings" />
+            <figcaption>Per-shortcut signal, model, language, mute, script, copy, and paste settings.</figcaption>
+          </figure>
+        </div>
+      </section>
+
       <section class="split-section">
-        <div id="wayland">
+        <div>
           <p class="eyebrow">Wayland</p>
-          <h2>Use external hotkey tools with <code>quillspeak trigger</code></h2>
+          <h2>External hotkey tools call the running app</h2>
           <p>
             Wayland compositors do not allow regular desktop apps to capture
-            global keyboard shortcuts directly. QuillSpeak therefore keeps
-            recording logic inside the app and exposes an explicit command mode
-            that external hotkey tools can call on key down and key up.
+            global keyboard shortcuts directly. QuillSpeak keeps recording
+            logic inside the app and exposes an explicit command mode that
+            hotkey tools can call on key down and key up.
           </p>
           <pre><code>quillspeak trigger Default start
 quillspeak trigger Default stop
 quillspeak trigger Default toggle</code></pre>
           <p>
-            The command talks to the running app through
-            <code>$XDG_RUNTIME_DIR/quillspeak/command.sock</code>. Shortcut
-            selectors resolve by exact id first and then by exact unique display
-            name. Failed no-op commands exit non-zero so scripts can react.
+            For a concrete setup, see the <a href="./triggers.html">Triggers</a>
+            page.
           </p>
-          <h3>Example swhkd configuration</h3>
-          <pre><code>ctrl + space
-    quillspeak trigger Default start
-
-ctrl + @space
-    quillspeak trigger Default start
-
-ctrl + shift + space
-    quillspeak trigger Default stop
-
-ctrl + shift + @space
-    quillspeak trigger Default stop</code></pre>
         </div>
-
         <aside class="note-panel">
           <h3>Signal fallback</h3>
           <p>
             Linux signal triggers are available when a compositor or hotkey
-            utility cannot run command-mode start/stop edges. Configure a
-            shortcut as <code>linux_signal</code>, then send supported signals.
+            utility cannot run command-mode start/stop edges.
           </p>
           <pre><code>pkill -USR1 -x quillspeak
 pkill -USR2 -x quillspeak</code></pre>
           <p>
             Supported values are <code>SIGUSR1</code>, <code>SIGUSR2</code>,
-            <code>SIGALRM</code>, and <code>SIGWINCH</code>. If the same signal
-            is used for start and stop, the first signal starts recording and
-            the next matching signal stops the active recording.
+            <code>SIGALRM</code>, and <code>SIGWINCH</code>.
           </p>
         </aside>
-      </section>
-
-      <section class="split-section reverse" id="x11">
-        <aside class="note-panel">
-          <h3>Tray state</h3>
-          <ul>
-            <li>White icon: idle.</li>
-            <li>Red icon: recording.</li>
-            <li>Orange icon: processing.</li>
-          </ul>
-          <p>
-            The tray menu provides <strong>Show Settings</strong>, a stateful
-            recording action, and <strong>Quit</strong>.
-          </p>
-        </aside>
-        <div>
-          <p class="eyebrow">X11</p>
-          <h2>App-owned keyboard shortcuts</h2>
-          <p>
-            On pure X11 sessions, <code>hotkey_backend = "auto"</code> resolves
-            to QuillSpeak's X11 passive-grab backend. Shortcut pages show both
-            keyboard and Linux signal trigger controls.
-          </p>
-          <pre><code>[general]
-hotkey_backend = "auto"
-
-[[shortcuts]]
-id = "default"
-trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }</code></pre>
-          <p>
-            Keyboard hotkey down starts recording for that shortcut. Hotkey up
-            stops the same shortcut and sends the captured audio to the
-            transcription worker. Hotkey backends use explicit start/stop edges,
-            not a blind toggle.
-          </p>
-        </div>
-      </section>
-
-      <section class="content-grid">
-        <article>
-          <h2>Output Pipeline</h2>
-          <p>
-            Each shortcut owns its model, language, speaker-mute preference,
-            script transform, clipboard behavior, and paste shortcut.
-          </p>
-          <pre><code>transcript
-  -> optional script transform
-  -> final text
-  -> optional clipboard copy
-  -> optional paste shortcut</code></pre>
-          <p>
-            If a script is enabled, its stdout becomes the final text. The
-            original transcript is not copied as a fallback after script errors.
-          </p>
-        </article>
-        <article>
-          <h2>Files and State</h2>
-          <dl>
-            <dt>Config</dt>
-            <dd><code>~/.config/quillspeak/config.toml</code></dd>
-            <dt>Models</dt>
-            <dd><code>~/.local/share/quillspeak/models</code></dd>
-            <dt>History</dt>
-            <dd><code>~/.local/share/quillspeak/history.jsonl</code></dd>
-            <dt>Command socket</dt>
-            <dd><code>$XDG_RUNTIME_DIR/quillspeak/command.sock</code></dd>
-          </dl>
-        </article>
-      </section>
-
-      <section class="developers" id="developers">
-        <div>
-          <p class="eyebrow">Development</p>
-          <h2>Build from source</h2>
-          <pre><code>sudo apt install build-essential pkg-config cmake clang libclang-dev \
-  libasound2-dev libpulse-dev libpipewire-0.3-dev \
-  libgtk-4-dev libadwaita-1-dev
-
-cargo run -p quillspeak --bin quillspeak
-QUILLSPEAK_DEV_LOG=1 cargo run -p quillspeak --bin quillspeak</code></pre>
-        </div>
-        <div>
-          <p class="eyebrow">Release automation</p>
-          <h2>Tag-driven deployment</h2>
-          <p>
-            Pushing a tag such as <code>v0.0.1</code> runs the release
-            workflow, builds the primary Debian packages, uploads checksums and
-            a release manifest to GitHub Releases, and then the Pages workflow
-            refreshes the Downloads section from the latest release.
-          </p>
-          <pre><code>git tag v0.0.1
-git push origin v0.0.1</code></pre>
-        </div>
       </section>
     </main>
 

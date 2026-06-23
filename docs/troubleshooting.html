@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Troubleshooting - QuillSpeak</title>
+    <meta
+      name="description"
+      content="Troubleshoot QuillSpeak models, triggers, clipboard output, paste shortcuts, audio capture, and development builds."
+    />
+    <link rel="icon" href="./assets/quillspeak.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="QuillSpeak documentation home">
+        <img src="./assets/quillspeak.svg" alt="" />
+        <span>QuillSpeak</span>
+      </a>
+      <nav class="top-nav" aria-label="Primary navigation">
+        <a href="./getting-started.html">Getting Started</a>
+        <a href="./settings.html">Settings</a>
+        <a href="./triggers.html">Triggers</a>
+        <a href="./output.html">Output</a>
+        <a href="./troubleshooting.html" aria-current="page">Troubleshooting</a>
+        <a href="https://github.com/ilysenko/quillspeak">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="page-hero">
+        <p class="eyebrow">Troubleshooting</p>
+        <h1>Find the failing part of the local voice pipeline.</h1>
+        <p class="lead">
+          QuillSpeak is intentionally explicit: triggers, audio capture, local
+          model inference, scripts, clipboard copy, and paste shortcuts are
+          separate steps. Most issues are one missing tool or one unavailable
+          model.
+        </p>
+      </section>
+
+      <div class="page-grid">
+        <aside class="toc" aria-label="Page sections">
+          <strong>On this page</strong>
+          <a href="#quick-checks">Quick checks</a>
+          <a href="#models">Models</a>
+          <a href="#triggers">Triggers</a>
+          <a href="#clipboard">Clipboard and paste</a>
+          <a href="#audio">Audio and mute</a>
+          <a href="#scripts">Scripts</a>
+          <a href="#logs">Logs and debug audio</a>
+          <a href="#build">Build failures</a>
+        </aside>
+
+        <div class="doc-body">
+          <section class="doc-section" id="quick-checks">
+            <h2>Quick Checks</h2>
+            <ol>
+              <li>Start QuillSpeak from a terminal so logs are visible: <code>QUILLSPEAK_DEV_LOG=1 quillspeak</code>.</li>
+              <li>Open Settings and check the Status page.</li>
+              <li>Make sure at least one model is ready on the Models page.</li>
+              <li>Make sure the shortcut is enabled and has a trigger that matches your session.</li>
+              <li>Turn off script and paste temporarily, then test plain copy-to-clipboard.</li>
+            </ol>
+          </section>
+
+          <section class="doc-section" id="models">
+            <h2>Model Issues</h2>
+            <table class="setting-table">
+              <thead>
+                <tr>
+                  <th>Symptom</th>
+                  <th>Check</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>No model appears in shortcut dropdowns</td>
+                  <td>Download and verify a model on the Models page. Shortcut pages show only ready models as normal choices.</td>
+                </tr>
+                <tr>
+                  <td>Selected model is marked missing</td>
+                  <td>The config references a model that is not installed. Download it or choose a ready model.</td>
+                </tr>
+                <tr>
+                  <td>GPU backend fails</td>
+                  <td>Use <code>compute_backend = "auto"</code> for CPU fallback, or select <code>cpu</code> explicitly.</td>
+                </tr>
+                <tr>
+                  <td>First transcription is slow</td>
+                  <td>Model loading can dominate the first run. Enable Keep model loaded for faster later runs.</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section class="doc-section" id="triggers">
+            <h2>Trigger Issues</h2>
+            <table class="setting-table">
+              <thead>
+                <tr>
+                  <th>Symptom</th>
+                  <th>Check</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>X11 keyboard shortcut does not fire</td>
+                  <td>Confirm this is a pure X11 session: <code>DISPLAY</code> is set and <code>WAYLAND_DISPLAY</code> is not set.</td>
+                </tr>
+                <tr>
+                  <td>Wayland shortcut does not fire</td>
+                  <td>Configure the compositor or hotkey tool to call <code>quillspeak trigger Default start</code> and <code>stop</code>.</td>
+                </tr>
+                <tr>
+                  <td><code>quillspeak trigger</code> cannot connect</td>
+                  <td>Make sure the main app is already running and that <code>$XDG_RUNTIME_DIR/quillspeak/command.sock</code> exists.</td>
+                </tr>
+                <tr>
+                  <td>Signal does nothing</td>
+                  <td>Make sure an enabled shortcut uses that exact signal. Supported names are <code>SIGUSR1</code>, <code>SIGUSR2</code>, <code>SIGALRM</code>, and <code>SIGWINCH</code>.</td>
+                </tr>
+                <tr>
+                  <td>Same-signal shortcut starts but does not stop</td>
+                  <td>Send the same signal again while the same shortcut is active. Signals for other shortcuts are ignored while processing.</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section class="doc-section" id="clipboard">
+            <h2>Clipboard and Paste Issues</h2>
+            <p>Install the runtime tools for your session:</p>
+            <pre><code>sudo apt install wl-clipboard xclip xdotool ydotool</code></pre>
+            <table class="setting-table">
+              <thead>
+                <tr>
+                  <th>Symptom</th>
+                  <th>Check</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Copy fails on Wayland</td>
+                  <td>Install <code>wl-clipboard</code>. QuillSpeak uses <code>wl-copy</code> and <code>wl-paste</code> with a text MIME type.</td>
+                </tr>
+                <tr>
+                  <td>Copy fails on X11</td>
+                  <td>Install <code>xclip</code>.</td>
+                </tr>
+                <tr>
+                  <td>Paste fails on X11</td>
+                  <td>Install <code>xdotool</code> and make sure the focused app accepts the selected paste shortcut.</td>
+                </tr>
+                <tr>
+                  <td>Paste fails on Wayland</td>
+                  <td>Install and configure <code>ydotool</code>. It may need a daemon and input permissions outside QuillSpeak.</td>
+                </tr>
+                <tr>
+                  <td>Terminal receives nothing</td>
+                  <td>Use <code>Ctrl+Shift+V</code> instead of <code>Ctrl+V</code> for many terminal apps.</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section class="doc-section" id="audio">
+            <h2>Audio and Mute Issues</h2>
+            <table class="setting-table">
+              <thead>
+                <tr>
+                  <th>Symptom</th>
+                  <th>Check</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>No microphone audio</td>
+                  <td>Try System Default first, then select a specific input device from Settings > General.</td>
+                </tr>
+                <tr>
+                  <td>Speaker mute fails</td>
+                  <td>Install <code>wireplumber</code> and <code>pipewire-bin</code>. The fallback package for <code>pactl</code> is often <code>pulseaudio-utils</code>.</td>
+                </tr>
+                <tr>
+                  <td>Very short recording is skipped</td>
+                  <td>Speak for a longer capture. Unusable short captures do not load Whisper or run output actions.</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section class="doc-section" id="scripts">
+            <h2>Script Issues</h2>
+            <p>
+              The script receives the transcript as <code>$1</code>, not on
+              stdin. It must be executable and should print final text to stdout.
+            </p>
+            <pre><code>chmod +x ~/bin/translate-to-english.sh
+~/bin/translate-to-english.sh "Привіт, як справи?"</code></pre>
+            <p>
+              If a script fails, temporarily disable Run script and test plain
+              clipboard copy. Then run the script manually with a short sample
+              string.
+            </p>
+          </section>
+
+          <section class="doc-section" id="logs">
+            <h2>Logs and Debug Audio</h2>
+            <p>Useful runtime commands:</p>
+            <pre><code>QUILLSPEAK_DEV_LOG=1 quillspeak
+QUILLSPEAK_DEBUG_SAVE_AUDIO=1 QUILLSPEAK_DEV_LOG=1 quillspeak</code></pre>
+            <p>
+              <code>QUILLSPEAK_DEV_LOG=1</code> enables debug logs for
+              QuillSpeak crates while keeping dependency logs quieter than a
+              global <code>RUST_LOG=debug</code>. Debug audio is written under
+              <code>/tmp/quillspeak-audio-debug</code> unless the variable is a
+              directory path.
+            </p>
+          </section>
+
+          <section class="doc-section" id="build">
+            <h2>Build Failures</h2>
+            <p>Install the GTK/libadwaita development packages before building from source:</p>
+            <pre><code>sudo apt install build-essential pkg-config cmake clang libclang-dev \
+  libasound2-dev libpulse-dev libpipewire-0.3-dev \
+  libgtk-4-dev libadwaita-1-dev</code></pre>
+            <p>
+              If a build fails because <code>gtk4.pc</code>,
+              <code>libadwaita-1.pc</code>, or related pkg-config files are
+              missing, install the system development packages instead of
+              replacing the GTK4/libadwaita app stack.
+            </p>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <span>QuillSpeak is free software under the MIT License.</span>
+      <span><a href="https://github.com/ilysenko/quillspeak">GitHub repository</a></span>
+    </footer>
+  </body>
+</html>

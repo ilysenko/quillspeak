@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Triggers on X11 and Wayland - QuillSpeak</title>
+    <meta
+      name="description"
+      content="Configure QuillSpeak push-to-talk triggers on X11, Wayland, and with Linux signals."
+    />
+    <link rel="icon" href="./assets/quillspeak.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="QuillSpeak documentation home">
+        <img src="./assets/quillspeak.svg" alt="" />
+        <span>QuillSpeak</span>
+      </a>
+      <nav class="top-nav" aria-label="Primary navigation">
+        <a href="./getting-started.html">Getting Started</a>
+        <a href="./settings.html">Settings</a>
+        <a href="./triggers.html" aria-current="page">Triggers</a>
+        <a href="./output.html">Output</a>
+        <a href="./troubleshooting.html">Troubleshooting</a>
+        <a href="https://github.com/ilysenko/quillspeak">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="page-hero">
+        <p class="eyebrow">Triggers</p>
+        <h1>Use app-owned X11 shortcuts or external Wayland trigger commands.</h1>
+        <p class="lead">
+          Push-to-talk needs explicit start and stop edges. QuillSpeak can own
+          those edges on X11. On Wayland, an external hotkey tool calls the
+          running app.
+        </p>
+      </section>
+
+      <div class="page-grid">
+        <aside class="toc" aria-label="Page sections">
+          <strong>On this page</strong>
+          <a href="#model">Trigger model</a>
+          <a href="#x11">X11</a>
+          <a href="#wayland">Wayland</a>
+          <a href="#swhkd">swhkd example</a>
+          <a href="#signals">Linux signals</a>
+          <a href="#manual">Manual testing</a>
+        </aside>
+
+        <div class="doc-body">
+          <section class="doc-section" id="model">
+            <h2>Trigger Model</h2>
+            <p>
+              A shortcut trigger starts recording for one shortcut id and stops
+              that same shortcut. Hotkey backends and command-mode triggers do
+              not use a blind toggle because push-to-talk needs separate key
+              down and key up behavior.
+            </p>
+            <table class="setting-table">
+              <thead>
+                <tr>
+                  <th>Session</th>
+                  <th>Recommended trigger</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Pure X11</td>
+                  <td>Use QuillSpeak keyboard shortcuts with <code>hotkey_backend = "auto"</code> or <code>"x11"</code>.</td>
+                </tr>
+                <tr>
+                  <td>Wayland</td>
+                  <td>Use compositor keybindings or an external tool such as <code>swhkd</code> to call <code>quillspeak trigger</code>.</td>
+                </tr>
+                <tr>
+                  <td>Mixed Wayland/X11</td>
+                  <td>Treated like Wayland for shortcut capture. Use external triggers or Linux signals.</td>
+                </tr>
+                <tr>
+                  <td>No display backend</td>
+                  <td>Keyboard capture is disabled. Tray actions and Linux signals may still be available.</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section class="doc-section" id="x11">
+            <h2>X11 Keyboard Shortcuts</h2>
+            <p>
+              On pure X11 sessions, QuillSpeak can capture global keyboard
+              shortcuts directly through passive X11 grabs. The default keyboard
+              shortcut is <code>Ctrl+Alt+Space</code>.
+            </p>
+            <pre><code>[general]
+hotkey_backend = "auto"
+
+[[shortcuts]]
+id = "default"
+trigger = { type = "keyboard", accelerator = "Ctrl+Alt+Space" }</code></pre>
+            <p>
+              Key down starts recording for that shortcut. Key up stops the same
+              shortcut and sends the captured audio to transcription. If the
+              selected accelerator cannot be parsed or conflicts with another
+              enabled shortcut, the config is rejected.
+            </p>
+            <div class="callout">
+              <h3>X11 Availability</h3>
+              <p>
+                QuillSpeak considers keyboard capture available only when
+                <code>DISPLAY</code> is present and <code>WAYLAND_DISPLAY</code>
+                is absent. This avoids pretending that X11 grabs are reliable in
+                mixed Wayland sessions.
+              </p>
+            </div>
+          </section>
+
+          <section class="doc-section" id="wayland">
+            <h2>Wayland Trigger Commands</h2>
+            <p>
+              Wayland does not let a normal desktop app capture global keyboard
+              shortcuts directly. QuillSpeak therefore exposes a command mode on
+              the same binary. The command sends one line to the running app
+              through its user socket.
+            </p>
+            <pre><code>quillspeak trigger Default start
+quillspeak trigger Default stop
+quillspeak trigger Default toggle</code></pre>
+            <dl>
+              <dt>Socket</dt>
+              <dd><code>$XDG_RUNTIME_DIR/quillspeak/command.sock</code></dd>
+              <dt>Shortcut selector</dt>
+              <dd>Exact shortcut id first, then exact unique display name.</dd>
+              <dt>Rejected selectors</dt>
+              <dd>Missing, disabled, or ambiguous shortcut names.</dd>
+              <dt>Rejected no-ops</dt>
+              <dd>Start while busy, stop with no active recording, or toggle while processing.</dd>
+            </dl>
+            <p>
+              Command failures exit with a non-zero status. This is useful for
+              external hotkey tools because a failed key event does not silently
+              pretend that recording state changed.
+            </p>
+          </section>
+
+          <section class="doc-section" id="swhkd">
+            <h2>swhkd Example</h2>
+            <p>
+              <code>swhkd</code> is a practical Wayland-friendly hotkey daemon.
+              It can run a command on key press and a second command on key
+              release by using <code>@</code> in the release binding.
+            </p>
+            <p>Example <code>~/.config/swhkd/swhkdrc</code>:</p>
+            <pre><code>ctrl + space
+    /usr/bin/quillspeak trigger Default start
+
+ctrl + @space
+    /usr/bin/quillspeak trigger Default stop
+
+ctrl + shift + space
+    pkill -USR1 -x quillspeak
+
+ctrl + shift + @space
+    pkill -USR1 -x quillspeak</code></pre>
+            <p>
+              The first pair uses command-mode start and stop edges for the
+              <code>Default</code> shortcut. The second pair demonstrates a
+              same-signal fallback profile where pressing and releasing the key
+              both send <code>SIGUSR1</code>.
+            </p>
+            <pre><code>sudo systemctl restart swhkd.service
+systemctl --user restart swhks.service</code></pre>
+            <p>
+              Service names can vary by distribution. Restart only the services
+              your local <code>swhkd</code> package installed.
+            </p>
+          </section>
+
+          <section class="doc-section" id="signals">
+            <h2>Linux Signals</h2>
+            <p>
+              Linux signal triggers are a lower-level fallback. Configure a
+              shortcut profile as <code>linux_signal</code>, then send signals
+              to the running <code>quillspeak</code> process.
+            </p>
+            <pre><code>pkill -USR1 -x quillspeak
+pkill -USR2 -x quillspeak</code></pre>
+            <table class="setting-table">
+              <thead>
+                <tr>
+                  <th>Signal</th>
+                  <th>Accepted name</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>User-defined signal 1</td>
+                  <td><code>SIGUSR1</code></td>
+                </tr>
+                <tr>
+                  <td>User-defined signal 2</td>
+                  <td><code>SIGUSR2</code></td>
+                </tr>
+                <tr>
+                  <td>Alarm signal</td>
+                  <td><code>SIGALRM</code></td>
+                </tr>
+                <tr>
+                  <td>Window size change signal</td>
+                  <td><code>SIGWINCH</code></td>
+                </tr>
+              </tbody>
+            </table>
+            <p>
+              Aliases, numeric values, reserved process-control signals, and
+              custom names are not supported. <code>SIGUSR1</code> and
+              <code>SIGUSR2</code> are always registered as guard signals; if
+              they do not match an enabled shortcut, QuillSpeak logs the signal
+              at debug level and keeps running.
+            </p>
+            <div class="callout">
+              <h3>Same-Signal Toggle</h3>
+              <p>
+                If a shortcut uses the same start and stop signal, the first
+                matching signal starts recording when idle. The next matching
+                signal stops that same active shortcut. Signals for inactive
+                shortcuts or processing state are ignored.
+              </p>
+            </div>
+          </section>
+
+          <section class="doc-section" id="manual">
+            <h2>Manual Testing</h2>
+            <p>Start the app in one terminal so logs stay visible:</p>
+            <pre><code>QUILLSPEAK_DEV_LOG=1 quillspeak</code></pre>
+            <p>Then trigger from another terminal:</p>
+            <pre><code>quillspeak trigger Default start
+quillspeak trigger Default stop
+pkill -USR1 -x quillspeak
+pkill -USR2 -x quillspeak</code></pre>
+            <p>
+              For a same-signal shortcut, send the same signal twice. The first
+              signal should start recording. The second should stop the active
+              recording without exiting the app.
+            </p>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <span>QuillSpeak is free software under the MIT License.</span>
+      <span><a href="https://github.com/ilysenko/quillspeak">GitHub repository</a></span>
+    </footer>
+  </body>
+</html>

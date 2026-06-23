@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Scripts, Clipboard, and Paste - QuillSpeak</title>
+    <meta
+      name="description"
+      content="Configure QuillSpeak output actions, script transforms, clipboard copy, and paste shortcuts on X11 and Wayland."
+    />
+    <link rel="icon" href="./assets/quillspeak.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="QuillSpeak documentation home">
+        <img src="./assets/quillspeak.svg" alt="" />
+        <span>QuillSpeak</span>
+      </a>
+      <nav class="top-nav" aria-label="Primary navigation">
+        <a href="./getting-started.html">Getting Started</a>
+        <a href="./settings.html">Settings</a>
+        <a href="./triggers.html">Triggers</a>
+        <a href="./output.html" aria-current="page">Output</a>
+        <a href="./troubleshooting.html">Troubleshooting</a>
+        <a href="https://github.com/ilysenko/quillspeak">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="page-hero">
+        <p class="eyebrow">Output Pipeline</p>
+        <h1>Transform, copy, and paste the final text.</h1>
+        <p class="lead">
+          Each shortcut has one output pipeline: transcript, optional script
+          transform, final text, optional clipboard copy, and optional paste
+          shortcut. The clipboard is the transport for paste actions.
+        </p>
+      </section>
+
+      <div class="page-grid">
+        <aside class="toc" aria-label="Page sections">
+          <strong>On this page</strong>
+          <a href="#pipeline">Pipeline</a>
+          <a href="#scripts">Scripts</a>
+          <a href="#translator">Translator example</a>
+          <a href="#clipboard">Clipboard tools</a>
+          <a href="#paste">Paste shortcuts</a>
+          <a href="#examples">Shortcut examples</a>
+        </aside>
+
+        <div class="doc-body">
+          <section class="doc-section" id="pipeline">
+            <h2>Pipeline</h2>
+            <pre><code>recorded audio
+  -> local Whisper transcription
+  -> optional script transform
+  -> final text
+  -> optional clipboard copy
+  -> optional paste shortcut</code></pre>
+            <p>
+              If script output is enabled, stdout from the script becomes the
+              final text. QuillSpeak does not copy the original transcript as a
+              fallback after a script error; failed script output is treated as
+              an output failure.
+            </p>
+            <figure class="screenshot">
+              <img src="./images/quillspeak-shortcut-output.png" alt="QuillSpeak shortcut output controls" />
+              <figcaption>Output settings live on each shortcut profile.</figcaption>
+            </figure>
+          </section>
+
+          <section class="doc-section" id="scripts">
+            <h2>Scripts</h2>
+            <p>
+              A script transform is any executable file. QuillSpeak passes the
+              transcript as the first command-line argument. Standard input is
+              closed. The script should write the replacement text to stdout.
+            </p>
+            <table class="setting-table">
+              <thead>
+                <tr>
+                  <th>Contract</th>
+                  <th>Behavior</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Input</td>
+                  <td><code>$1</code> is the transcript text. Stdin is not used.</td>
+                </tr>
+                <tr>
+                  <td>Output</td>
+                  <td>Stdout becomes final text.</td>
+                </tr>
+                <tr>
+                  <td>Errors</td>
+                  <td>Non-zero exit, spawn failure, or empty invalid output is logged as an output failure.</td>
+                </tr>
+                <tr>
+                  <td>Path</td>
+                  <td>The settings UI expects an absolute executable path.</td>
+                </tr>
+              </tbody>
+            </table>
+            <p>Minimal script:</p>
+            <pre><code>#!/usr/bin/env bash
+set -euo pipefail
+
+text="${1:-}"
+printf '%s\n' "$text"</code></pre>
+            <pre><code>chmod +x ~/bin/quillspeak-echo.sh</code></pre>
+          </section>
+
+          <section class="doc-section" id="translator">
+            <h2>Translator Example</h2>
+            <p>
+              A translation shortcut is just a shortcut with <strong>Run script</strong>
+              enabled. For example, a "To English" profile can transcribe in
+              auto language mode, run a translator script, then copy and paste
+              the translated result with <code>Ctrl+Shift+V</code>.
+            </p>
+            <p>
+              This repository includes a public example script at
+              <a href="./examples/translate-to-english.sh"><code>docs/examples/translate-to-english.sh</code></a>.
+              It defaults to Claude Code print mode when <code>claude</code> is
+              installed, and otherwise prints the original text so the shortcut
+              still has predictable behavior.
+            </p>
+            <pre><code>mkdir -p ~/bin
+curl -fsSL https://ilysenko.github.io/quillspeak/examples/translate-to-english.sh \
+  -o ~/bin/translate-to-english.sh
+chmod +x ~/bin/translate-to-english.sh</code></pre>
+            <p>Useful environment knobs for that example:</p>
+            <table class="setting-table">
+              <thead>
+                <tr>
+                  <th>Variable</th>
+                  <th>Default</th>
+                  <th>Use</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>QUILLSPEAK_TRANSLATOR_BACKEND</code></td>
+                  <td><code>claude</code></td>
+                  <td>Set to <code>plain</code> to disable cloud post-processing and echo input.</td>
+                </tr>
+                <tr>
+                  <td><code>QUILLSPEAK_CLAUDE_MODEL</code></td>
+                  <td><code>haiku</code></td>
+                  <td>Fast Claude Code model alias for short translation/rewrite tasks.</td>
+                </tr>
+                <tr>
+                  <td><code>QUILLSPEAK_CLAUDE_FALLBACK</code></td>
+                  <td><code>sonnet</code></td>
+                  <td>Fallback model alias if the primary model is overloaded or unavailable.</td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="callout warning">
+              <h3>Local transcription, optional cloud script</h3>
+              <p>
+                QuillSpeak's audio transcription remains local. A script can
+                choose to call a cloud service after transcription. That is the
+                script's behavior, not hidden app behavior.
+              </p>
+            </div>
+          </section>
+
+          <section class="doc-section" id="clipboard">
+            <h2>Clipboard Tools</h2>
+            <p>
+              Copy-to-clipboard writes the final text to the system clipboard
+              and verifies success by reading it back through the external
+              clipboard tool for the current display backend.
+            </p>
+            <table class="tool-table">
+              <thead>
+                <tr>
+                  <th>Backend</th>
+                  <th>Copy command</th>
+                  <th>Readback command</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Wayland</td>
+                  <td><code>wl-copy --type text/plain;charset=utf-8 --</code></td>
+                  <td><code>wl-paste --no-newline --type text/plain;charset=utf-8</code></td>
+                </tr>
+                <tr>
+                  <td>X11</td>
+                  <td><code>xclip -selection clipboard -in</code></td>
+                  <td><code>xclip -selection clipboard -out</code></td>
+                </tr>
+              </tbody>
+            </table>
+            <p>
+              Copy-to-clipboard leaves the final text in the clipboard. It does
+              not restore the previous clipboard value.
+            </p>
+          </section>
+
+          <section class="doc-section" id="paste">
+            <h2>Paste Shortcuts</h2>
+            <p>
+              Paste-from-clipboard runs only after clipboard verification. It
+              sends a keyboard shortcut to the focused app; QuillSpeak does not
+              directly inject text into another application.
+            </p>
+            <table class="tool-table">
+              <thead>
+                <tr>
+                  <th>Backend</th>
+                  <th>Command</th>
+                  <th>Default custom sequence</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>X11</td>
+                  <td><code>xdotool key --clearmodifiers ...</code></td>
+                  <td><code>ctrl+v</code></td>
+                </tr>
+                <tr>
+                  <td>Wayland</td>
+                  <td><code>ydotool key ...</code></td>
+                  <td><code>29:1 47:1 47:0 29:0</code></td>
+                </tr>
+              </tbody>
+            </table>
+            <p>
+              <code>Ctrl+Shift+V</code> is useful for terminals and some chat
+              applications. Custom <code>ydotool</code> sequences use raw
+              <code>keycode:pressed</code> events, where pressed is
+              <code>1</code> for key down and <code>0</code> for key up.
+            </p>
+          </section>
+
+          <section class="doc-section" id="examples">
+            <h2>Shortcut Examples</h2>
+            <table class="setting-table">
+              <thead>
+                <tr>
+                  <th>Shortcut</th>
+                  <th>Suggested settings</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Default dictation</td>
+                  <td>
+                    Auto language, a ready local model, copy enabled, paste
+                    enabled with <code>Ctrl+V</code>.
+                  </td>
+                </tr>
+                <tr>
+                  <td>To English</td>
+                  <td>
+                    Auto language, script path
+                    <code>~/bin/translate-to-english.sh</code>, copy enabled,
+                    paste enabled with <code>Ctrl+Shift+V</code>.
+                  </td>
+                </tr>
+                <tr>
+                  <td>Terminal command</td>
+                  <td>
+                    English language, copy enabled, paste enabled with
+                    <code>Ctrl+Shift+V</code>, beep enabled so you know when the
+                    capture starts and stops.
+                  </td>
+                </tr>
+                <tr>
+                  <td>History only</td>
+                  <td>
+                    Copy disabled and paste disabled. The final text is still
+                    recorded in local history.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <span>QuillSpeak is free software under the MIT License.</span>
+      <span><a href="https://github.com/ilysenko/quillspeak">GitHub repository</a></span>
+    </footer>
+  </body>
+</html>

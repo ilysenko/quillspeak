@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Getting Started - QuillSpeak</title>
+    <meta
+      name="description"
+      content="Install QuillSpeak, download a local Whisper model, and record your first push-to-talk transcription."
+    />
+    <link rel="icon" href="./assets/quillspeak.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="QuillSpeak documentation home">
+        <img src="./assets/quillspeak.svg" alt="" />
+        <span>QuillSpeak</span>
+      </a>
+      <nav class="top-nav" aria-label="Primary navigation">
+        <a href="./getting-started.html" aria-current="page">Getting Started</a>
+        <a href="./settings.html">Settings</a>
+        <a href="./triggers.html">Triggers</a>
+        <a href="./output.html">Output</a>
+        <a href="./troubleshooting.html">Troubleshooting</a>
+        <a href="https://github.com/ilysenko/quillspeak">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="page-hero">
+        <p class="eyebrow">Getting Started</p>
+        <h1>Install QuillSpeak and record your first local transcript.</h1>
+        <p class="lead">
+          The app starts as a tray-first desktop process. Open Settings, install
+          a model, configure a trigger, and then use push-to-talk from any Linux
+          text workflow.
+        </p>
+      </section>
+
+      <div class="page-grid">
+        <aside class="toc" aria-label="Page sections">
+          <strong>On this page</strong>
+          <a href="#install">Install</a>
+          <a href="#runtime-tools">Runtime tools</a>
+          <a href="#first-run">First run</a>
+          <a href="#models">Models</a>
+          <a href="#state">Files and state</a>
+          <a href="#source">Build from source</a>
+        </aside>
+
+        <div class="doc-body">
+          <section class="doc-section" id="install">
+            <h2>Install</h2>
+            <p>
+              Download the latest Debian package from
+              <a href="https://github.com/ilysenko/quillspeak/releases">GitHub Releases</a>.
+              Release tags build two package variants.
+            </p>
+            <table class="setting-table">
+              <thead>
+                <tr>
+                  <th>Package</th>
+                  <th>Use it when</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><code>quillspeak</code></td>
+                  <td>
+                    You want the default package. It is built with the Vulkan
+                    whisper.cpp backend and falls back to CPU transcription if a
+                    Vulkan runtime is not available.
+                  </td>
+                </tr>
+                <tr>
+                  <td><code>quillspeak-cpu</code></td>
+                  <td>
+                    You want a simpler CPU-only package with the same GTK,
+                    shortcut, model, clipboard, script, and paste behavior.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <pre><code>sudo apt install ./quillspeak_*.deb</code></pre>
+            <p>
+              If you downloaded both variants, install only one. The CPU package
+              conflicts with and replaces the default package.
+            </p>
+          </section>
+
+          <section class="doc-section" id="runtime-tools">
+            <h2>Runtime Tools</h2>
+            <p>
+              QuillSpeak does not install or manage external desktop tools.
+              Settings reports whether the tools needed by the current session
+              are available.
+            </p>
+            <table class="tool-table">
+              <thead>
+                <tr>
+                  <th>Feature</th>
+                  <th>X11</th>
+                  <th>Wayland</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Clipboard copy and readback</td>
+                  <td><code>xclip</code></td>
+                  <td><code>wl-copy</code>, <code>wl-paste</code></td>
+                </tr>
+                <tr>
+                  <td>Paste shortcut</td>
+                  <td><code>xdotool</code></td>
+                  <td><code>ydotool</code></td>
+                </tr>
+                <tr>
+                  <td>External hotkey tool</td>
+                  <td>Optional</td>
+                  <td><code>swhkd</code> or compositor keybindings</td>
+                </tr>
+                <tr>
+                  <td>Mute speakers while recording</td>
+                  <td colspan="2"><code>wpctl</code> and <code>pw-dump</code>, with <code>pactl</code> fallback</td>
+                </tr>
+              </tbody>
+            </table>
+            <pre><code>sudo apt install wl-clipboard xclip xdotool ydotool
+sudo apt install wireplumber pipewire-bin pulseaudio-utils</code></pre>
+            <p>
+              <code>ydotool</code> may need its own daemon and input permissions
+              outside QuillSpeak. The main app should never be run with
+              <code>sudo</code>.
+            </p>
+          </section>
+
+          <section class="doc-section" id="first-run">
+            <h2>First Run</h2>
+            <ol>
+              <li>Start the app with <code>quillspeak</code>.</li>
+              <li>Open <strong>Show Settings</strong> from the tray indicator.</li>
+              <li>Open <strong>Models</strong> and download at least one model.</li>
+              <li>Open the <strong>Default</strong> shortcut page.</li>
+              <li>Choose a trigger, model, language, and output action.</li>
+              <li>Hold the trigger, speak, release, and wait for processing.</li>
+            </ol>
+            <div class="content-grid">
+              <figure class="screenshot">
+                <img src="./images/quillspeak-models.png" alt="QuillSpeak Models page" />
+                <figcaption>
+                  A model is ready only after the download is verified and moved
+                  into the model directory.
+                </figcaption>
+              </figure>
+              <div class="callout">
+                <h3>Tray States</h3>
+                <ul>
+                  <li>White icon: idle.</li>
+                  <li>Red icon: recording or arming.</li>
+                  <li>Orange icon: processing transcription.</li>
+                </ul>
+                <p>
+                  The tray menu contains <strong>Show Settings</strong>, one
+                  stateful recording action, and <strong>Quit</strong>.
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <section class="doc-section" id="models">
+            <h2>Choosing a Model</h2>
+            <p>
+              Each shortcut owns its model choice. Smaller models start faster
+              and use less memory. Larger models are slower but can be more
+              accurate. Quantized Q5 and Q8 models reduce disk and memory usage
+              compared with full-size models.
+            </p>
+            <p>
+              The default model id is <code>large-v3-turbo-q5_0</code>. It is a
+              practical default for local dictation, but you can assign a small
+              model to a fast command shortcut and a larger model to a careful
+              transcription shortcut.
+            </p>
+          </section>
+
+          <section class="doc-section" id="state">
+            <h2>Files and State</h2>
+            <dl>
+              <dt>Config</dt>
+              <dd><code>~/.config/quillspeak/config.toml</code></dd>
+              <dt>Models</dt>
+              <dd><code>~/.local/share/quillspeak/models</code></dd>
+              <dt>History</dt>
+              <dd><code>~/.local/share/quillspeak/history.jsonl</code></dd>
+              <dt>Command socket</dt>
+              <dd><code>$XDG_RUNTIME_DIR/quillspeak/command.sock</code></dd>
+              <dt>Debug audio</dt>
+              <dd><code>/tmp/quillspeak-audio-debug</code> when <code>QUILLSPEAK_DEBUG_SAVE_AUDIO=1</code></dd>
+            </dl>
+          </section>
+
+          <section class="doc-section" id="source">
+            <h2>Build From Source</h2>
+            <p>Install Debian/Ubuntu build dependencies:</p>
+            <pre><code>sudo apt install build-essential pkg-config cmake clang libclang-dev \
+  libasound2-dev libpulse-dev libpipewire-0.3-dev \
+  libgtk-4-dev libadwaita-1-dev</code></pre>
+            <p>Run from the workspace:</p>
+            <pre><code>cargo run -p quillspeak --bin quillspeak</code></pre>
+            <p>Useful development checks:</p>
+            <pre><code>cargo fmt --all --check
+cargo check --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+git diff --check</code></pre>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <span>QuillSpeak is free software under the MIT License.</span>
+      <span><a href="https://github.com/ilysenko/quillspeak">GitHub repository</a></span>
+    </footer>
+  </body>
+</html>

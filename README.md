@@ -5,7 +5,12 @@ desktops.
 
 Hold a trigger, speak, release, and QuillSpeak transcribes your voice with a
 local whisper.cpp model. The final text can be copied to the clipboard, passed
-through a script, or pasted into the focused app through external Linux tools.
+through a script, or pasted into the focused app through normal Linux desktop
+tools.
+
+<p align="center">
+  <img src="docs/images/quillspeak-readme-hero.png" alt="QuillSpeak settings showing Whisper model management" width="900">
+</p>
 
 [Documentation](https://ilysenko.github.io/quillspeak/) |
 [Releases](https://github.com/ilysenko/quillspeak/releases) |
@@ -14,12 +19,12 @@ through a script, or pasted into the focused app through external Linux tools.
 
 ## What It Is For
 
-QuillSpeak is for local voice typing on Linux:
+QuillSpeak is meant for local voice typing on Linux:
 
 - push-to-talk dictation,
-- quick transcription into text fields,
-- per-shortcut model and language settings,
-- scriptable text post-processing,
+- fast transcription into text fields,
+- per-shortcut model, language, trigger, and output settings,
+- scriptable post-processing such as translation or rewriting,
 - clipboard copy and optional paste shortcuts.
 
 It is not a cloud transcription service. Audio is recorded locally and
@@ -29,117 +34,53 @@ transcribed locally with downloaded whisper.cpp models.
 
 QuillSpeak is built for Linux desktop sessions with GTK4 and libadwaita.
 
-- X11: the app can capture configured global keyboard shortcuts directly.
+- X11: QuillSpeak can capture configured global keyboard shortcuts directly.
 - Wayland: use compositor keybindings or an external hotkey tool to call
   `quillspeak trigger`.
-- Mixed Wayland/X11 sessions: QuillSpeak treats keyboard hotkeys as
-  Wayland-style external triggers.
+- Mixed Wayland/X11 sessions: QuillSpeak uses Wayland-style external triggers.
 
-The app uses CPAL for microphone capture and can use PipeWire or PulseAudio
-audio hosts depending on the system.
+The app records audio through CPAL and can use PipeWire or PulseAudio audio
+hosts depending on the system.
 
 ## Install
 
 Download Debian/Ubuntu packages from
 [GitHub Releases](https://github.com/ilysenko/quillspeak/releases).
 
-- `quillspeak`: primary package, built with Vulkan whisper.cpp support and CPU
+- `quillspeak`: default package with Vulkan whisper.cpp support and CPU
   fallback.
-- `quillspeak-cpu`: CPU-only package for systems where a simpler runtime is
-  preferred.
+- `quillspeak-cpu`: CPU-only package for simpler systems.
 
-Runtime clipboard and paste behavior may need these tools:
+Runtime clipboard and paste features may need:
 
 ```sh
 sudo apt install wl-clipboard xclip xdotool ydotool
 ```
 
-Speaker mute during recording, when enabled, uses PipeWire tools:
+Speaker mute while recording may need:
 
 ```sh
 sudo apt install wireplumber pipewire-bin
 ```
 
-## Basic Usage
+## Limits
 
-Start the app:
+- Linux desktop only.
+- Wayland global keyboard capture must be handled by an external hotkey tool.
+- Direct text insertion is not implemented; paste uses the system clipboard as
+  transport.
+- A downloaded whisper.cpp model is required before transcription.
+- Do not run the main app with `sudo`.
 
-```sh
-quillspeak
-```
+## Documentation
 
-QuillSpeak starts in the background with a tray indicator. Open
-**Show Settings** from the tray menu, download a model, configure a shortcut,
-then hold the trigger to record.
+Start with the full documentation site:
 
-Tray state:
-
-- white icon: idle,
-- red icon: recording,
-- orange icon: processing/transcribing.
-
-## X11 And Wayland Triggers
-
-On X11, QuillSpeak can use app-owned keyboard shortcuts. The default keyboard
-shortcut is configured in the app settings.
-
-On Wayland, regular desktop apps cannot capture global keyboard shortcuts
-directly. Use compositor keybindings, `swhkd`, or another hotkey tool to call
-the running app:
-
-```sh
-quillspeak trigger Default start
-quillspeak trigger Default stop
-quillspeak trigger Default toggle
-```
-
-The trigger command talks to:
-
-```text
-$XDG_RUNTIME_DIR/quillspeak/command.sock
-```
-
-Linux signals are also available as a lower-level fallback:
-
-```sh
-pkill -USR1 -x quillspeak
-pkill -USR2 -x quillspeak
-```
-
-Supported signal names are `SIGUSR1`, `SIGUSR2`, `SIGALRM`, and `SIGWINCH`.
-
-## External Tools
-
-QuillSpeak intentionally uses normal Linux desktop tools for clipboard and
-paste integration:
-
-- `wl-copy` / `wl-paste` from `wl-clipboard`: Wayland clipboard transport.
-- `xclip`: X11 clipboard transport.
-- `xdotool`: X11 paste shortcuts.
-- `ydotool`: Wayland paste shortcuts; may require its own daemon and
-  permissions.
-- `wpctl` / PipeWire tools: optional speaker mute while recording.
-- `swhkd` or compositor keybindings: external Wayland hotkey integration.
-
-## Limitations
-
-- Linux desktop only; Windows and macOS are not supported.
-- Wayland global shortcut capture is external to QuillSpeak.
-- Direct text insertion is not implemented; paste uses clipboard transport.
-- The main app should not be run with `sudo`.
-- A ready downloaded whisper.cpp model is required before transcription.
-- Old development config schemas may be replaced with current defaults.
-
-## Files And State
-
-QuillSpeak stores user-owned state under standard XDG paths:
-
-```text
-~/.config/quillspeak/config.toml
-~/.local/share/quillspeak/models
-~/.local/share/quillspeak/history.jsonl
-$XDG_RUNTIME_DIR/quillspeak/command.sock
-```
+- [Getting Started](https://ilysenko.github.io/quillspeak/getting-started.html)
+- [Settings Reference](https://ilysenko.github.io/quillspeak/settings.html)
+- [Triggers on X11 and Wayland](https://ilysenko.github.io/quillspeak/triggers.html)
+- [Scripts, Clipboard, and Paste](https://ilysenko.github.io/quillspeak/output.html)
+- [Troubleshooting](https://ilysenko.github.io/quillspeak/troubleshooting.html)
 
 ## Build From Source
 
@@ -151,19 +92,13 @@ sudo apt install build-essential pkg-config cmake clang libclang-dev \
   libgtk-4-dev libadwaita-1-dev
 ```
 
-Run the app from the workspace:
+Run from the workspace:
 
 ```sh
 cargo run -p quillspeak --bin quillspeak
 ```
 
-Verbose QuillSpeak logs:
-
-```sh
-QUILLSPEAK_DEV_LOG=1 cargo run -p quillspeak --bin quillspeak
-```
-
-Useful local checks:
+Useful checks:
 
 ```sh
 cargo fmt --all --check
@@ -172,13 +107,6 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 git diff --check
 ```
-
-## Project Links
-
-- Documentation: https://ilysenko.github.io/quillspeak/
-- Releases: https://github.com/ilysenko/quillspeak/releases
-- Repository: https://github.com/ilysenko/quillspeak
-- Issues: https://github.com/ilysenko/quillspeak/issues
 
 ## License
 
