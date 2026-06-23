@@ -128,6 +128,13 @@ printf '%s\n' "$text"</code></pre>
               installed, and otherwise prints the original text so the shortcut
               still has predictable behavior.
             </p>
+            <p>
+              The example runs Claude Code in a script-friendly cloud mode with
+              <code>--bare</code>, <code>--safe-mode</code>,
+              <code>--strict-mcp-config</code>, and
+              <code>--disallowedTools "mcp__*"</code> so user customizations and
+              MCP servers are not loaded for each translation.
+            </p>
             <pre><code>mkdir -p ~/bin
 curl -fsSL https://ilysenko.github.io/quillspeak/examples/translate-to-english.sh \
   -o ~/bin/translate-to-english.sh
@@ -145,7 +152,7 @@ chmod +x ~/bin/translate-to-english.sh</code></pre>
                 <tr>
                   <td><code>QUILLSPEAK_TRANSLATOR_BACKEND</code></td>
                   <td><code>claude</code></td>
-                  <td>Set to <code>plain</code> to disable cloud post-processing and echo input.</td>
+                  <td>Use <code>claude</code> or <code>haiku</code> for fast cloud translation, <code>sonnet</code> for a stronger Claude model, or <code>plain</code> to echo input.</td>
                 </tr>
                 <tr>
                   <td><code>QUILLSPEAK_CLAUDE_MODEL</code></td>
@@ -156,6 +163,11 @@ chmod +x ~/bin/translate-to-english.sh</code></pre>
                   <td><code>QUILLSPEAK_CLAUDE_FALLBACK</code></td>
                   <td><code>sonnet</code></td>
                   <td>Fallback model alias if the primary model is overloaded or unavailable.</td>
+                </tr>
+                <tr>
+                  <td><code>QUILLSPEAK_CLAUDE_EFFORT</code></td>
+                  <td><code>low</code></td>
+                  <td>Keeps Claude Code latency low for short push-to-talk translations.</td>
                 </tr>
               </tbody>
             </table>
