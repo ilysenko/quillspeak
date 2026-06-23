@@ -12,22 +12,34 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <header class="site-header">
-      <a class="brand" href="./index.html" aria-label="QuillSpeak documentation home">
-        <img src="./assets/quillspeak.svg" alt="" />
-        <span>QuillSpeak</span>
-      </a>
-      <nav class="top-nav" aria-label="Primary navigation">
-        <a href="./getting-started.html" aria-current="page">Getting Started</a>
-        <a href="./settings.html">Settings</a>
-        <a href="./triggers.html">Triggers</a>
-        <a href="./output.html">Output</a>
-        <a href="./troubleshooting.html">Troubleshooting</a>
-        <a href="https://github.com/ilysenko/quillspeak">GitHub</a>
-      </nav>
-    </header>
+    <div class="docs-shell">
+      <aside class="docs-sidebar" aria-label="Documentation navigation">
+        <a class="brand" href="./index.html" aria-label="QuillSpeak documentation home">
+          <img src="./assets/quillspeak.svg" alt="" />
+          <span>QuillSpeak</span>
+        </a>
+        <nav class="docs-nav" aria-label="Documentation sections">
+          <a href="./index.html">Overview</a>
+          <a href="./getting-started.html" aria-current="page">Getting Started</a>
+          <a href="./settings.html">Settings</a>
+          <a href="./triggers.html">Triggers</a>
+          <a href="./output.html">Output</a>
+          <a href="./troubleshooting.html">Troubleshooting</a>
+        </nav>
+        <nav class="page-toc" aria-label="Page sections">
+          <strong>On this page</strong>
+          <a href="#install">Install</a>
+          <a href="#runtime-tools">Runtime tools</a>
+          <a href="#first-run">First run</a>
+          <a href="#models">Models</a>
+          <a href="#state">Files and state</a>
+          <a href="#source">Build from source</a>
+        </nav>
+        <a class="github-link" href="https://github.com/ilysenko/quillspeak">GitHub repository</a>
+      </aside>
 
-    <main>
+      <div class="docs-content">
+        <main class="docs-main">
       <section class="page-hero">
         <p class="eyebrow">Getting Started</p>
         <h1>Install QuillSpeak and record your first local transcript.</h1>
@@ -37,17 +49,6 @@
           text workflow.
         </p>
       </section>
-
-      <div class="page-grid">
-        <aside class="toc" aria-label="Page sections">
-          <strong>On this page</strong>
-          <a href="#install">Install</a>
-          <a href="#runtime-tools">Runtime tools</a>
-          <a href="#first-run">First run</a>
-          <a href="#models">Models</a>
-          <a href="#state">Files and state</a>
-          <a href="#source">Build from source</a>
-        </aside>
 
         <div class="doc-body">
           <section class="doc-section" id="install">
@@ -216,12 +217,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 git diff --check</code></pre>
           </section>
         </div>
-      </div>
-    </main>
+        </main>
 
-    <footer class="site-footer">
-      <span>QuillSpeak is free software under the MIT License.</span>
-      <span><a href="https://github.com/ilysenko/quillspeak">GitHub repository</a></span>
-    </footer>
+        <footer class="site-footer">
+          <span>QuillSpeak is free software under the MIT License.</span>
+          <span><a href="https://github.com/ilysenko/quillspeak">GitHub repository</a></span>
+        </footer>
+      </div>
+    </div>
   </body>
 </html>

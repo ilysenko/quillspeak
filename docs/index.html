@@ -12,22 +12,33 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <header class="site-header">
-      <a class="brand" href="./index.html" aria-label="QuillSpeak documentation home">
-        <img src="./assets/quillspeak.svg" alt="" />
-        <span>QuillSpeak</span>
-      </a>
-      <nav class="top-nav" aria-label="Primary navigation">
-        <a href="./getting-started.html">Getting Started</a>
-        <a href="./settings.html">Settings</a>
-        <a href="./triggers.html">Triggers</a>
-        <a href="./output.html">Output</a>
-        <a href="./troubleshooting.html">Troubleshooting</a>
-        <a href="https://github.com/ilysenko/quillspeak">GitHub</a>
-      </nav>
-    </header>
+    <div class="docs-shell">
+      <aside class="docs-sidebar" aria-label="Documentation navigation">
+        <a class="brand" href="./index.html" aria-label="QuillSpeak documentation home">
+          <img src="./assets/quillspeak.svg" alt="" />
+          <span>QuillSpeak</span>
+        </a>
+        <nav class="docs-nav" aria-label="Documentation sections">
+          <a href="./index.html" aria-current="page">Overview</a>
+          <a href="./getting-started.html">Getting Started</a>
+          <a href="./settings.html">Settings</a>
+          <a href="./triggers.html">Triggers</a>
+          <a href="./output.html">Output</a>
+          <a href="./troubleshooting.html">Troubleshooting</a>
+        </nav>
+        <nav class="page-toc" aria-label="Page sections">
+          <strong>On this page</strong>
+          <a href="#install">Install</a>
+          <a href="#quick-start">Quick Start</a>
+          <a href="#docs-sections">Docs Sections</a>
+          <a href="#settings-tour">Settings Tour</a>
+          <a href="#wayland">Wayland</a>
+        </nav>
+        <a class="github-link" href="https://github.com/ilysenko/quillspeak">GitHub repository</a>
+      </aside>
 
-    <main id="top">
+      <div class="docs-content">
+        <main class="docs-main" id="top">
       <section class="hero">
         <div class="hero-copy">
           <p class="eyebrow">Local Linux voice typing</p>
@@ -75,7 +86,7 @@
         </div>
       </section>
 
-      <section class="content-grid">
+      <section class="content-grid" id="quick-start">
         <article class="content-card">
           <h2>Quick Start</h2>
           <ol>
@@ -102,7 +113,7 @@
         </article>
       </section>
 
-      <section class="card-grid" aria-label="Documentation sections">
+      <section class="card-grid" id="docs-sections" aria-label="Documentation sections">
         <a class="page-card" href="./getting-started.html">
           <p class="eyebrow">Start here</p>
           <h3>Getting Started</h3>
@@ -125,7 +136,7 @@
         </a>
       </section>
 
-      <section>
+      <section id="settings-tour">
         <p class="eyebrow">Settings tour</p>
         <h2>What you configure in QuillSpeak</h2>
         <div class="gallery">
@@ -148,7 +159,7 @@
         </div>
       </section>
 
-      <section class="split-section">
+      <section class="split-section" id="wayland">
         <div>
           <p class="eyebrow">Wayland</p>
           <h2>External hotkey tools call the running app</h2>
@@ -180,12 +191,14 @@ pkill -USR2 -x quillspeak</code></pre>
           </p>
         </aside>
       </section>
-    </main>
+        </main>
 
-    <footer class="site-footer">
-      <span>QuillSpeak is free software under the MIT License.</span>
-      <span><a href="https://github.com/ilysenko/quillspeak">GitHub repository</a></span>
-    </footer>
+        <footer class="site-footer">
+          <span>QuillSpeak is free software under the MIT License.</span>
+          <span><a href="https://github.com/ilysenko/quillspeak">GitHub repository</a></span>
+        </footer>
+      </div>
+    </div>
 
     <script src="./app.js" defer></script>
   </body>

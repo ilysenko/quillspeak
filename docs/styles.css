@@ -46,19 +46,34 @@ pre {
     "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
-.site-header {
+.docs-shell {
+  display: grid;
+  grid-template-columns: 292px minmax(0, 1fr);
+  min-height: 100svh;
+}
+
+.docs-sidebar {
   position: sticky;
   top: 0;
-  z-index: 10;
+  align-self: start;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  min-height: 72px;
-  padding: 14px clamp(20px, 5vw, 72px);
-  background: color-mix(in srgb, var(--bg) 92%, white);
-  border-bottom: 1px solid var(--line);
-  backdrop-filter: blur(14px);
+  flex-direction: column;
+  gap: 16px;
+  height: 100svh;
+  padding: 20px 18px;
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--panel) 84%, var(--soft));
+  border-right: 1px solid var(--line);
+  box-shadow: 14px 0 38px rgba(23, 32, 42, 0.04);
+}
+
+.docs-content {
+  min-width: 0;
+}
+
+.docs-main {
+  width: min(1180px, calc(100% - 48px));
+  margin: 0 auto;
 }
 
 .brand {
@@ -75,27 +90,70 @@ pre {
   height: 40px;
 }
 
-.top-nav {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 16px;
-  font-size: 0.94rem;
+.docs-nav,
+.page-toc {
+  display: grid;
+  gap: 3px;
 }
 
-.top-nav a {
+.docs-nav {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.docs-nav a,
+.page-toc a,
+.github-link {
+  border-radius: 8px;
   color: var(--muted);
   text-decoration: none;
 }
 
-.top-nav a:hover,
-.top-nav a[aria-current="page"] {
-  color: var(--ink);
+.docs-nav a {
+  padding: 8px 10px;
+  font-weight: 760;
 }
 
-main {
-  width: min(1180px, calc(100% - 40px));
-  margin: 0 auto;
+.docs-nav a:hover,
+.docs-nav a[aria-current="page"] {
+  color: var(--ink);
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.page-toc {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.page-toc strong {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--ink);
+  font-size: 0.82rem;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.page-toc a {
+  padding: 4px 8px;
+  font-size: 0.93rem;
+}
+
+.page-toc a:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--soft) 70%, white);
+}
+
+.github-link {
+  padding: 8px 10px;
+  font-weight: 760;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.github-link:hover {
+  color: var(--ink);
+  background: #ffffff;
 }
 
 .hero {
@@ -182,7 +240,6 @@ section h2,
 .release-widget,
 .note-panel,
 .content-card,
-.toc,
 .page-card,
 .callout,
 .tool-table,
@@ -241,7 +298,6 @@ pre {
 .release-band,
 .split-section,
 .content-grid,
-.page-grid,
 .card-grid,
 .doc-section {
   display: grid;
@@ -269,7 +325,6 @@ h3 {
 .release-widget,
 .note-panel,
 .content-card,
-.toc,
 .page-card,
 .callout {
   padding: 24px;
@@ -312,32 +367,6 @@ h3 {
 .content-grid,
 .card-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.page-grid {
-  grid-template-columns: 260px minmax(0, 1fr);
-  align-items: start;
-}
-
-.toc {
-  position: sticky;
-  top: 96px;
-}
-
-.toc strong {
-  display: block;
-  margin-bottom: 10px;
-}
-
-.toc a {
-  display: block;
-  padding: 8px 0;
-  color: var(--muted);
-  text-decoration: none;
-}
-
-.toc a:hover {
-  color: var(--ink);
 }
 
 .doc-body {
@@ -466,13 +495,16 @@ li + li {
 }
 
 @media (max-width: 980px) {
-  .site-header {
-    align-items: flex-start;
-    flex-direction: column;
+  .docs-shell {
+    grid-template-columns: 1fr;
   }
 
-  .top-nav {
-    justify-content: flex-start;
+  .docs-sidebar {
+    position: static;
+    height: auto;
+    padding: 18px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
   }
 
   .hero,
@@ -480,9 +512,20 @@ li + li {
   .content-grid,
   .split-section,
   .split-section.reverse,
-  .page-grid,
   .card-grid {
     grid-template-columns: 1fr;
+  }
+
+  .docs-nav {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .page-toc {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .page-toc strong {
+    grid-column: 1 / -1;
   }
 
   .hero h1 {
@@ -494,18 +537,19 @@ li + li {
     font-size: 2.7rem;
   }
 
-  .toc {
-    position: static;
-  }
-
   .gallery {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 620px) {
-  main {
+  .docs-main {
     width: min(100% - 28px, 1180px);
+  }
+
+  .docs-nav,
+  .page-toc {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .hero {
